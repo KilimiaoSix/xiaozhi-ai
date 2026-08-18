@@ -23,6 +23,7 @@ export interface AgentEvent {
   toolInput?: unknown;
   toolResponse?: unknown;
   notificationType?: string;
+  permissionMode?: string;
   error?: string;
   backgroundTaskCount?: number;
 }
@@ -50,4 +51,3 @@ export interface RobotActionIntent {
   expiresAt: string;
   ttlMs: number;
 }
-

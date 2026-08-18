@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import hmac
 import json
 import logging
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
@@ -27,6 +27,7 @@ class PresenceHandler:
         registry: PresenceRegistry,
         now_provider: Callable[[], datetime] | None = None,
         logger=None,
+        on_accepted: Callable[[PresenceReport, dict], Awaitable[None]] | None = None,
     ) -> None:
         server_config = config.get("server", {})
         auth_config = server_config.get("auth", {})
@@ -35,6 +36,9 @@ class PresenceHandler:
         self._registry = registry
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self._logger = logger or logging.getLogger(__name__)
+        # 上报被接受后的观察者，用于驱动机器人等下游动作。注册表本身是同步纯数据结构，
+        # 不适合在里面做网络 I/O，所以接缝放在这一层。
+        self._on_accepted = on_accepted
 
     def _authorized(self, request: web.Request) -> bool:
         if not self._auth_enabled:
@@ -123,6 +127,13 @@ class PresenceHandler:
             return self._json_response(
                 "INTERNAL_ERROR", "internal server error", None, status=500
             )
+
+        if self._on_accepted is not None:
+            # 独立 try：下游编排失败不该让 presence-agent 收到 5xx 而误判为需要重试
+            try:
+                await self._on_accepted(report, result)
+            except Exception:
+                self._logger.exception("presence 上报的下游处理失败，已忽略")
 
         return self._json_response("OK", "success", result)
 

@@ -3,7 +3,13 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from presence_agent.face_template import OwnerTemplate, load_template, save_template
+from presence_agent.face_template import (
+    OwnerTemplate,
+    load_metadata,
+    load_template,
+    save_metadata,
+    save_template,
+)
 
 
 MODEL_HASH = "a" * 64
@@ -51,3 +57,22 @@ def test_template_rejects_model_mismatch_and_pickle(tmp_path):
     )
     with pytest.raises(ValueError, match="Object arrays cannot be loaded"):
         load_template(path, MODEL_HASH)
+
+
+def test_metadata_round_trip_uses_atomic_json_replace(tmp_path):
+    path = tmp_path / "owner.json"
+    value = {
+        "profile_id": "owner",
+        "sample_id": "sample-1",
+        "display_name": "主人",
+        "stored_at": "2026-08-18T00:00:00Z",
+        "sample_count": 18,
+    }
+
+    save_metadata(path, value)
+    assert load_metadata(path) == value
+
+    replacement = {**value, "sample_id": "sample-2"}
+    save_metadata(path, replacement)
+    assert load_metadata(path) == replacement
+    assert list(tmp_path.iterdir()) == [path]

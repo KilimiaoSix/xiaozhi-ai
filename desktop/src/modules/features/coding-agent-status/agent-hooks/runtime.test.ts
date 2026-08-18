@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AgentEvent, AgentSource } from './contracts';
 import type { AgentHookDetection, AgentHookInstallResult } from './install/types';
-import { AgentHooksRuntime, type AgentHooksSpool } from './runtime';
+import {
+  AgentHooksRuntime,
+  type AgentAttention,
+  type AgentAttentionMonitor,
+  type AgentHooksSpool,
+} from './runtime';
 import { EventSpool } from './spool/eventSpool';
 import { HOOK_RUNNER_SOURCE } from './spool/hookRunnerSource';
 import { AgentTaskTracker } from './taskTracker';
@@ -50,6 +55,19 @@ class MemorySpool implements AgentHooksSpool {
   async close() { this.closed = true; }
 
   async emitLive(item: AgentEvent) { await this.liveConsumer?.(item); }
+}
+
+class MemoryAttentionMonitor implements AgentAttentionMonitor {
+  listener?: (attention: AgentAttention | null) => void | Promise<void>;
+  stopped = false;
+
+  start(listener: (attention: AgentAttention | null) => void | Promise<void>) {
+    this.listener = listener;
+  }
+
+  async stop() { this.stopped = true; }
+
+  async emit(attention: AgentAttention | null) { await this.listener?.(attention); }
 }
 
 const createManager = () => {
@@ -234,11 +252,13 @@ describe('AgentHooksRuntime', () => {
     await runtime.start();
 
     await spool.emitLive(event('UserPromptSubmit', {
+      source: 'claude-code',
       prompt: '执行完整 Hook 集成',
       occurredAt: '2026-08-18T08:00:10.000Z',
     }));
     await spool.emitLive(event('Notification', {
       id: 'permission-1',
+      source: 'claude-code',
       toolName: 'Bash',
       notificationType: 'permission_prompt',
       occurredAt: '2026-08-18T08:00:10.000Z',
@@ -248,13 +268,127 @@ describe('AgentHooksRuntime', () => {
     expect(snapshots).toContain('needs_user');
     expect(runtime.getSnapshot()).toMatchObject({
       primaryTask: { status: 'needs_user', prompt: '执行完整 Hook 集成' },
-      actionIntents: [expect.objectContaining({ action: 'needs_user' })],
+      actionIntents: [expect.objectContaining({
+        action: 'needs_user',
+        taskKey: 'claude-code:session-1',
+      })],
     });
     const persisted = JSON.parse(await readFile(
       path.join(directory, 'state/tasks.json'),
       'utf8',
     ));
     expect(persisted.tasks[0]).toMatchObject({ status: 'needs_user' });
+  });
+
+  it('首个真实 Codex 事件到达后把 Hook 从等待授权切换为已生效', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'launchcrush-runtime-trust-'));
+    directories.push(directory);
+    const spool = new MemorySpool();
+    let requiresTrustReview = true;
+    const manager = {
+      ...createManager(),
+      detect: async () => [{
+        ...detection('codex', true),
+        requiresTrustReview,
+        message: requiresTrustReview
+          ? 'Hook 已配置，请在 Codex 中运行 /hooks 完成授权'
+          : '监控 Hook 已生效',
+      }],
+      markActive: async () => { requiresTrustReview = false; },
+    };
+    const runtime = new AgentHooksRuntime({
+      manager,
+      spool,
+      tracker: new AgentTaskTracker(),
+      statePath: path.join(directory, 'state/tasks.json'),
+    });
+    await runtime.start();
+    expect(runtime.getSnapshot().installations[0]).toMatchObject({
+      requiresTrustReview: true,
+    });
+
+    await spool.emitLive(event('UserPromptSubmit'));
+
+    expect(runtime.getSnapshot().installations[0]).toMatchObject({
+      requiresTrustReview: false,
+      message: '监控 Hook 已生效',
+    });
+  });
+
+  it('用外部审批状态临时覆盖 Codex 任务，审批结束后恢复原状态', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'launchcrush-runtime-attention-'));
+    directories.push(directory);
+    const spool = new MemorySpool();
+    const attentionMonitor = new MemoryAttentionMonitor();
+    const runtime = new AgentHooksRuntime({
+      manager: createManager(),
+      spool,
+      tracker: new AgentTaskTracker(() => new Date('2026-08-18T08:00:10.000Z')),
+      statePath: path.join(directory, 'state/tasks.json'),
+      attentionMonitor,
+      now: () => new Date('2026-08-18T08:00:10.000Z'),
+    });
+    await runtime.start();
+    await spool.emitLive(event('UserPromptSubmit', {
+      prompt: '打开浏览器完成测试',
+      occurredAt: '2026-08-18T08:00:09.000Z',
+    }));
+
+    await attentionMonitor.emit({
+      source: 'codex',
+      reason: 'Computer Use 需要用户确认',
+      detectedAt: '2026-08-18T08:00:10.000Z',
+    });
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      primaryTask: {
+        sessionId: 'session-1',
+        status: 'needs_user',
+        title: '打开浏览器完成测试',
+        needsUserReason: 'Computer Use 需要用户确认',
+      },
+      actionIntents: [expect.objectContaining({ action: 'needs_user' })],
+    });
+
+    await attentionMonitor.emit(null);
+    expect(runtime.getSnapshot()).toMatchObject({
+      primaryTask: {
+        sessionId: 'session-1',
+        status: 'running',
+        title: '打开浏览器完成测试',
+      },
+    });
+    expect(runtime.getSnapshot().tasks).toHaveLength(1);
+
+    await runtime.stop();
+    expect(attentionMonitor.stopped).toBe(true);
+  });
+
+  it('没有活动 Codex 任务时使用临时审批任务且解除后移除', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'launchcrush-runtime-attention-only-'));
+    directories.push(directory);
+    const attentionMonitor = new MemoryAttentionMonitor();
+    const runtime = new AgentHooksRuntime({
+      manager: createManager(),
+      spool: new MemorySpool(),
+      tracker: new AgentTaskTracker(),
+      statePath: path.join(directory, 'state/tasks.json'),
+      attentionMonitor,
+    });
+    await runtime.start();
+
+    await attentionMonitor.emit({
+      source: 'codex',
+      reason: 'Computer Use 需要用户确认',
+      detectedAt: '2026-08-18T08:00:10.000Z',
+    });
+    expect(runtime.getSnapshot().primaryTask).toMatchObject({
+      key: 'codex:external-attention',
+      status: 'needs_user',
+    });
+
+    await attentionMonitor.emit(null);
+    expect(runtime.getSnapshot().tasks).toEqual([]);
   });
 
   it('重启时恢复已持久化的任务快照', async () => {

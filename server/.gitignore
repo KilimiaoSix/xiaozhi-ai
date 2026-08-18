@@ -197,3 +197,13 @@ uploadfile
 main/digital-human/wakeword_runtime/models
 main/digital-human/wakeword_runtime/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
 sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2
+
+# 运行时生成物与模型下载产物（必须放在上面 !**/*.json 反忽略之后才生效）
+# 唤醒词回复语音由 TTS 在运行时生成并缓存，随配置变化重生成，不入库
+main/xiaozhi-server/config/assets/wakeup_words/
+# SenseVoiceSmall 随 model.pt 一同下载的权重与词表，与已忽略的 model.pt 同类
+main/xiaozhi-server/models/SenseVoiceSmall/am.mvn
+main/xiaozhi-server/models/SenseVoiceSmall/tokens.json
+main/xiaozhi-server/models/SenseVoiceSmall/README.md
+main/xiaozhi-server/models/SenseVoiceSmall/.msc
+main/xiaozhi-server/models/SenseVoiceSmall/.mv

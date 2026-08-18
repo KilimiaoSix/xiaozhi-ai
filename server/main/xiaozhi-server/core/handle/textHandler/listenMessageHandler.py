@@ -20,6 +20,16 @@ from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
 
 TAG = __name__
 
+BUTTON_TAG = "[button]"
+
+# 按键语义定死在服务端：固件只上报"按了几下"，怎么解释是番茄钟状态机的事，
+# 改玩法不用重新烧录固件。
+BUTTON_COMMANDS = {
+    "boot_double": "toggle",
+    "boot_triple": "stop",
+}
+
+
 class ListenTextMessageHandler(TextMessageHandler):
     """Listen消息处理器"""
 
@@ -92,6 +102,27 @@ class ListenTextMessageHandler(TextMessageHandler):
 
                     # 添加到对话历史，让模型理解上下文
                     conn.dialogue.put(Message(role="assistant", content=call_text))
+                    return
+
+                # 检查是否是设备端按键事件 [button]
+                # 与 [device_call]/[gesture] 复用同一条 listen/detect 文本通道，
+                # 但按键只操作番茄钟状态机，不需要 LLM 参与，处理完直接返回。
+                if original_text.startswith(BUTTON_TAG):
+                    button = original_text[len(BUTTON_TAG):].strip()
+                    command = BUTTON_COMMANDS.get(button)
+                    if command is None:
+                        conn.logger.bind(tag=TAG).info(f"忽略未知按键事件: {button}")
+                        return
+                    conn.logger.bind(tag=TAG).info(
+                        f"收到设备按键 {button}，执行番茄钟命令: {command}"
+                    )
+                    from core.pomodoro_manager import pomodoro_manager
+
+                    pomodoro_manager.bind_from_conn(conn)
+                    # 按键路径没有 TTS 回复也没有桌面 UI，必须额外推一条有声确认
+                    await pomodoro_manager.execute(
+                        conn.device_id, command, feedback=True
+                    )
                     return
 
                 # 检查是否是设备端手势事件 [gesture]

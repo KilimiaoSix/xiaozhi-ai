@@ -1,18 +1,59 @@
+import type {
+  FaceRecognitionState,
+  PresenceRecognitionState,
+  RecognitionConnectionState,
+  RecognitionMetrics,
+} from '../types';
+
 interface PresenceMonitoringProps {
-  active: boolean;
-  sentFrames: number;
-  droppedFrames: number;
-  lastSuccessAt: string;
-  offline: boolean;
+  enabled: boolean;
+  connection: RecognitionConnectionState;
+  presence: PresenceRecognitionState;
+  identity: FaceRecognitionState;
+  metrics: RecognitionMetrics;
   onToggle: () => void;
 }
 
+const connectionLabels: Record<RecognitionConnectionState, string> = {
+  idle: '已停止',
+  connecting: '连接中',
+  online: '监测中',
+  reconnecting: '重连中',
+};
+
+const presenceLabels: Record<PresenceRecognitionState['state'], string> = {
+  starting: '判断中',
+  present: '有人',
+  absent: '无人',
+  camera_error: '摄像头异常',
+  stale: '结果已过期',
+};
+
+const identityLabels: Record<FaceRecognitionState['state'], string> = {
+  starting: '判断中',
+  not_enrolled: '尚未注册主人',
+  no_face: '未检测到人脸',
+  owner: '主人',
+  unknown: '陌生人',
+  multiple_faces: '多张人脸',
+  camera_error: '摄像头异常',
+};
+
+const resultTime = (value: string): string => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(date);
+};
+
 export function PresenceMonitoring({
-  active,
-  sentFrames,
-  droppedFrames,
-  lastSuccessAt,
-  offline,
+  enabled,
+  connection,
+  presence,
+  identity,
+  metrics,
   onToggle,
 }: PresenceMonitoringProps) {
   return (
@@ -20,29 +61,59 @@ export function PresenceMonitoring({
       <div className="camera-card-heading">
         <div>
           <strong>人员监测</strong>
-          <span>每秒发送一张 JPEG，不录制视频</span>
+          <span>持续发送内存中的 JPEG 帧，不录制视频</span>
         </div>
         <button
-          className={`camera-switch ${active ? 'is-on' : ''}`}
+          className={`camera-switch ${enabled ? 'is-on' : ''}`}
           type="button"
           role="switch"
-          aria-checked={active}
+          aria-label="实时监测"
+          aria-checked={enabled}
           onClick={onToggle}
         >
           <span />
         </button>
       </div>
 
-      <div className="camera-metrics">
+      <div className="camera-recognition-summary">
         <div>
-          <span>传输状态</span>
-          <strong className={offline ? 'is-warning' : ''}>
-            {!active ? '已停止' : offline ? '等待 Server' : '稳定'}
+          <span>人体</span>
+          <strong>{enabled ? presenceLabels[presence.state] : '未监测'}</strong>
+        </div>
+        <div>
+          <span>人脸</span>
+          <strong>{enabled && identity.faceDetected ? '检测到人脸' : '未检测到人脸'}</strong>
+        </div>
+        <div>
+          <span>身份</span>
+          <strong>{enabled ? identityLabels[identity.state] : '未监测'}</strong>
+        </div>
+        <div>
+          <span>匹配结果</span>
+          <strong className={identity.matched ? 'is-owner' : ''}>
+            {enabled && identity.matched ? '已匹配' : '未匹配'}
           </strong>
         </div>
-        <div><span>已发送</span><strong>{sentFrames}</strong></div>
-        <div><span>已丢弃</span><strong>{droppedFrames}</strong></div>
-        <div><span>最近成功</span><strong>{lastSuccessAt || '—'}</strong></div>
+        {identity.similarity !== undefined && (
+          <div>
+            <span>相似度</span>
+            <strong>{(identity.similarity * 100).toFixed(1)}%</strong>
+          </div>
+        )}
+      </div>
+
+      <div className="camera-metrics">
+        <div>
+          <span>连接状态</span>
+          <strong className={connection === 'reconnecting' ? 'is-warning' : ''}>
+            {enabled ? connectionLabels[connection] : '已停止'}
+          </strong>
+        </div>
+        <div><span>客户端发送</span><strong>{metrics.sentFrames}</strong></div>
+        <div><span>Server 处理</span><strong>{metrics.processedFrames}</strong></div>
+        <div><span>客户端丢弃</span><strong>{metrics.clientDropped}</strong></div>
+        <div><span>Server 丢弃</span><strong>{metrics.serverDropped}</strong></div>
+        <div><span>最近结果</span><strong>{resultTime(metrics.lastResultAt)}</strong></div>
       </div>
 
       <p className="camera-privacy-note">

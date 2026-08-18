@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 
+from presence_agent.camera_backend import open_camera, permission_hint
 from presence_agent.pose_detector import PoseDetector, PoseObservation
 from presence_agent.face_template import load_template
 from presence_agent.face_verifier import FaceEngine, FaceVerifier
@@ -255,12 +256,17 @@ def run(
     processed_frames = 0
     previous_timestamp_ms = -1
     previous_frame_time = None
+    open_failure_hinted = False
 
     try:
         with detector_factory(model_path) as detector:
             while True:
-                camera = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
+                camera = open_camera(cv2, args.camera)
                 if not camera.isOpened():
+                    hint = permission_hint()
+                    if hint and not open_failure_hinted:
+                        print(hint, file=sys.stderr)
+                        open_failure_hinted = True
                     now = monotonic()
                     tracker.update(False, now, camera_ok=False)
                     identity = (

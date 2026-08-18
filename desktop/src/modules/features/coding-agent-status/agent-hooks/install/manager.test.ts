@@ -23,14 +23,22 @@ const writeText = async (filePath: string, content: string): Promise<void> => {
 const createManager = (
   homeDir: string,
   available: Partial<Record<AgentSource, string>>,
+  electronPath = '/Applications/工伴.app/Contents/MacOS/工伴',
 ) => new AgentHookManager({
   homeDir,
-  electronPath: '/Applications/工伴.app/Contents/MacOS/工伴',
-  runnerPath: path.join(homeDir, 'Library/Application Support/工伴/hooks/launchcrush-hook.cjs'),
+  launcherPath: path.join(homeDir, 'Library/Application Support/工伴/hooks/launchcrush-hook'),
   spoolPath: path.join(homeDir, 'Library/Application Support/工伴/agent-hooks'),
+  codexTrustMarkerPath: path.join(
+    homeDir,
+    'Library/Application Support/工伴/agent-hooks/state/codex-trust-required',
+  ),
   now: () => new Date('2026-08-18T08:00:00.000Z'),
   resolveExecutable: async (source) => available[source],
   workBuddyAppPaths: [path.join(homeDir, 'Applications/WorkBuddy.app')],
+  ensureRunner: () => writeText(
+    path.join(homeDir, 'Library/Application Support/工伴/hooks/launchcrush-hook'),
+    `runtime=${electronPath}`,
+  ),
 });
 
 afterEach(async () => {
@@ -86,6 +94,57 @@ describe('AgentHookManager', () => {
     expect(firstContent.match(/launchcrush-agent-hook/g)).toHaveLength(7);
   });
 
+  it('开发版与打包版使用相同 Hook 命令且不会反复刷新 Codex 授权', async () => {
+    const homeDir = await createHome();
+    const configPath = path.join(homeDir, '.codex/hooks.json');
+    const available = { codex: '/usr/local/bin/codex' } as const;
+    const development = createManager(homeDir, available, '/dev/Electron');
+    const packaged = createManager(homeDir, available, '/Applications/工伴.app/Contents/MacOS/工伴');
+
+    await development.install('codex');
+    const developmentConfig = await readFile(configPath, 'utf8');
+    await packaged.prepare();
+    expect(await readFile(configPath, 'utf8')).toBe(developmentConfig);
+    await expect(readFile(
+      path.join(homeDir, 'Library/Application Support/工伴/hooks/launchcrush-hook'),
+      'utf8',
+    )).resolves.toBe('runtime=/Applications/工伴.app/Contents/MacOS/工伴');
+
+    const packagedResult = await packaged.install('codex');
+    const packagedConfig = await readFile(configPath, 'utf8');
+
+    expect(packagedResult.backupPath).toBeUndefined();
+    expect(packagedConfig).toBe(developmentConfig);
+    expect(packagedConfig).not.toContain('/dev/Electron');
+    expect(packagedConfig).not.toContain('/Applications/工伴.app/Contents/MacOS/工伴');
+  });
+
+  it('Codex Hook 配置变更后等待授权并在收到真实事件后转为监控中', async () => {
+    const homeDir = await createHome();
+    const manager = createManager(homeDir, { codex: '/usr/local/bin/codex' });
+
+    await expect(manager.install('codex')).resolves.toMatchObject({
+      installed: true,
+      requiresTrustReview: true,
+      message: expect.stringContaining('/hooks'),
+    });
+    await expect(manager.detect()).resolves.toContainEqual(expect.objectContaining({
+      source: 'codex',
+      installed: true,
+      requiresTrustReview: true,
+      message: expect.stringContaining('/hooks'),
+    }));
+
+    await manager.markActive('codex');
+
+    await expect(manager.detect()).resolves.toContainEqual(expect.objectContaining({
+      source: 'codex',
+      installed: true,
+      requiresTrustReview: false,
+      message: '监控 Hook 已生效',
+    }));
+  });
+
   it('识别并刷新指向已删除 worktree 的 WorkBuddy Hook', async () => {
     const homeDir = await createHome();
     const configPath = path.join(homeDir, '.workbuddy/settings.json');
@@ -124,7 +183,7 @@ describe('AgentHookManager', () => {
       message: expect.stringContaining('刷新'),
     });
     expect(refreshed).not.toContain('/deleted-worktree/');
-    expect(refreshed).toContain('/Applications/工伴.app/Contents/MacOS/工伴');
+    expect(refreshed).toContain('Library/Application Support/工伴/hooks/launchcrush-hook');
     expect(refreshed).toContain('/user/notify.sh');
     expect(refreshed.match(/launchcrush-agent-hook/g)).toHaveLength(8);
     expect(after).toMatchObject({ installed: true, message: '监控 Hook 已安装' });

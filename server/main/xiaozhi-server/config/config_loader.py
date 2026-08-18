@@ -44,12 +44,34 @@ async def load_config():
     else:
         # 合并配置
         config = merge_configs(default_config, custom_config)
+    # 设备唤醒词也要进 wakeup_words，否则唤醒后的第一句会被当成对话内容送给大模型
+    _merge_wake_word_into_wakeup_words(config)
+
     # 初始化目录
     ensure_directories(config)
 
     # 缓存配置
     cache_manager.set(CacheType.CONFIG, "main_config", config)
     return config
+
+
+def _merge_wake_word_into_wakeup_words(config):
+    """把下发给设备的 wake_word 并入 wakeup_words（ASR 文本层面的唤醒语匹配）。"""
+    section = config.get("wake_word") or {}
+    wake_word = str(section.get("display") or "").strip() if isinstance(section, dict) else ""
+    if not wake_word:
+        return
+    # 设备上报的唤醒词会先被 remove_punctuation_and_length 去掉标点再比对，
+    # 所以存进来的也必须是去标点的形式，否则 "Hi,喵喵" 永远匹配不上 "Hi喵喵"。
+    from core.utils.util import remove_punctuation_and_length
+    _, wake_word = remove_punctuation_and_length(wake_word)
+    if not wake_word:
+        return
+    wakeup_words = config.get("wakeup_words") or []
+    if not isinstance(wakeup_words, list):
+        return
+    if wake_word not in wakeup_words:
+        config["wakeup_words"] = wakeup_words + [wake_word]
 
 
 async def get_config_from_api_async(config):
@@ -67,6 +89,8 @@ async def get_config_from_api_async(config):
         "url": config["manager-api"].get("url", ""),
         "secret": config["manager-api"].get("secret", ""),
     }
+    # 晨报包含本机 OAuth 和最小化存储配置，不由远端智控台覆盖。
+    config_data["morning_brief"] = config.get("morning_brief", {})
     auth_enabled = config_data.get("server", {}).get("auth", {}).get("enabled", False)
     # server的配置以本地为准
     if config.get("server"):

@@ -4,17 +4,18 @@ import { describe, expect, it } from 'vitest';
 import { CameraPreview } from './CameraPreview';
 
 describe('CameraPreview', () => {
-  it('keeps the video element mounted while showing a captured photo', () => {
+  it('shows the continuous 5 FPS stream state', () => {
     const markup = renderToStaticMarkup(
       <CameraPreview
-        stream={null}
-        capturedUrl="blob:owner-photo"
-        activeLabel="摄像头使用中"
-        monitoring={false}
+        stream={{} as MediaStream}
+        activeLabel="监测中"
+        monitoring
+        enrollment={false}
       />,
     );
 
     expect(markup).toContain('<video');
-    expect(markup).toContain('<img');
+    expect(markup).toContain('5 FPS · JPEG');
+    expect(markup).not.toContain('<img');
   });
 });

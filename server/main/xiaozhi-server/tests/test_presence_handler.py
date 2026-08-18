@@ -221,3 +221,65 @@ async def test_options_and_json_responses_include_cors(aiohttp_client, payload):
     assert options.status == 200
     assert options.headers["Access-Control-Allow-Methods"] == "GET, POST, OPTIONS"
     assert report.headers["Access-Control-Allow-Origin"] == "*"
+
+
+# ---------------------------------------------------------------- 观察者回调
+
+async def make_client_with_observer(aiohttp_client, observer):
+    """带观察者的客户端，用于验证 accept 成功后的回调接缝。"""
+    app = web.Application()
+    handler = PresenceHandler(
+        {"server": {"auth": {"enabled": False}, "auth_key": ""}},
+        PresenceRegistry(),
+        now_provider=lambda: NOW,
+        on_accepted=observer,
+    )
+    add_presence_routes(app, handler)
+    return await aiohttp_client(app)
+
+
+@pytest.mark.asyncio
+async def test_on_accepted_receives_report_and_result(aiohttp_client, payload):
+    seen = []
+
+    async def observer(report, result):
+        seen.append((report, result))
+
+    client = await make_client_with_observer(aiohttp_client, observer)
+    response = await client.post("/xiaozhi/presence/report", json=payload)
+
+    assert response.status == 200
+    assert len(seen) == 1
+    report, result = seen[0]
+    assert report.workstation_id == "desk-test"
+    assert report.state == "present"
+    assert result["duplicate"] is False
+
+
+@pytest.mark.asyncio
+async def test_on_accepted_failure_does_not_break_the_response(aiohttp_client, payload):
+    """编排出错不能把上报接口变成 500，presence-agent 会当成需要重试。"""
+
+    async def observer(report, result):
+        raise RuntimeError("orchestrator exploded")
+
+    client = await make_client_with_observer(aiohttp_client, observer)
+    response = await client.post("/xiaozhi/presence/report", json=payload)
+
+    assert response.status == 200
+    assert (await response.json())["code"] == "OK"
+
+
+@pytest.mark.asyncio
+async def test_on_accepted_not_called_for_rejected_payload(aiohttp_client, payload):
+    calls = []
+
+    async def observer(report, result):
+        calls.append(report)
+
+    client = await make_client_with_observer(aiohttp_client, observer)
+    payload["state"] = "not-a-state"
+    response = await client.post("/xiaozhi/presence/report", json=payload)
+
+    assert response.status == 400
+    assert calls == []

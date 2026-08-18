@@ -1,66 +1,99 @@
-# 摄像头工位在岗状态 API 对接文档
+# 摄像头流式识别与工位状态 API
 
-| 章节号 | 接口名 | 方法 | 路径 | 接口性质 | 前端动作 |
-| --- | --- | --- | --- | --- | --- |
-| 1 | 上报工位在岗状态 | `POST` | `/xiaozhi/presence/report` | 既有接口补充字段 | 新 presence-agent 上报可选 `identity`；旧 Agent 无需改 |
-| 2 | 查询单工位在岗状态 | `GET` | `/xiaozhi/presence/{workstation_id}` | 既有接口补充字段 | 身份消费者可选读取 `identity`，并先判断 `effective_state` |
-
-## 本次对接结论
-
-### 这是既有 presence 接口的兼容字段扩展
-
-本次在已发布的两条 presence 接口中增加可选 `identity`。旧 Agent 不传该字段仍合法；旧消费者忽略新增响应字段即可。`/xiaozhi/event/*`、OTA、视觉和 WebSocket 协议没有变化。
-
-### 接入方动作
-
-| 优先级 | 类型 | 接口 | 变化 | 接入方处理 |
-| --- | --- | --- | --- | --- |
-| P0 | 请求新增 | `POST /xiaozhi/presence/report` | 可选 `identity` 对象 | 新 presence-agent 上报；旧 Agent 无需修改 |
-| P1 | 响应新增 | `GET /xiaozhi/presence/{workstation_id}` | 可选 `data.identity` 对象 | 需要本人识别时接入，先判断 `effective_state` 是否为 `stale` |
-
-### 可以不改的点
-
-| 接口/模块 | 原因 |
-| --- | --- |
-| `/xiaozhi/event/*` | 本次没有协议变化 |
-| ESP32-S3 固件 | presence 模块不直接下发机器人动作 |
-| 桌面端现有流程 | 新字段可选，不强制立即接入 |
-
-## 功能说明
-
-摄像头由工位本机的 `presence-agent` 独占使用。agent 对同一帧完成 MediaPipe Pose 与 YuNet/SFace 推理，只发送 presence、identity 稳定状态、单人脸相似度及少量聚合指标，不上传画面、截图、完整人体 landmark、人脸 embedding 或本人模板。
-
-Server 在内存中保存每个 `workstation_id` 的最新报告。超过 30 秒没有收到新报告时，查询接口把 `effective_state` 派生为 `stale`，同时保留 `reported_state`，供接入方区分“最后报告了什么”和“当前是否仍可信”。
-
-## 接口变更摘要
-
-### 新增接口
-
-无。
-
-### 修改接口
-
-| 接口 | 改动类型 | 字段 | 兼容性 |
+| 接口 | 方法 | 路径 | 用途 |
 | --- | --- | --- | --- |
-| `POST /xiaozhi/presence/report` | 请求新增 | `identity`（可选） | 兼容：旧 Agent 不传仍合法 |
-| `GET /xiaozhi/presence/{workstation_id}` | 响应新增 | `data.identity`（可选） | 兼容：旧消费者可忽略新增字段 |
+| 摄像头流式识别 | WebSocket | `/xiaozhi/presence/stream` | 桌面端注册主人、持续发送 JPEG 并接收人体/人脸结果 |
+| 上报工位状态 | `POST` | `/xiaozhi/presence/report` | 兼容独立 `presence-agent` |
+| 查询工位状态 | `GET` | `/xiaozhi/presence/{workstation_id}` | 查询 Server 内存中的最新有效状态 |
 
-### 删除 / 下线
+桌面应用是默认摄像头唯一所有者。它通过受控 IPC 把 JPEG 交给 Electron 主进程，再由主进程通过 WebSocket 发送给 Server。Server 对同一解码帧执行 MediaPipe Pose 与 YuNet/SFace，不保存原始画面、完整人体关键点、人脸 embedding 或主人模板内容。独立 `presence-agent` 仍可通过 HTTP 上报，作为无桌面端部署的兼容工具。
 
-无。
+监测开关开启后会持续通信，切换页面、最小化窗口、Server 断线或摄像头短暂中断都不会关闭用户意图。只有用户关闭开关或退出应用才停止监测并释放摄像头。Server 超过 30 秒没有收到新报告时，HTTP 查询会把 `effective_state` 派生为 `stale`。
 
-### 兼容性总结
+## 1 摄像头流式识别（新）
 
-- 老客户端不升级可以继续使用，字段扩展向后兼容。
-- 新消费者必须把 HTTP 404 解释为“尚无数据”，不能解释为 `absent`。
-- 新消费者必须使用 `effective_state` 做当前决策；`reported_state` 仅表示最后一次 agent 报告。
+### 1.1 连接与认证
 
-## 1 上报工位在岗状态（改）
+- WebSocket URL：`ws://<host>:<port>/xiaozhi/presence/stream`；HTTPS 对应 `wss`。
+- Server 开启 `server.auth.enabled` 时，握手必须携带 `Authorization: Bearer <server.auth_key>`。
+- 第一条客户端消息必须是 UTF-8 JSON `start`，之后只允许完整二进制 JPEG 或 `{"type":"stop"}`。
+- 单帧最大 `1 MiB`。客户端目标为 `5 FPS`、最大 `640×360`、JPEG quality `0.72`。
+- 客户端和 Server 都使用容量一的背压边界；忙时丢弃旧帧，不建立无界队列。
+
+监测 start：
+
+```json
+{
+  "type": "start",
+  "schema_version": "1.0",
+  "mode": "monitoring",
+  "session_id": "6c618629-ffef-4c00-ab4f-17dc5ce2eb7a",
+  "workstation_id": "desktop-local"
+}
+```
+
+注册 start 在上述字段基础上把 `mode` 改为 `enrollment`，并增加 1 到 64 字符的 `display_name`。
+
+### 1.2 Server 事件
+
+连接就绪：
+
+```json
+{"type":"ready","session_id":"...","sequence":0}
+```
+
+监测结果：
+
+```json
+{
+  "type": "recognition_result",
+  "session_id": "...",
+  "sequence": 12,
+  "processed_at": "2026-08-18T09:10:30.123Z",
+  "presence": {"state":"present","changed":false},
+  "identity": {
+    "state":"owner",
+    "previous_state":"owner",
+    "changed":false,
+    "face_count":1,
+    "face_detected":true,
+    "similarity":0.712346,
+    "threshold":0.45,
+    "matched":true
+  },
+  "metrics": {"processed_frames":12,"server_dropped":1}
+}
+```
+
+`identity.matched` 由 Server 决定，客户端不得根据相似度重新计算。人脸是否存在由 `face_count > 0` 派生。`similarity` 只在单人脸 `owner` 或 `unknown` 状态提供。
+
+注册进度与完成：
+
+```json
+{"type":"enrollment_progress","session_id":"...","sequence":7,"accepted":7,"required":20,"reason":"accepted"}
+```
+
+```json
+{"type":"enrollment_complete","session_id":"...","sequence":24,"profile_id":"owner","sample_id":"...","display_name":"主人","stored_at":"2026-08-18T09:10:30Z","sample_count":18}
+```
+
+Server 每 200 ms 最多接受一个合格样本。累计 20 个样本后剔除 2 个离群样本，以剩余 18 个样本生成模板并原子替换旧模板。取消、失败或连接中断不会覆盖旧模板。
+
+### 1.3 状态与错误
+
+- 人体：`starting`、`present`、`absent`、`camera_error`；HTTP 查询还可能派生 `stale`。
+- 人脸：`not_enrolled`、`no_face`、`owner`、`unknown`、`multiple_faces`、`camera_error`。
+- 注册质量：`accepted`、`sample_too_soon`、`no_face`、`multiple_faces`、`face_too_small`、`blurry`、`low_quality`。
+- 稳定错误码：`PROTOCOL_ERROR`、`FRAME_TOO_LARGE`、`INVALID_JPEG`、`MODEL_UNAVAILABLE`、`INFERENCE_ERROR`。
+
+错误事件包含 `code`、`message` 和 `retryable`。监测遇到可恢复错误时保留开关并自动重连；注册失败会结束本次采集且不修改旧模板。
+
+## 2 上报工位在岗状态（兼容）
 
 - **路径**：`/xiaozhi/presence/report`
 - **方法**：`POST`
 
-### 1.1 输入参数
+### 2.1 输入参数
 
 #### 1.1.1 Headers
 
@@ -81,7 +114,7 @@ Server 在内存中保存每个 `workstation_id` 的最新报告。超过 30 秒
 | `state（不变）` | enum | 是 | `starting` / `present` / `absent` / `camera_error` |
 | `previous_state（不变）` | enum | 是 | 本地状态机前一状态；不允许 `stale` |
 | `changed（不变）` | boolean | 是 | 必须等于 `state != previous_state` |
-| `reason（不变）` | enum | 是 | 见附录 3.2 |
+| `reason（不变）` | enum | 是 | 见附录 4.2 |
 | `sequence（不变）` | integer | 是 | 当前进程内从 1 递增；失败重试保持不变 |
 | `observed_at（不变）` | RFC 3339 string | 是 | 带时区，agent 发送 UTC `Z` |
 | `metrics（不变）` | object | 是 | 聚合指标对象，不允许额外字段 |
@@ -90,7 +123,7 @@ Server 在内存中保存每个 `workstation_id` 的最新报告。超过 30 秒
 | `metrics.positive_streak（不变）` | integer | 否 | 当前连续正样本数，大于等于 0 |
 | `metrics.seconds_since_last_positive（不变）` | number | 否 | 距最后正样本秒数，大于等于 0 |
 | `identity（新）` | object | 否 | 本地身份识别稳定状态；关闭识别的 Agent 可不传 |
-| `identity.state（新）` | enum | 是 | 传 `identity` 时必填，见附录 3.2 |
+| `identity.state（新）` | enum | 是 | 传 `identity` 时必填，见附录 4.2 |
 | `identity.previous_state（新）` | enum | 是 | 前一个稳定身份状态 |
 | `identity.changed（新）` | boolean | 是 | 必须等于 `state != previous_state` |
 | `identity.face_count（新）` | integer | 是 | 非负人脸数；`owner/unknown` 固定 1，`multiple_faces` 至少 2 |
@@ -99,7 +132,7 @@ Server 在内存中保存每个 `workstation_id` 的最新报告。超过 30 秒
 
 请求体最大 16 KiB。Body 不接受 `frame`、`image`、`landmarks`、`embedding`、模板或其他未声明字段。
 
-### 1.2 输出参数
+### 2.2 输出参数
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -112,7 +145,7 @@ Server 在内存中保存每个 `workstation_id` 的最新报告。超过 30 秒
 | `data.sequence（不变）` | integer | 已接收序号 |
 | `data.received_at（不变）` | RFC 3339 string | Server 首次接收该事件的 UTC 时间 |
 
-### 1.3 curl 实例
+### 2.3 curl 实例
 
 ```bash
 curl -X POST "http://127.0.0.1:8003/xiaozhi/presence/report" \
@@ -148,7 +181,7 @@ curl -X POST "http://127.0.0.1:8003/xiaozhi/presence/report" \
 
 认证关闭时删除 `Authorization` header。
 
-### 1.4 JSON 范例
+### 2.4 JSON 范例
 
 ```json
 {
@@ -164,12 +197,12 @@ curl -X POST "http://127.0.0.1:8003/xiaozhi/presence/report" \
 }
 ```
 
-## 2 查询单工位在岗状态（改）
+## 3 查询单工位在岗状态
 
 - **路径**：`/xiaozhi/presence/{workstation_id}`
 - **方法**：`GET`
 
-### 2.1 输入参数
+### 3.1 输入参数
 
 #### 2.1.1 Headers
 
@@ -187,7 +220,7 @@ curl -X POST "http://127.0.0.1:8003/xiaozhi/presence/report" \
 
 无。
 
-### 2.2 输出参数
+### 3.2 输出参数
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -210,7 +243,7 @@ curl -X POST "http://127.0.0.1:8003/xiaozhi/presence/report" \
 | `data.metrics（不变）` | object | 最后报告的聚合指标 |
 | `data.identity（新）` | object | Agent 上报身份时返回；结构同请求 `identity` |
 
-### 2.3 curl 实例
+### 3.3 curl 实例
 
 ```bash
 curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
@@ -219,7 +252,7 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
 
 认证关闭时删除 `Authorization` header。
 
-### 2.4 JSON 范例
+### 3.4 JSON 范例
 
 ```json
 {
@@ -256,9 +289,9 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
 }
 ```
 
-## 3 附录
+## 4 附录
 
-### 3.1 错误码
+### 4.1 错误码
 
 | HTTP | `code` | 接入方处理 |
 | --- | --- | --- |
@@ -280,7 +313,7 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
 }
 ```
 
-### 3.2 枚举值
+### 4.2 枚举值
 
 | 枚举 | 产生方 | 含义 |
 | --- | --- | --- |
@@ -304,7 +337,7 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
 
 `reason` 允许值：`initializing`、`pose_confirmed`、`absence_timeout`、`camera_open_failed`、`camera_read_failed`、`camera_recovered`、`identity_changed`、`heartbeat`。
 
-### 3.3 状态机
+### 4.3 状态机
 
 ```text
 starting --连续 3 个正样本--> present
@@ -316,7 +349,7 @@ camera_error --摄像头恢复--> starting
 任意 reported_state --超过 30 秒无报告--> effective_state=stale
 ```
 
-### 3.4 消费建议
+### 4.4 消费建议
 
 - 需要即时状态时按业务节奏查询；建议前台每 3-5 秒一次，后台降低频率或停止轮询。
 - `present` 可允许需要用户在场的温和提醒。

@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   rename,
+  rm,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -26,9 +27,9 @@ const SOURCES: AgentSource[] = ['codex', 'claude-code', 'workbuddy'];
 
 interface AgentHookManagerOptions {
   homeDir: string;
-  electronPath: string;
-  runnerPath: string;
+  launcherPath: string;
   spoolPath: string;
+  codexTrustMarkerPath?: string;
   now?: () => Date;
   resolveExecutable?: (source: AgentSource) => Promise<string | undefined>;
   workBuddyAppPaths?: string[];
@@ -69,6 +70,10 @@ export class AgentHookManager {
     this.ensureRunner = options.ensureRunner ?? (async () => undefined);
   }
 
+  async prepare(): Promise<void> {
+    await this.ensureRunner();
+  }
+
   async detect(): Promise<AgentHookDetection[]> {
     return Promise.all(SOURCES.map((source) => this.detectSource(source)));
   }
@@ -95,15 +100,22 @@ export class AgentHookManager {
       const hadConfig = await exists(detection.configPath);
       const content = hadConfig ? await readFile(detection.configPath, 'utf8') : '{}';
       const config = parseConfig(content);
-      await this.ensureRunner();
+      await this.prepare();
       const command = this.ownedCommand(source);
       if (ownedHooksMatchCommand(config, SOURCE_DEFINITIONS[source], command)) {
+        const requiresTrustReview = source === 'codex'
+          && await this.codexTrustReviewRequired();
         return {
           source,
           ok: true,
           installed: true,
+          ...(source === 'codex' ? { requiresTrustReview } : {}),
           configPath: detection.configPath,
-          message: '监控 Hook 已安装',
+          message: source === 'codex'
+            ? (requiresTrustReview
+                ? 'Hook 已配置，请在 Codex 中运行 /hooks 完成授权'
+                : '监控 Hook 已生效')
+            : '监控 Hook 已安装',
         };
       }
 
@@ -113,14 +125,18 @@ export class AgentHookManager {
         ? await this.backup(detection.configPath)
         : undefined;
       await this.atomicWrite(detection.configPath, merged);
+      if (source === 'codex') await this.markCodexTrustReviewRequired();
 
       return {
         source,
         ok: true,
         installed: true,
+        ...(source === 'codex' ? { requiresTrustReview: true } : {}),
         configPath: detection.configPath,
         ...(backupPath ? { backupPath } : {}),
-        message: refreshing ? '监控 Hook 已刷新' : '监控 Hook 安装成功',
+        message: source === 'codex'
+          ? 'Hook 已配置，请在 Codex 中运行 /hooks 完成授权'
+          : (refreshing ? '监控 Hook 已刷新' : '监控 Hook 安装成功'),
       };
     } catch (error) {
       return {
@@ -138,6 +154,7 @@ export class AgentHookManager {
   async uninstall(source: AgentSource): Promise<AgentHookInstallResult> {
     const configPath = await this.configPathFor(source);
     if (!await exists(configPath)) {
+      await this.markActive(source);
       return {
         source,
         ok: true,
@@ -150,6 +167,7 @@ export class AgentHookManager {
     try {
       const config = parseConfig(await readFile(configPath, 'utf8'));
       if (!hasOwnedHooks(config)) {
+        await this.markActive(source);
         return {
           source,
           ok: true,
@@ -160,6 +178,7 @@ export class AgentHookManager {
       }
       const backupPath = await this.backup(configPath);
       await this.atomicWrite(configPath, unmergeOwnedHooks(config));
+      await this.markActive(source);
       return {
         source,
         ok: true,
@@ -181,6 +200,11 @@ export class AgentHookManager {
     }
   }
 
+  async markActive(source: AgentSource): Promise<void> {
+    if (source !== 'codex' || !this.options.codexTrustMarkerPath) return;
+    await rm(this.options.codexTrustMarkerPath, { force: true });
+  }
+
   private async detectSource(source: AgentSource): Promise<AgentHookDetection> {
     const configPath = await this.configPathFor(source);
     const executablePath = await this.resolveExecutable(source);
@@ -190,6 +214,7 @@ export class AgentHookManager {
     const available = Boolean(executablePath) || configExists || appExists;
 
     let installed = false;
+    let requiresTrustReview = false;
     let detail = available ? '已发现，尚未启用监控' : '未发现';
     if (configExists) {
       try {
@@ -199,7 +224,16 @@ export class AgentHookManager {
           SOURCE_DEFINITIONS[source],
           this.ownedCommand(source),
         );
-        if (installed) detail = '监控 Hook 已安装';
+        if (installed && source === 'codex') {
+          requiresTrustReview = await this.codexTrustReviewRequired();
+        }
+        if (installed) {
+          detail = source === 'codex'
+            ? (requiresTrustReview
+                ? 'Hook 已配置，请在 Codex 中运行 /hooks 完成授权'
+                : '监控 Hook 已生效')
+            : '监控 Hook 已安装';
+        }
         else if (hasOwnedHooks(config)) detail = '监控 Hook 路径已失效，请重新接入';
       } catch (error) {
         detail = `配置 JSON 无法解析：${error instanceof Error ? error.message : '未知错误'}`;
@@ -210,6 +244,7 @@ export class AgentHookManager {
       source,
       available,
       installed,
+      ...(source === 'codex' ? { requiresTrustReview } : {}),
       ...(executablePath ? { executablePath } : {}),
       configPath,
       message: detail,
@@ -261,6 +296,19 @@ export class AgentHookManager {
     await rename(temporaryPath, configPath);
   }
 
+  private async codexTrustReviewRequired(): Promise<boolean> {
+    return this.options.codexTrustMarkerPath
+      ? exists(this.options.codexTrustMarkerPath)
+      : false;
+  }
+
+  private async markCodexTrustReviewRequired(): Promise<void> {
+    const markerPath = this.options.codexTrustMarkerPath;
+    if (!markerPath) return;
+    await mkdir(path.dirname(markerPath), { recursive: true });
+    await writeFile(markerPath, `${this.now().toISOString()}\n`, 'utf8');
+  }
+
   private displayName(source: AgentSource): string {
     if (source === 'claude-code') return 'Claude Code';
     if (source === 'workbuddy') return 'WorkBuddy';
@@ -269,8 +317,7 @@ export class AgentHookManager {
 
   private ownedCommand(source: AgentSource): string {
     return createOwnedHookCommand({
-      electronPath: this.options.electronPath,
-      runnerPath: this.options.runnerPath,
+      launcherPath: this.options.launcherPath,
       spoolPath: this.options.spoolPath,
       source,
     });

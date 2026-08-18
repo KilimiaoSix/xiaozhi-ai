@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from presence_agent import app as app_module
+from presence_agent.camera_backend import capture_backend, permission_hint
 from presence_agent.app import (
     _default_face_verifier_factory,
     _strict_timestamp_ms,
@@ -43,7 +45,9 @@ class FakeCamera:
 
 
 class FakeCv2:
+    CAP_ANY = 0
     CAP_DSHOW = 700
+    CAP_AVFOUNDATION = 1200
     CAP_PROP_FRAME_WIDTH = 3
     CAP_PROP_FRAME_HEIGHT = 4
 
@@ -327,3 +331,67 @@ def test_camera_read_failure_reopens_camera(tmp_path):
     assert result == 0
     assert len(cv2.created) == 2
     assert failed.released is True
+
+
+def run_with_two_open_failures(tmp_path, capture):
+    model = tmp_path / "model.task"
+    model.write_bytes(b"model")
+    cv2 = FakeCv2([
+        FakeCamera(False, []),
+        FakeCamera(False, []),
+        FakeCamera(True, [(True, object())]),
+    ])
+    detector = FakeDetector([visible_pose()])
+    return run(
+        make_args(model, smoke_frames=1),
+        **dependencies(cv2, detector, capture),
+    )
+
+
+def test_camera_open_failure_prints_the_platform_hint_once(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setattr(app_module, "permission_hint", lambda: "CAMERA HINT")
+
+    result = run_with_two_open_failures(tmp_path, {})
+    errors = capsys.readouterr().err
+
+    assert result == 0
+    assert errors.count("CAMERA HINT") == 1
+
+
+def test_camera_open_failure_is_quiet_where_there_is_no_hint(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setattr(app_module, "permission_hint", lambda: None)
+
+    result = run_with_two_open_failures(tmp_path, {})
+
+    assert result == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_permission_hint_is_macos_only():
+    assert permission_hint("darwin")
+    assert permission_hint("win32") is None
+    assert permission_hint("linux") is None
+
+
+def test_camera_opens_with_the_host_platform_backend(tmp_path):
+    model = tmp_path / "model.task"
+    model.write_bytes(b"model")
+    camera = FakeCamera(True, [(True, object())])
+    cv2 = FakeCv2([camera])
+    detector = FakeDetector([visible_pose()])
+    capture = {}
+
+    result = run(
+        make_args(model, smoke_frames=1),
+        **dependencies(cv2, detector, capture),
+    )
+
+    assert result == 0
+    assert [index for index, _, _ in cv2.created] == [0]
+    assert [backend for _, backend, _ in cv2.created] == [capture_backend(cv2)]
+    assert capture_backend(cv2, "win32") == FakeCv2.CAP_DSHOW
+    assert capture_backend(cv2, "darwin") == FakeCv2.CAP_AVFOUNDATION

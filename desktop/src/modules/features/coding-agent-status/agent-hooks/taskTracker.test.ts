@@ -53,27 +53,85 @@ describe('AgentTaskTracker', () => {
     expect(tracker.primary()).toMatchObject({ status: 'completed' });
   });
 
-  it('不把三端可自动处理的 PermissionRequest 误报为用户介入', () => {
+  it('Codex 权限请求不直接视为等待用户', () => {
     const tracker = createTracker();
 
-    for (const source of ['codex', 'claude-code', 'workbuddy'] as const) {
-      tracker.apply(event('UserPromptSubmit', {
-        source,
-        sessionId: `${source}-auto-approval`,
-        prompt: '运行 Bash 任务',
-      }));
-      tracker.apply(event('PermissionRequest', {
-        source,
-        sessionId: `${source}-auto-approval`,
-        toolName: 'Bash',
-      }));
-    }
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'codex',
+      prompt: '运行 Bash 任务',
+    }));
+    tracker.apply(event('PermissionRequest', {
+      source: 'codex',
+      toolName: 'Bash',
+    }));
 
-    expect(tracker.list()).toEqual([
-      expect.objectContaining({ source: 'codex', status: 'running' }),
-      expect.objectContaining({ source: 'claude-code', status: 'running' }),
-      expect.objectContaining({ source: 'workbuddy', status: 'running' }),
-    ]);
+    expect(tracker.primary()).toMatchObject({
+      source: 'codex',
+      status: 'running',
+    });
+    expect(tracker.primary()).not.toHaveProperty('needsUserReason');
+
+    tracker.apply(event('Notification', {
+      source: 'codex',
+      notificationType: 'permission_prompt',
+      toolName: 'Bash',
+    }));
+    expect(tracker.primary()).toMatchObject({
+      source: 'codex',
+      status: 'running',
+    });
+  });
+
+  it('非 Codex 的人工权限请求仍等待用户', () => {
+    const tracker = createTracker();
+
+    tracker.apply(event('PermissionRequest', {
+      source: 'claude-code',
+      permissionMode: 'default',
+      toolName: 'Bash',
+    }));
+
+    expect(tracker.primary()).toMatchObject({
+      source: 'claude-code',
+      status: 'needs_user',
+      needsUserReason: 'Bash 需要用户确认',
+    });
+  });
+
+  it('自动授权模式下的权限事件保持运行', () => {
+    const tracker = createTracker();
+
+    tracker.apply(event('PermissionRequest', {
+      source: 'workbuddy',
+      permissionMode: 'bypassPermissions',
+      toolName: 'Bash',
+    }));
+
+    expect(tracker.primary()).toMatchObject({
+      source: 'workbuddy',
+      status: 'running',
+    });
+    expect(tracker.primary()).not.toHaveProperty('needsUserReason');
+
+    tracker.apply(event('Notification', {
+      source: 'workbuddy',
+      permissionMode: 'bypassPermissions',
+      notificationType: 'permission_prompt',
+      toolName: 'Bash',
+    }));
+    expect(tracker.primary()).toMatchObject({
+      source: 'workbuddy',
+      status: 'running',
+    });
+
+    tracker.apply(event('PostToolUse', {
+      source: 'workbuddy',
+      toolName: 'Bash',
+    }));
+    expect(tracker.primary()).toMatchObject({
+      source: 'workbuddy',
+      status: 'running',
+    });
   });
 
   it('Stop 在后台任务运行或最终回复提问时不会误报完成', () => {
@@ -112,6 +170,78 @@ describe('AgentTaskTracker', () => {
     }));
 
     expect(tracker.primary()).toMatchObject({ status: 'completed' });
+  });
+
+  it('Codex 的普通后续邀请不会误报等待用户', () => {
+    const tracker = createTracker();
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'codex',
+      sessionId: 'codex-greeting',
+      prompt: '你好',
+    }));
+
+    tracker.apply(event('Stop', {
+      source: 'codex',
+      sessionId: 'codex-greeting',
+      finalMessage: '你好。你想从 taskTracker.ts 开始看，还是有别的事情要处理？',
+    }));
+
+    expect(tracker.primary()).toMatchObject({ status: 'completed' });
+    expect(tracker.primary()).not.toHaveProperty('needsUserReason');
+  });
+
+  it('完成总结中提到等待批准不会误报等待用户', () => {
+    const tracker = createTracker();
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'codex',
+      sessionId: 'codex-approval-summary',
+      prompt: '修复权限误报',
+    }));
+
+    tracker.apply(event('Stop', {
+      source: 'codex',
+      sessionId: 'codex-approval-summary',
+      finalMessage: '只有 Codex 侧栏真实显示“等待批准”时才进入 needs_user，真正停在侧栏等待批准的操作仍会提醒。',
+    }));
+
+    expect(tracker.primary()).toMatchObject({ status: 'completed' });
+    expect(tracker.primary()).not.toHaveProperty('needsUserReason');
+  });
+
+  it('恢复状态时纠正旧规则产生的 Codex 误判', () => {
+    const tracker = createTracker();
+    tracker.restore([{
+      key: 'codex:historical-false-positive',
+      source: 'codex',
+      sessionId: 'historical-false-positive',
+      status: 'needs_user',
+      title: '修复权限误报',
+      startedAt: '2026-08-18T08:00:00.000Z',
+      updatedAt: '2026-08-18T08:00:30.000Z',
+      needsUserReason: '真正停在侧栏等待批准的操作仍会提醒。',
+    }]);
+
+    expect(tracker.primary()).toMatchObject({ status: 'completed' });
+    expect(tracker.primary()).not.toHaveProperty('needsUserReason');
+  });
+
+  it('恢复状态时保留明确等待确认的 Codex 任务', () => {
+    const tracker = createTracker();
+    tracker.restore([{
+      key: 'codex:historical-user-decision',
+      source: 'codex',
+      sessionId: 'historical-user-decision',
+      status: 'needs_user',
+      title: '部署项目',
+      startedAt: '2026-08-18T08:00:00.000Z',
+      updatedAt: '2026-08-18T08:00:30.000Z',
+      needsUserReason: '部署前需要你确认环境，是否继续？',
+    }]);
+
+    expect(tracker.primary()).toMatchObject({
+      status: 'needs_user',
+      needsUserReason: '部署前需要你确认环境，是否继续？',
+    });
   });
 
   it('WorkBuddy 完成后的通用 idle_prompt 不会覆盖完成状态', () => {

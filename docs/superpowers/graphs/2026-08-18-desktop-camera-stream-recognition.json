@@ -1,0 +1,1110 @@
+{
+  "schema_version": 1,
+  "id": "desktop-camera-stream-recognition",
+  "title": "Desktop persistent camera stream with presence and face recognition",
+  "spec": "../specs/2026-08-18-desktop-camera-stream-recognition-design.md",
+  "plan": "../plans/2026-08-18-desktop-camera-stream-recognition.md",
+  "entry": "server-inference-domain",
+  "required_gates": [
+    "integration-verification"
+  ],
+  "nodes": [
+    {
+      "id": "server-inference-domain",
+      "title": "Build unified Server camera inference domain",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "approved-spec",
+        "approved-plan",
+        "existing-presence-agent-algorithms",
+        "verified-python-3.10-compatible-dependencies"
+      ],
+      "outputs": [
+        "protocol-parser",
+        "same-frame-inference-runtime",
+        "enrollment-collector",
+        "unified-dependency-set",
+        "focused-test-evidence"
+      ],
+      "pass_condition": "Task 1 protocol, same-frame inference, enrollment, compatibility, pip check, and real model initialization checks pass on unified Python 3.10 after observed RED failures",
+      "handler_skill": "superpowers:test-driven-development",
+      "required": true
+    },
+    {
+      "id": "rework-server-inference",
+      "title": "Diagnose Server inference or dependency failure",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "server-inference-failure-evidence"
+      ],
+      "outputs": [
+        "root-cause",
+        "minimal-correction"
+      ],
+      "pass_condition": "Root cause is isolated and the original Server inference node can be rerun without weakened assertions",
+      "handler_skill": "superpowers:systematic-debugging",
+      "required": false
+    },
+    {
+      "id": "server-websocket-session",
+      "title": "Integrate aiohttp stream session and registry",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "same-frame-inference-runtime",
+        "presence-registry-contract"
+      ],
+      "outputs": [
+        "websocket-route",
+        "bounded-frame-session",
+        "registry-integration",
+        "focused-test-evidence"
+      ],
+      "pass_condition": "Task 2 session, handler, route, registry, and legacy presence tests pass after observed RED failures",
+      "handler_skill": "superpowers:test-driven-development",
+      "required": true
+    },
+    {
+      "id": "rework-server-session",
+      "title": "Diagnose Server stream integration failure",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "server-session-failure-evidence"
+      ],
+      "outputs": [
+        "root-cause",
+        "minimal-correction"
+      ],
+      "pass_condition": "Root cause is isolated and the original Server WebSocket node can be rerun without weakened assertions",
+      "handler_skill": "superpowers:systematic-debugging",
+      "required": false
+    },
+    {
+      "id": "electron-transport",
+      "title": "Build Electron WebSocket transport and IPC",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "websocket-protocol",
+        "existing-camera-ipc"
+      ],
+      "outputs": [
+        "camera-stream-client",
+        "typed-ipc-contract",
+        "obsolete-http-removal",
+        "focused-test-evidence"
+      ],
+      "pass_condition": "Task 3 transport and IPC tests plus TypeScript typecheck pass after observed RED failures",
+      "handler_skill": "superpowers:test-driven-development",
+      "required": true
+    },
+    {
+      "id": "rework-electron-transport",
+      "title": "Diagnose Electron transport failure",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "electron-transport-failure-evidence"
+      ],
+      "outputs": [
+        "root-cause",
+        "minimal-correction"
+      ],
+      "pass_condition": "Root cause is isolated and the original Electron transport node can be rerun without weakened assertions",
+      "handler_skill": "superpowers:systematic-debugging",
+      "required": false
+    },
+    {
+      "id": "persistent-monitoring-ui",
+      "title": "Build app-level persistent monitoring and UI",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "typed-ipc-contract",
+        "approved-persistent-lifecycle"
+      ],
+      "outputs": [
+        "camera-monitoring-provider",
+        "video-frame-producer",
+        "registration-ui",
+        "recognition-ui",
+        "focused-test-evidence"
+      ],
+      "pass_condition": "Task 4 camera tests and typecheck prove monitoring survives navigation and reconnects until manual stop or app exit",
+      "handler_skill": "superpowers:test-driven-development",
+      "required": true
+    },
+    {
+      "id": "rework-persistent-ui",
+      "title": "Diagnose persistent monitoring UI failure",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "persistent-ui-failure-evidence"
+      ],
+      "outputs": [
+        "root-cause",
+        "minimal-correction"
+      ],
+      "pass_condition": "Root cause is isolated and the original persistent UI node can be rerun without weakened lifecycle assertions",
+      "handler_skill": "superpowers:systematic-debugging",
+      "required": false
+    },
+    {
+      "id": "integration-verification",
+      "title": "Verify the complete registration and monitoring chain",
+      "type": "gate",
+      "owner": "main-agent",
+      "inputs": [
+        "server-stream-implementation",
+        "desktop-stream-implementation",
+        "acceptance-criteria"
+      ],
+      "outputs": [
+        "fresh-python-tests",
+        "fresh-desktop-tests",
+        "typecheck",
+        "package",
+        "static-audit",
+        "hardware-smoke-or-explicit-gap"
+      ],
+      "pass_condition": "Task 5 integration, full Server and presence-agent tests, desktop test/typecheck/package, static checks, and available hardware smoke all pass with no unmet acceptance requirement",
+      "handler_skill": "superpowers:verification-before-completion",
+      "required": true
+    },
+    {
+      "id": "rework-integration",
+      "title": "Diagnose integration verification failure",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "integration-failure-evidence"
+      ],
+      "outputs": [
+        "root-cause",
+        "minimal-correction"
+      ],
+      "pass_condition": "Root cause is isolated, corrected, and the full integration gate can be rerun unchanged",
+      "handler_skill": "superpowers:systematic-debugging",
+      "required": false
+    },
+    {
+      "id": "scope-approval",
+      "title": "Approve a material scope or topology change",
+      "type": "approval",
+      "owner": "user",
+      "inputs": [
+        "updated-spec",
+        "updated-plan",
+        "updated-graph",
+        "scope-change-evidence"
+      ],
+      "outputs": [
+        "user-approval-evidence"
+      ],
+      "pass_condition": "User explicitly approves all revised artifacts before graph reinitialization",
+      "required": false
+    },
+    {
+      "id": "success",
+      "title": "Complete camera stream recognition",
+      "type": "terminal",
+      "owner": "main-agent",
+      "inputs": [
+        "required-gates"
+      ],
+      "outputs": [
+        "completion-report"
+      ],
+      "pass_condition": "The integration verification gate passed with fresh requirement-by-requirement evidence",
+      "outcome": "success",
+      "required": true
+    },
+    {
+      "id": "stopped",
+      "title": "Stop and report preserved evidence",
+      "type": "terminal",
+      "owner": "main-agent",
+      "inputs": [
+        "external-blocker-or-exhausted-rework"
+      ],
+      "outputs": [
+        "blocked-report"
+      ],
+      "pass_condition": "The blocker, completed work, and remaining acceptance gaps are reported without claiming completion",
+      "outcome": "stopped",
+      "required": false
+    }
+  ],
+  "edges": [
+    {
+      "from": "server-inference-domain",
+      "to": "server-websocket-session",
+      "event": "pass"
+    },
+    {
+      "from": "server-inference-domain",
+      "to": "rework-server-inference",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "server-inference-domain",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "server-inference-domain",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "rework-server-inference",
+      "to": "server-inference-domain",
+      "event": "pass",
+      "max_traversals": 2
+    },
+    {
+      "from": "rework-server-inference",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "rework-server-inference",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "rework-server-inference",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "server-websocket-session",
+      "to": "electron-transport",
+      "event": "pass"
+    },
+    {
+      "from": "server-websocket-session",
+      "to": "rework-server-session",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "server-websocket-session",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "server-websocket-session",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "rework-server-session",
+      "to": "server-websocket-session",
+      "event": "pass",
+      "max_traversals": 2
+    },
+    {
+      "from": "rework-server-session",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "rework-server-session",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "rework-server-session",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "electron-transport",
+      "to": "persistent-monitoring-ui",
+      "event": "pass"
+    },
+    {
+      "from": "electron-transport",
+      "to": "rework-electron-transport",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "electron-transport",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "electron-transport",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "rework-electron-transport",
+      "to": "electron-transport",
+      "event": "pass",
+      "max_traversals": 2
+    },
+    {
+      "from": "rework-electron-transport",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "rework-electron-transport",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "rework-electron-transport",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "persistent-monitoring-ui",
+      "to": "integration-verification",
+      "event": "pass"
+    },
+    {
+      "from": "persistent-monitoring-ui",
+      "to": "rework-persistent-ui",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "persistent-monitoring-ui",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "persistent-monitoring-ui",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "rework-persistent-ui",
+      "to": "persistent-monitoring-ui",
+      "event": "pass",
+      "max_traversals": 2
+    },
+    {
+      "from": "rework-persistent-ui",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "rework-persistent-ui",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "rework-persistent-ui",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "integration-verification",
+      "to": "success",
+      "event": "pass"
+    },
+    {
+      "from": "integration-verification",
+      "to": "rework-integration",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "integration-verification",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "integration-verification",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "rework-integration",
+      "to": "integration-verification",
+      "event": "pass",
+      "max_traversals": 2
+    },
+    {
+      "from": "rework-integration",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "rework-integration",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "rework-integration",
+      "to": "scope-approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "scope-approval",
+      "to": "server-inference-domain",
+      "event": "pass",
+      "max_traversals": 1
+    },
+    {
+      "from": "scope-approval",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "scope-approval",
+      "to": "stopped",
+      "event": "blocked"
+    }
+  ],
+  "runtime": {
+    "definition_hash": "b1a6dae70087d9a7935a97038aa2ea65e40ae5685238e2b78a5a97093cb15316",
+    "initialization_evidence": "用户于 2026-08-18 回复‘继续’，明确批准统一 Python 3.10、NumPy 1.26.4、OpenCV 4.11 的进程内推理 Spec、Plan 和执行图并授权继续实现",
+    "statuses": {
+      "server-inference-domain": "passed",
+      "rework-server-inference": "blocked",
+      "server-websocket-session": "passed",
+      "rework-server-session": "blocked",
+      "electron-transport": "passed",
+      "rework-electron-transport": "blocked",
+      "persistent-monitoring-ui": "passed",
+      "rework-persistent-ui": "blocked",
+      "integration-verification": "passed",
+      "rework-integration": "blocked",
+      "scope-approval": "blocked",
+      "success": "passed",
+      "stopped": "blocked"
+    },
+    "edge_traversals": {
+      "0:server-inference-domain:pass:server-websocket-session": 1,
+      "8:server-websocket-session:pass:electron-transport": 1,
+      "16:electron-transport:pass:persistent-monitoring-ui": 1,
+      "24:persistent-monitoring-ui:pass:integration-verification": 1,
+      "32:integration-verification:pass:success": 1
+    },
+    "history": [
+      {
+        "seq": 1,
+        "timestamp": "2026-08-18T11:40:00.596983+00:00",
+        "node": "server-inference-domain",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "ready",
+          "rework-server-inference": "pending",
+          "server-websocket-session": "pending",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "pending",
+          "success": "pending",
+          "stopped": "pending"
+        },
+        "statuses_after": {
+          "server-inference-domain": "running",
+          "rework-server-inference": "pending",
+          "server-websocket-session": "pending",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "pending",
+          "success": "pending",
+          "stopped": "pending"
+        },
+        "edge_traversals_before": {},
+        "edge_traversals_after": {},
+        "prev_hash": "",
+        "hash": "bbc1fbf78d79b9810b03d0655a9a0699bbb8f2b5268178d8ddcde778a0f08d16"
+      },
+      {
+        "seq": 2,
+        "timestamp": "2026-08-18T11:43:18.954273+00:00",
+        "node": "server-inference-domain",
+        "event": "pass",
+        "evidence": "Unified Python 3.10 RED/GREEN complete: packaging pin tests first failed on numpy 2.5.2/opencv 5.0.0.93 and duplicate Server requirements include, then passed after pins changed to numpy 1.26.4/opencv 4.11.0.86 and camera overlay install. Server protocol/inference/enrollment: 17 passed. presence-agent template/verifier/pose/state/integration/packaging: 30 passed, 1 skipped only because PowerShell is unavailable on macOS. pip check: no broken requirements. Real YuNet/SFace FaceEngine initialization: cv2=4.11.0 numpy=1.26.4 models=ok.",
+        "output": "core/camera_stream protocol,inference,enrollment; presence-agent package metadata and unified dependencies; requirements-camera overlay",
+        "activated": [
+          "server-websocket-session"
+        ],
+        "statuses_before": {
+          "server-inference-domain": "running",
+          "rework-server-inference": "pending",
+          "server-websocket-session": "pending",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "pending",
+          "success": "pending",
+          "stopped": "pending"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "ready",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {},
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1
+        },
+        "prev_hash": "bbc1fbf78d79b9810b03d0655a9a0699bbb8f2b5268178d8ddcde778a0f08d16",
+        "hash": "624ed5bded6bd87fe37e92cdf1febe995c8a2a95df98aa08499a1a790dd1a087"
+      },
+      {
+        "seq": 3,
+        "timestamp": "2026-08-18T11:52:02.996667+00:00",
+        "node": "server-websocket-session",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "ready",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "running",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1
+        },
+        "prev_hash": "624ed5bded6bd87fe37e92cdf1febe995c8a2a95df98aa08499a1a790dd1a087",
+        "hash": "e9bf8e5a513710d585c1dbb141befe3cca239643703d95b3fa75a2a896728a3f"
+      },
+      {
+        "seq": 4,
+        "timestamp": "2026-08-18T11:57:49.961893+00:00",
+        "node": "server-websocket-session",
+        "event": "pass",
+        "evidence": "Task 2 RED/GREEN complete. Latest-frame session tests: 4 passed. aiohttp WebSocket/auth/protocol/monitoring/enrollment/errors/stop/disconnect/runtime-threading plus presence registry/routes suite: 70 passed. Fixed cancellation-safe disconnect cleanup, enrollment sequence propagation, and nonblocking model factory. MediaPipe 1.0.1 actual macOS Pose init reproduced abort(134); pin changed via RED/GREEN to compatible 0.10.35. Unified environment pip check passes. Real default runtime created PoseLandmarker, decoded and processed a 640x360 JPEG, returned sequence 1 presence=starting identity=not_enrolled, and closed cleanly.",
+        "output": "aiohttp /xiaozhi/presence/stream; capacity-one CameraStreamSession; lazy in-process runtime factories; PresenceRegistry publication; Server route wiring",
+        "activated": [
+          "electron-transport"
+        ],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "running",
+          "rework-server-session": "pending",
+          "electron-transport": "pending",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "ready",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1
+        },
+        "prev_hash": "e9bf8e5a513710d585c1dbb141befe3cca239643703d95b3fa75a2a896728a3f",
+        "hash": "d8b390c13474e1bc94d56e344ab860d78440ad67b9f704f3821de0f7f9ad155d"
+      },
+      {
+        "seq": 5,
+        "timestamp": "2026-08-18T11:57:59.049256+00:00",
+        "node": "electron-transport",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "ready",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "running",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1
+        },
+        "prev_hash": "d8b390c13474e1bc94d56e344ab860d78440ad67b9f704f3821de0f7f9ad155d",
+        "hash": "a94a7908b76474053f04b73f4836787c356c03e6f1a9cbc7dda88bf4411b1cd4"
+      },
+      {
+        "seq": 6,
+        "timestamp": "2026-08-18T12:20:04.887451+00:00",
+        "node": "electron-transport",
+        "event": "pass",
+        "evidence": "Vitest camera main+feature focused: 9 files, 30 tests passed; npm run typecheck passed; legacy CameraHttpClient, FrameUploadScheduler, flat preload IPC, /api/vision/frames and uploadMonitoringFrame removed. Remaining setInterval is unrelated agent-hook spool watcher.",
+        "output": "",
+        "activated": [
+          "persistent-monitoring-ui"
+        ],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "running",
+          "rework-electron-transport": "pending",
+          "persistent-monitoring-ui": "pending",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "ready",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1
+        },
+        "prev_hash": "a94a7908b76474053f04b73f4836787c356c03e6f1a9cbc7dda88bf4411b1cd4",
+        "hash": "654b8be79de170b22e88a30d6816bdab742065bd8d5420ff1dff39d798779165"
+      },
+      {
+        "seq": 7,
+        "timestamp": "2026-08-18T12:20:05.064598+00:00",
+        "node": "persistent-monitoring-ui",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "ready",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "running",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1
+        },
+        "prev_hash": "654b8be79de170b22e88a30d6816bdab742065bd8d5420ff1dff39d798779165",
+        "hash": "389bbf896f954d04227e233df2a7646a857f7302011ad6697503e8b228b05041"
+      },
+      {
+        "seq": 8,
+        "timestamp": "2026-08-18T12:22:24.052454+00:00",
+        "node": "persistent-monitoring-ui",
+        "event": "pass",
+        "evidence": "App-root CameraMonitoringProvider and requestVideoFrameCallback producer implemented; navigation/reconnect/manual-stop/app-root cleanup/camera-recovery/enrollment/recognition UI tests pass. Desktop full Vitest: 30 files, 90 tests passed; npm run typecheck passed.",
+        "output": "",
+        "activated": [
+          "integration-verification"
+        ],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "running",
+          "rework-persistent-ui": "pending",
+          "integration-verification": "pending",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "ready",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1
+        },
+        "prev_hash": "389bbf896f954d04227e233df2a7646a857f7302011ad6697503e8b228b05041",
+        "hash": "c22539644dc64cdfb92955d1fd0120583505a8be3273683a0507a67729ddd41b"
+      },
+      {
+        "seq": 9,
+        "timestamp": "2026-08-18T12:22:24.214653+00:00",
+        "node": "integration-verification",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "ready",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "running",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1
+        },
+        "prev_hash": "c22539644dc64cdfb92955d1fd0120583505a8be3273683a0507a67729ddd41b",
+        "hash": "6d9442b40fc6c5cb0fa63165e25fed5d8a441d056336010a2e3c3acf2b10a980"
+      },
+      {
+        "seq": 10,
+        "timestamp": "2026-08-18T12:30:10.607860+00:00",
+        "node": "integration-verification",
+        "event": "pass",
+        "evidence": "Fresh evidence: Server 89 passed + compileall; integration 1 passed; presence-agent 59 passed, 1 PowerShell-only skipped; pip check clean; real NumPy 1.26.4/OpenCV 4.11.0/MediaPipe 0.10.35 runtime processed JPEG; Desktop 92 passed + typecheck + macOS arm64 package; static obsolete-path audit and diff check passed. Physical identity/minimize/server-restart smoke explicitly documented as user-hardware gap.",
+        "output": "",
+        "activated": [
+          "success"
+        ],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "running",
+          "rework-integration": "pending",
+          "scope-approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "passed",
+          "rework-integration": "blocked",
+          "scope-approval": "blocked",
+          "success": "ready",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1,
+          "32:integration-verification:pass:success": 1
+        },
+        "prev_hash": "6d9442b40fc6c5cb0fa63165e25fed5d8a441d056336010a2e3c3acf2b10a980",
+        "hash": "e4648ec05a19c261db1e80b5b0e1b9048fd2301ee6c6e6b6e4e195e69ee62210"
+      },
+      {
+        "seq": 11,
+        "timestamp": "2026-08-18T12:30:22.134882+00:00",
+        "node": "success",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "passed",
+          "rework-integration": "blocked",
+          "scope-approval": "blocked",
+          "success": "ready",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "passed",
+          "rework-integration": "blocked",
+          "scope-approval": "blocked",
+          "success": "running",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1,
+          "32:integration-verification:pass:success": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1,
+          "32:integration-verification:pass:success": 1
+        },
+        "prev_hash": "e4648ec05a19c261db1e80b5b0e1b9048fd2301ee6c6e6b6e4e195e69ee62210",
+        "hash": "c80c768bce77670e492d6aea624b444eb38709cb10f3561838cb0bd181c77710"
+      },
+      {
+        "seq": 12,
+        "timestamp": "2026-08-18T12:30:22.313083+00:00",
+        "node": "success",
+        "event": "pass",
+        "evidence": "All required graph gates passed with fresh automated evidence; physical hardware smoke remains explicitly recorded for user execution.",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "passed",
+          "rework-integration": "blocked",
+          "scope-approval": "blocked",
+          "success": "running",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "server-inference-domain": "passed",
+          "rework-server-inference": "blocked",
+          "server-websocket-session": "passed",
+          "rework-server-session": "blocked",
+          "electron-transport": "passed",
+          "rework-electron-transport": "blocked",
+          "persistent-monitoring-ui": "passed",
+          "rework-persistent-ui": "blocked",
+          "integration-verification": "passed",
+          "rework-integration": "blocked",
+          "scope-approval": "blocked",
+          "success": "passed",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1,
+          "32:integration-verification:pass:success": 1
+        },
+        "edge_traversals_after": {
+          "0:server-inference-domain:pass:server-websocket-session": 1,
+          "8:server-websocket-session:pass:electron-transport": 1,
+          "16:electron-transport:pass:persistent-monitoring-ui": 1,
+          "24:persistent-monitoring-ui:pass:integration-verification": 1,
+          "32:integration-verification:pass:success": 1
+        },
+        "prev_hash": "c80c768bce77670e492d6aea624b444eb38709cb10f3561838cb0bd181c77710",
+        "hash": "49bf398d077373be0fd4ba2c3e2f12de1eb1bc504777679716fc9090dfcab9ed"
+      }
+    ]
+  }
+}

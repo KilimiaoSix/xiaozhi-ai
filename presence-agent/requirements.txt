@@ -1,4 +1,4 @@
 aiohttp==3.13.2
-mediapipe==1.0.1
-numpy==2.5.2
-opencv-contrib-python==5.0.0.93
+mediapipe==0.10.35
+numpy==1.26.4
+opencv-contrib-python==4.11.0.86

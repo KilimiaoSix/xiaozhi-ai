@@ -41,6 +41,30 @@ server:
   mqtt_signature_key: null
   # UDP网关配置
   udp_gateway: null
+
+# 飞书每日关注晨报（Phase 0/1：只读预览，不主动发送消息）
+# 应用需开通：search:message、im:message:readonly、
+# im:message.p2p_msg:get_as_user、im:message.group_msg:get_as_user，
+# 启用日历源时另需 calendar:calendar:readonly。
+morning_brief:
+  enabled: false
+  base_url: https://open.feishu.cn
+  # 敏感值优先通过 FEISHU_USER_ACCESS_TOKEN 环境变量或 data/.config.yaml 提供。
+  user_access_token: ""
+  # 用户 open_id 也可通过 FEISHU_SELF_OPEN_ID 环境变量提供。
+  self_open_id: ""
+  # 关闭后不会请求日历接口，覆盖状态记为 DISABLED，不会把整体状态拖成 PARTIAL。
+  calendar_enabled: true
+  timezone: Asia/Shanghai
+  ledger_path: data/morning_brief.sqlite3
+  page_size: 50
+  max_pages: 40
+  timeout_seconds: 15
+  overlap_minutes: 10
+  excerpt_chars: 240
+  excerpt_retention_days: 7
+  resolved_retention_days: 30
+
 log:
   # 设置控制台输出的日志格式，时间、日志级别、标签、消息
   log_format: "<green>{time:YYMMDD HH:mm:ss}</green>[{version}_{selected_module}][<light-blue>{extra[tag]}</light-blue>]-<level>{level}</level>-<light-green>{message}</light-green>"
@@ -103,6 +127,14 @@ module_test:
     - "What's the weather like today?"
     - "请用100字概括量子计算的基本原理和应用前景"
 
+# 设备唤醒词。wakenet 是针对具体词训练的神经网络，只能在 esp-sr 预训练模型里选，
+# 不是任意字符串。用 scripts/pack_wake_word_assets.py 把模型打成 assets 包放进
+# data/bin/，服务端在设备 MCP 就绪后下发下载地址，设备下次启动生效。
+# 留空则设备沿用固件 model 分区里的兜底模型。display 会自动并入下面的 wakeup_words。
+wake_word:
+  display: ""
+  assets_file: ""
+
 # 唤醒词，用于识别唤醒词还是讲话内容
 wakeup_words:
   - "你好小智"
@@ -116,6 +148,25 @@ wakeup_words:
   - "喵喵同学"
   - "小滨小滨"
   - "小冰小冰"
+# 在岗状态驱动机器人（演示流程一「早晨到岗」）。
+# presence-agent 上报工位在岗与本人识别结果后，由 core/presence_arrival.py 决定
+# 什么时候让机器人迎接、什么时候休眠。默认关闭；工位与设备的对应关系写在
+# data/.config.yaml，不要把真实 MAC 提交进本文件。
+# 设计见 docs/superpowers/specs/2026-08-18-presence-arrival-orchestration-design.md
+presence_robot:
+  enabled: false
+  # workstation_id -> device_id（设备 MAC）
+  workstations: {}
+  # identity 迟迟不收敛时，等这么久就按「认不准」发通用问候，避免喊错人
+  identity_wait_seconds: 5
+  # 连续无人多久才休眠。上报心跳 15 秒一条，90 约等于 6 条心跳
+  absent_grace_seconds: 90
+  sleep_on_absent: true
+  # 认出本人时说这句，可以带称呼
+  greeting_owner: "早上好，今天也一起把事情搞定吧。"
+  # 认不准或不是本人时说这句，不能带姓名或任何个人信息
+  greeting_generic: "你好，我在这儿。"
+
 # MCP接入点地址，地址格式为：ws://你的mcp接入点ip或者域名:端口号/mcp/?token=你的token
 # 详细教程 https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
 mcp_endpoint: 你的接入点 websocket地址
@@ -184,6 +235,17 @@ plugins:
     max_results: 5
     # 秘塔API Key（mk-前缀） / Tavily API Key（tvly-前缀）
     api_key: "mk-xxx"
+
+# 番茄钟。计时权威在服务端，设备只负责渲染画面。
+# 经典循环：专注 → 短休 → …… → 第 long_break_interval 轮专注结束后长休 → 回到第 1 轮。
+# 这一整段都有代码默认值，不写也能跑。
+pomodoro:
+  focus_minutes: 25
+  short_break_minutes: 5
+  long_break_minutes: 15
+  # 每完成几轮专注后进入一次长休
+  long_break_interval: 4
+
 # 声纹识别配置
 voiceprint:
   # 声纹接口地址
@@ -288,6 +350,7 @@ Intent:
       - play_music
       #- hass_state
       #- hass_play_music
+      - pomodoro                    # 番茄钟语音控制（开始/暂停/继续/跳过/停止/查询）
 
 Memory:
   mem0ai:

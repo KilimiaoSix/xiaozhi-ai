@@ -10,6 +10,7 @@ import time
 
 import cv2
 
+from presence_agent.camera_backend import open_camera, permission_hint
 from presence_agent.face_template import OwnerTemplate, save_template
 from presence_agent.face_verifier import FaceEngine, build_centroid, sample_quality
 
@@ -62,9 +63,12 @@ def run(args) -> int:
         return 2
 
     engine = FaceEngine(args.detector_model, args.recognizer_model)
-    camera = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
+    camera = open_camera(cv2, args.camera)
     if not camera.isOpened():
         print(f"Cannot open camera index {args.camera}", file=sys.stderr)
+        hint = permission_hint()
+        if hint:
+            print(hint, file=sys.stderr)
         camera.release()
         return 1
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)

@@ -15,9 +15,7 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)
 export const createOwnedHookCommand = (
   options: OwnedHookCommandOptions,
 ): string => [
-  'ELECTRON_RUN_AS_NODE=1',
-  shellQuote(options.electronPath),
-  shellQuote(options.runnerPath),
+  shellQuote(options.launcherPath),
   '--owner',
   OWNED_HOOK_MARKER,
   '--source',
@@ -36,19 +34,35 @@ const groupHasOwnedHandler = (value: unknown): boolean =>
   && Array.isArray(value.hooks)
   && value.hooks.some(handlerIsOwned);
 
-const groupHasOwnedCommand = (value: unknown, command: string): boolean =>
+const hookTimeout = (
+  definition: AgentHookSourceDefinition,
+  eventName: string,
+): number =>
+  definition.source === 'codex' && eventName === 'SessionEnd' ? 3 : 5;
+
+const groupHasOwnedCommand = (
+  value: unknown,
+  command: string,
+  timeout: number,
+): boolean =>
   isRecord(value)
   && Array.isArray(value.hooks)
   && value.hooks.some((handler) =>
-    handlerIsOwned(handler) && handler.command === command);
+    handlerIsOwned(handler)
+    && handler.command === command
+    && handler.timeout === timeout);
 
-const refreshOwnedHandlers = (groups: unknown[], command: string): unknown[] =>
+const refreshOwnedHandlers = (
+  groups: unknown[],
+  command: string,
+  timeout: number,
+): unknown[] =>
   groups.map((group) => {
     if (!isRecord(group) || !Array.isArray(group.hooks)) return group;
     return {
       ...group,
       hooks: group.hooks.map((handler) =>
-        handlerIsOwned(handler) ? { ...handler, command } : handler),
+        handlerIsOwned(handler) ? { ...handler, command, timeout } : handler),
     };
   });
 
@@ -71,11 +85,16 @@ export const mergeOwnedHooks = (
   const hooks: JsonRecord = isRecord(config.hooks) ? config.hooks : {};
 
   for (const eventName of definition.events) {
+    const timeout = hookTimeout(definition, eventName);
     const current = hooks[eventName];
     if (current !== undefined && !Array.isArray(current)) {
       throw new Error(`${eventName} Hook 配置必须是数组`);
     }
-    const groups = refreshOwnedHandlers(Array.isArray(current) ? current : [], command);
+    const groups = refreshOwnedHandlers(
+      Array.isArray(current) ? current : [],
+      command,
+      timeout,
+    );
     if (groups.some(groupHasOwnedHandler)) {
       hooks[eventName] = groups;
       continue;
@@ -83,7 +102,7 @@ export const mergeOwnedHooks = (
 
     groups.push({
       ...(definition.toolEvents.includes(eventName) ? { matcher: '.*' } : {}),
-      hooks: [{ type: 'command', command, timeout: 5 }],
+      hooks: [{ type: 'command', command, timeout }],
     });
     hooks[eventName] = groups;
   }
@@ -135,6 +154,11 @@ export const ownedHooksMatchCommand = (
   return definition.events.every((eventName) => {
     const groups = hooks[eventName];
     return Array.isArray(groups)
-      && groups.some((group) => groupHasOwnedCommand(group, command));
+      && groups.some((group) =>
+        groupHasOwnedCommand(
+          group,
+          command,
+          hookTimeout(definition, eventName),
+        ));
   });
 };
