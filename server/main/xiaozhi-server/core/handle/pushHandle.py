@@ -139,8 +139,13 @@ async def push_alert_to_device(conn, text: str, emotion: str = DEFAULT_EMOTION,
     await conn.websocket.send(json.dumps(message))
 
 
-# 固件里 emotion 只驱动表情动画，不碰舵机（emotion_response_controller.cc:335
-# 的 happy 只 PlayAnimation）。要让云台动必须显式调 MCP 动作工具。
+# emotion 会连带驱动舵机，不只是画表情。链路是 Application::Alert ->
+# EmojiDisplay::SetEmotion -> emotion_controller_->TriggerEmotion ->
+# PlayAnimation(HAPPY) -> ExecuteHappyAnimation()，而该动画体内调了
+# servo_controller_->HeadUp(15)（emoji_controller.cc:971）；sleepy 同理调 HeadDown。
+# 早先这里写的「emotion 不碰舵机」是把追溯停在 PlayAnimation 就下的结论，并不成立。
+# 因此想要「抬头 + 笑脸」一条 emotion 就够，不必再叠一个 action——叠了反而让动作队列
+# 与动画队列同时抢 ServoController 的互斥锁。需要的是与表情无关的动作时才用下面的工具。
 # 注意工具名用下划线版：MCPClient 按 sanitize_tool_name 后的键存查，带点的名字查不到。
 ROBOT_ACTION_TOOL = "self_robot_play_action"
 IDLE_ANIMATION_TOOL = "self_robot_set_idle_animation"

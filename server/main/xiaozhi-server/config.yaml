@@ -124,6 +124,27 @@ wakeup_words:
   - "喵喵同学"
   - "小滨小滨"
   - "小冰小冰"
+# 在岗状态驱动机器人（演示流程一「早晨到岗」）。
+# presence-agent 上报工位在岗与本人识别结果后，由 core/presence_arrival.py 决定
+# 什么时候让机器人迎接、什么时候休眠。默认关闭；工位与设备的对应关系写在
+# data/.config.yaml，不要把真实 MAC 提交进本文件。
+# 设计见 docs/superpowers/specs/2026-08-18-presence-arrival-orchestration-design.md
+presence_robot:
+  enabled: false
+  # workstation_id -> device_id（设备 MAC）
+  workstations: {}
+  # identity 迟迟不收敛时，等这么久就按「认不准」发通用问候，避免喊错人
+  identity_wait_seconds: 5
+  # 连续无人多久才休眠。上报心跳 15 秒一条，90 约等于 6 条心跳
+  absent_grace_seconds: 90
+  sleep_on_absent: true
+  # 认出本人时说这句，可以带称呼
+  greeting_owner: "早上好，今天也一起把事情搞定吧。"
+  # 认不准或不是本人时说这句，不能带姓名或任何个人信息
+  greeting_generic: "你好，我在这儿。"
+
+# MCP接入点地址，地址格式为：ws://你的mcp接入点ip或者域名:端口号/mcp/?token=你的token
+# 详细教程 https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
 mcp_endpoint: 你的接入点 websocket地址
 
 # 上下文源配置
