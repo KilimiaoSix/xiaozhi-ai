@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -98,5 +99,37 @@ describe('EventSpool', () => {
 
     await expect(received).resolves.toBe('live');
     await spool.close();
+  });
+
+  it('fs.watch 资源错误时降级为轮询且不抛出未处理异常', async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), 'launchcrush-spool-'));
+    directories.push(rootPath);
+    const inboxPath = path.join(rootPath, 'inbox');
+    await mkdir(inboxPath, { recursive: true });
+    let factoryCalls = 0;
+    let closed = false;
+    const fakeWatcher = new EventEmitter() as EventEmitter & { close: () => void };
+    fakeWatcher.close = () => { closed = true; };
+    const spool = new EventSpool({
+      rootPath,
+      watchIntervalMs: 10,
+      watchFactory: () => {
+        factoryCalls += 1;
+        return fakeWatcher;
+      },
+    } as ConstructorParameters<typeof EventSpool>[0]);
+    const received = new Promise<string>((resolve) => {
+      spool.watch((hookEvent) => resolve(hookEvent.prompt!));
+    });
+
+    fakeWatcher.emit('error', Object.assign(new Error('too many open files'), {
+      code: 'EMFILE',
+    }));
+    await writeFile(path.join(inboxPath, 'fallback.json'), JSON.stringify(raw('fallback')));
+
+    await expect(received).resolves.toBe('fallback');
+    expect(factoryCalls).toBe(1);
+    await spool.close();
+    expect(closed).toBe(true);
   });
 });

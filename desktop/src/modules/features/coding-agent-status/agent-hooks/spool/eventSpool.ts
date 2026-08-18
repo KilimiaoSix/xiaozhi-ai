@@ -19,9 +19,15 @@ interface EventSpoolOptions {
   retentionDays?: number;
   maxHistoryBytes?: number;
   watchIntervalMs?: number;
+  watchFactory?: (target: string, listener: () => void) => WatcherLike;
 }
 
 type EventConsumer = (event: AgentEvent) => void | Promise<void>;
+
+interface WatcherLike {
+  close(): void;
+  on(event: 'error', listener: (error: Error) => void): unknown;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -49,7 +55,7 @@ export class EventSpool {
   private readonly retentionDays: number;
   private readonly maxHistoryBytes: number;
   private readonly watchIntervalMs: number;
-  private watcher?: FSWatcher;
+  private watcher?: WatcherLike;
   private interval?: ReturnType<typeof setInterval>;
   private consumeChain: Promise<void> = Promise.resolve();
 
@@ -72,7 +78,17 @@ export class EventSpool {
     if (this.watcher) return;
     mkdirSync(this.inboxPath, { recursive: true });
     const schedule = () => { void this.consumePending(consumer); };
-    this.watcher = watchFs(this.inboxPath, schedule);
+    const watchFactory = this.options.watchFactory
+      ?? ((target: string, listener: () => void): FSWatcher => watchFs(target, listener));
+    try {
+      this.watcher = watchFactory(this.inboxPath, schedule);
+      this.watcher.on('error', () => {
+        this.watcher?.close();
+        this.watcher = undefined;
+      });
+    } catch {
+      this.watcher = undefined;
+    }
     this.interval = setInterval(schedule, this.watchIntervalMs);
     schedule();
   }
@@ -163,4 +179,3 @@ export class EventSpool {
     await rename(eventPath, target);
   }
 }
-
