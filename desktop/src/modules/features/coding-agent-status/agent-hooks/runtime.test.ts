@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +8,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentEvent, AgentSource } from './contracts';
 import type { AgentHookDetection, AgentHookInstallResult } from './install/types';
 import { AgentHooksRuntime, type AgentHooksSpool } from './runtime';
+import { EventSpool } from './spool/eventSpool';
+import { HOOK_RUNNER_SOURCE } from './spool/hookRunnerSource';
 import { AgentTaskTracker } from './taskTracker';
 
 const directories: string[] = [];
@@ -95,12 +98,114 @@ const setup = async () => {
   return { directory, spool, runtime };
 };
 
+const invokeRunner = async (
+  runnerPath: string,
+  spoolPath: string,
+  source: AgentSource,
+  payload: Record<string, unknown>,
+): Promise<void> => new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [
+    runnerPath,
+    '--owner', 'launchcrush-agent-hook',
+    '--source', source,
+    '--spool', spoolPath,
+  ], { stdio: ['pipe', 'ignore', 'ignore'] });
+  child.once('error', reject);
+  child.once('close', (code) => {
+    if (code === 0) resolve();
+    else reject(new Error(`Hook runner exited with code ${code}`));
+  });
+  child.stdin.end(JSON.stringify(payload));
+});
+
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) =>
     rm(directory, { recursive: true, force: true })));
 });
 
 describe('AgentHooksRuntime', () => {
+  it('从三种真实 Hook runner 事件恢复完整四态任务快照', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'launchcrush-runtime-integration-'));
+    directories.push(directory);
+    const spoolPath = path.join(directory, 'spool');
+    const runnerPath = path.join(directory, 'launchcrush-hook.cjs');
+    await writeFile(runnerPath, HOOK_RUNNER_SOURCE, 'utf8');
+
+    const completePrompt = '实现全局 Agent Hook 监控\n完整保留第二行与所有上下文。';
+    await invokeRunner(runnerPath, spoolPath, 'codex', {
+      session_id: 'codex-running',
+      hook_event_name: 'UserPromptSubmit',
+      occurred_at: '2026-08-18T08:00:01.000Z',
+      cwd: '/workspace/codex-project',
+      prompt: completePrompt,
+    });
+    await invokeRunner(runnerPath, spoolPath, 'claude-code', {
+      session_id: 'claude-waiting',
+      hook_event_name: 'PermissionRequest',
+      occurred_at: '2026-08-18T08:00:02.000Z',
+      prompt: '执行需要确认的发布命令',
+      tool_name: 'Bash',
+    });
+    await invokeRunner(runnerPath, spoolPath, 'claude-code', {
+      session_id: 'claude-failed',
+      hook_event_name: 'StopFailure',
+      occurred_at: '2026-08-18T08:00:03.000Z',
+      prompt: '运行失败测试',
+      error: '测试进程退出码为 1',
+    });
+    await invokeRunner(runnerPath, spoolPath, 'workbuddy', {
+      session_id: 'workbuddy-completed',
+      hook_event_name: 'Stop',
+      occurred_at: '2026-08-18T08:00:04.000Z',
+      prompt: '完成腾讯 WorkBuddy 任务',
+      last_assistant_message: '任务已经完成。',
+    });
+
+    const runtime = new AgentHooksRuntime({
+      manager: createManager(),
+      spool: new EventSpool({ rootPath: spoolPath, watchIntervalMs: 60_000 }),
+      tracker: new AgentTaskTracker(() => new Date('2026-08-18T08:00:10.000Z')),
+      statePath: path.join(directory, 'state/tasks.json'),
+      now: () => new Date('2026-08-18T08:00:10.000Z'),
+    });
+    await runtime.start();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.primaryTask).toMatchObject({
+      source: 'claude-code',
+      sessionId: 'claude-waiting',
+      status: 'needs_user',
+    });
+    expect(snapshot.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'codex',
+        sessionId: 'codex-running',
+        status: 'running',
+        prompt: completePrompt,
+        cwd: '/workspace/codex-project',
+      }),
+      expect.objectContaining({
+        source: 'claude-code',
+        sessionId: 'claude-waiting',
+        status: 'needs_user',
+      }),
+      expect.objectContaining({
+        source: 'claude-code',
+        sessionId: 'claude-failed',
+        status: 'failed',
+        error: '测试进程退出码为 1',
+      }),
+      expect.objectContaining({
+        source: 'workbuddy',
+        sessionId: 'workbuddy-completed',
+        status: 'completed',
+      }),
+    ]));
+    expect(snapshot.actionIntents).toEqual([]);
+
+    await runtime.stop();
+  });
+
   it('恢复离线事件但不生成过期机器人动作', async () => {
     const { runtime, spool } = await setup();
     spool.recovered.push(event('UserPromptSubmit', {
