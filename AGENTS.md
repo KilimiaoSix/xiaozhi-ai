@@ -22,7 +22,8 @@
 
 ## 职责划分
 
-- **桌面应用：** 负责接收工作事件、Agent 判断、界面展示、记忆和机器人通信，是系统的主要大脑。
+- **桌面应用：** 负责接收工作事件、Agent 判断、界面展示和记忆，是系统的主要大脑；通过 HTTP 与 Server 通信，不直接连接机器人。
+- **Server：** 向桌面应用提供 HTTP 接口，并通过 WebSocket 与 ESP32-S3 机器人保持双向通信。
 - **ESP32-S3 机器人：** 负责执行预设动作、灯光或声音，不独立承担复杂决策。
 - **Codex、Claude Code、WorkBuddy：** 作为工作事件来源，提供运行、完成、失败和等待介入等状态。
 
@@ -37,6 +38,7 @@
 ## 项目约定
 
 - 项目文档默认使用中文，代码标识符和协议字段可以保留英文。
-- 当前仓库尚未确定技术栈，不要虚构安装、构建或测试命令。
-- 技术栈确定后，及时在 README 和本文件中补充实际可运行的命令。
+- 桌面端位于 `desktop/`，技术栈为 Electron Forge、Vite、React 和 TypeScript。
+- 桌面端开发命令：`cd desktop && npm install && npm run dev`。
+- 桌面端验证命令：`cd desktop && npm test && npm run typecheck && npm run package`。
 - 开发时优先验证“事件进入 → Agent 判断 → 桌面反馈 → 机器人动作”这条完整链路。

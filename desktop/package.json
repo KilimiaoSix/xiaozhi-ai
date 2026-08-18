@@ -1,0 +1,37 @@
+{
+  "name": "xiaofei-deskbot",
+  "productName": "小飞桌面机器人",
+  "version": "0.1.0",
+  "description": "小飞桌面机器人的 Electron 控制台",
+  "main": ".vite/build/main.js",
+  "private": true,
+  "scripts": {
+    "dev": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ electron-forge start",
+    "start": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ electron-forge start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-deb": "^7.11.2",
+    "@electron-forge/maker-rpm": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
+    "@electron-forge/plugin-vite": "^7.11.2",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "electron": "^43.4.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
