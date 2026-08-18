@@ -141,7 +141,8 @@ describe('AgentHooksRuntime', () => {
     });
     await invokeRunner(runnerPath, spoolPath, 'claude-code', {
       session_id: 'claude-waiting',
-      hook_event_name: 'PermissionRequest',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
       occurred_at: '2026-08-18T08:00:02.000Z',
       prompt: '执行需要确认的发布命令',
       tool_name: 'Bash',
@@ -236,9 +237,10 @@ describe('AgentHooksRuntime', () => {
       prompt: '执行完整 Hook 集成',
       occurredAt: '2026-08-18T08:00:10.000Z',
     }));
-    await spool.emitLive(event('PermissionRequest', {
+    await spool.emitLive(event('Notification', {
       id: 'permission-1',
       toolName: 'Bash',
+      notificationType: 'permission_prompt',
       occurredAt: '2026-08-18T08:00:10.000Z',
     }));
 

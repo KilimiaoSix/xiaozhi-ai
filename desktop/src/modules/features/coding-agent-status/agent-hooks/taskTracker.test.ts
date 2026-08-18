@@ -25,6 +25,7 @@ describe('AgentTaskTracker', () => {
     const tracker = createTracker();
 
     tracker.apply(event('UserPromptSubmit', {
+      source: 'claude-code',
       prompt: '修复登录失败\n运行全部回归测试',
       cwd: '/repo',
     }));
@@ -35,14 +36,44 @@ describe('AgentTaskTracker', () => {
       cwd: '/repo',
     });
 
-    tracker.apply(event('PermissionRequest', { toolName: 'Bash' }));
+    tracker.apply(event('Notification', {
+      source: 'claude-code',
+      notificationType: 'permission_prompt',
+      toolName: 'Bash',
+    }));
     expect(tracker.primary()).toMatchObject({
       status: 'needs_user',
       needsUserReason: 'Bash 需要用户确认',
     });
 
-    tracker.apply(event('Stop', { finalMessage: '修复和测试均已完成。' }));
+    tracker.apply(event('Stop', {
+      source: 'claude-code',
+      finalMessage: '修复和测试均已完成。',
+    }));
     expect(tracker.primary()).toMatchObject({ status: 'completed' });
+  });
+
+  it('不把三端可自动处理的 PermissionRequest 误报为用户介入', () => {
+    const tracker = createTracker();
+
+    for (const source of ['codex', 'claude-code', 'workbuddy'] as const) {
+      tracker.apply(event('UserPromptSubmit', {
+        source,
+        sessionId: `${source}-auto-approval`,
+        prompt: '运行 Bash 任务',
+      }));
+      tracker.apply(event('PermissionRequest', {
+        source,
+        sessionId: `${source}-auto-approval`,
+        toolName: 'Bash',
+      }));
+    }
+
+    expect(tracker.list()).toEqual([
+      expect.objectContaining({ source: 'codex', status: 'running' }),
+      expect.objectContaining({ source: 'claude-code', status: 'running' }),
+      expect.objectContaining({ source: 'workbuddy', status: 'running' }),
+    ]);
   });
 
   it('Stop 在后台任务运行或最终回复提问时不会误报完成', () => {
@@ -145,12 +176,13 @@ describe('AgentTaskTracker', () => {
     tracker.apply(event('StopFailure', {
       source: 'workbuddy', sessionId: 'failed', error: '失败任务',
     }));
-    tracker.apply(event('PermissionRequest', {
-      source: 'codex', sessionId: 'waiting', toolName: 'Bash',
+    tracker.apply(event('Notification', {
+      source: 'claude-code', sessionId: 'waiting', toolName: 'Bash',
+      notificationType: 'permission_prompt',
     }));
 
     expect(tracker.primary()).toMatchObject({
-      key: 'codex:waiting',
+      key: 'claude-code:waiting',
       status: 'needs_user',
     });
     expect(tracker.list()).toHaveLength(4);
@@ -160,15 +192,18 @@ describe('AgentTaskTracker', () => {
     const tracker = createTracker();
     const start = event('UserPromptSubmit', {
       id: 'stable-start',
+      source: 'claude-code',
       occurredAt: '2026-08-18T08:05:00.000Z',
       prompt: '开始任务',
     });
 
     tracker.apply(start);
     tracker.apply(start);
-    tracker.apply(event('PermissionRequest', {
+    tracker.apply(event('Notification', {
+      source: 'claude-code',
       occurredAt: '2026-08-18T08:05:00.000Z',
       toolName: 'Bash',
+      notificationType: 'permission_prompt',
     }));
 
     expect(tracker.drainActionIntents()).toEqual([
