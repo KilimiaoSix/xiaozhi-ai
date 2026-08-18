@@ -11,7 +11,7 @@ STATE_COLORS = {
 }
 
 
-def render_frame(frame, observation, state, fps):
+def render_frame(frame, observation, state, fps, identity=None):
     cv2 = import_module("cv2")
     color = STATE_COLORS[state.value]
     cv2.putText(
@@ -34,4 +34,15 @@ def render_frame(frame, observation, state, fps):
         1,
         cv2.LINE_AA,
     )
+    if identity is not None:
+        cv2.putText(
+            frame,
+            f"Identity: {identity['state']}",
+            (20, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (240, 240, 240),
+            1,
+            cv2.LINE_AA,
+        )
     return frame

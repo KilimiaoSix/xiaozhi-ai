@@ -77,6 +77,42 @@ async def test_report_then_query_returns_normalized_envelope(aiohttp_client, pay
 
 
 @pytest.mark.asyncio
+async def test_report_then_query_returns_identity(aiohttp_client, payload):
+    payload["identity"] = {
+        "state": "unknown",
+        "previous_state": "owner",
+        "changed": True,
+        "face_count": 1,
+        "similarity": 0.22,
+    }
+    client = await make_client(aiohttp_client)
+
+    response = await client.post("/xiaozhi/presence/report", json=payload)
+    query = await client.get("/xiaozhi/presence/desk-test")
+
+    assert response.status == 200
+    assert (await query.json())["data"]["identity"] == payload["identity"]
+
+
+@pytest.mark.asyncio
+async def test_unhashable_identity_state_returns_validation_error(
+    aiohttp_client, payload
+):
+    payload["identity"] = {
+        "state": [],
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 0,
+    }
+    client = await make_client(aiohttp_client)
+
+    response = await client.post("/xiaozhi/presence/report", json=payload)
+
+    assert response.status == 400
+    assert (await response.json())["code"] == "PRESENCE_INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
 async def test_latest_event_retry_is_idempotent(aiohttp_client, payload):
     client = await make_client(aiohttp_client)
     await client.post("/xiaozhi/presence/report", json=payload)

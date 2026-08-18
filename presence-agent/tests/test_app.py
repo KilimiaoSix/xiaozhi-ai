@@ -4,7 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from presence_agent.app import _strict_timestamp_ms, parse_args, run
+from presence_agent.app import (
+    _default_face_verifier_factory,
+    _strict_timestamp_ms,
+    parse_args,
+    run,
+)
+from presence_agent.face_verifier import FaceIdentity, FaceState
 from presence_agent.pose_detector import Landmark, PoseObservation
 from presence_agent.state import PresenceState
 
@@ -71,6 +77,7 @@ class FakeDetector:
     def __init__(self, observations):
         self.observations = deque(observations)
         self.timestamps = []
+        self.frames = []
         self.closed = False
 
     def __enter__(self):
@@ -80,6 +87,7 @@ class FakeDetector:
         self.closed = True
 
     def detect(self, frame, timestamp_ms):
+        self.frames.append(frame)
         self.timestamps.append(timestamp_ms)
         return self.observations.popleft()
 
@@ -94,6 +102,38 @@ class FakeReporter:
     def step(self, now_monotonic):
         self.step_calls += 1
         return 0.1
+
+
+class FakeFaceVerifier:
+    def __init__(self):
+        self.frames = []
+        self.identity = FaceIdentity(
+            FaceState.STARTING, FaceState.STARTING, False, 0
+        )
+
+    def observe(self, frame, now_seconds):
+        self.frames.append(frame)
+        if len(self.frames) == 3:
+            self.identity = FaceIdentity(
+                FaceState.OWNER, FaceState.STARTING, True, 1, 0.72
+            )
+        return self.identity
+
+    def camera_error(self, camera):
+        self.identity = FaceIdentity(
+            FaceState.CAMERA_ERROR,
+            self.identity.state,
+            True,
+            0,
+            camera=camera,
+        )
+        return self.identity
+
+    def camera_recovered(self):
+        self.identity = FaceIdentity(
+            FaceState.STARTING, self.identity.state, True, 0
+        )
+        return self.identity
 
 
 class FakeThread:
@@ -123,12 +163,22 @@ def make_args(model, **overrides):
         "preview": False,
         "smoke_frames": 3,
         "camera_retry_seconds": 0.01,
+        "face_verification": True,
+        "face_detector_model": Path("face-detector.onnx"),
+        "face_recognizer_model": Path("face-recognizer.onnx"),
+        "face_template": Path("owner-template.npz"),
+        "face_threshold": 0.45,
+        "face_hits": 3,
+        "no_face_delay": 1.0,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
 def dependencies(cv2, detector, capture):
+    face_verifier = FakeFaceVerifier()
+    capture["face_verifier"] = face_verifier
+
     def reporter_factory(latest, args):
         capture["latest"] = latest
         capture["reporter"] = FakeReporter()
@@ -138,6 +188,7 @@ def dependencies(cv2, detector, capture):
         "cv2_module": cv2,
         "detector_factory": lambda model: detector,
         "reporter_factory": reporter_factory,
+        "face_verifier_factory": lambda args: face_verifier,
         "thread_factory": FakeThread,
         "sleep": lambda seconds: None,
         "monotonic": iter([1.0, 1.1, 1.2, 1.3, 1.4, 1.5]).__next__,
@@ -153,6 +204,10 @@ def test_parse_args_has_headless_service_defaults():
     assert args.smoke_frames == 0
     assert args.heartbeat_seconds == 15.0
     assert args.workstation_id
+    assert args.face_verification is True
+    assert args.face_threshold == 0.45
+    assert args.face_hits == 3
+    assert args.no_face_delay == 1.0
 
 
 @pytest.mark.parametrize(
@@ -182,10 +237,23 @@ def test_missing_model_returns_configuration_error(tmp_path):
     assert run(args) == 2
 
 
+def test_missing_face_models_fail_even_when_template_is_not_enrolled(tmp_path):
+    args = make_args(
+        tmp_path / "pose.task",
+        face_detector_model=tmp_path / "missing-detector.onnx",
+        face_recognizer_model=tmp_path / "missing-recognizer.onnx",
+        face_template=tmp_path / "missing-template.npz",
+    )
+
+    with pytest.raises(FileNotFoundError, match="Face model"):
+        _default_face_verifier_factory(args)
+
+
 def test_smoke_frames_publish_present_and_clean_up(tmp_path):
     model = tmp_path / "model.task"
     model.write_bytes(b"model")
-    camera = FakeCamera(True, [(True, object()) for _ in range(3)])
+    frames = [object() for _ in range(3)]
+    camera = FakeCamera(True, [(True, frame) for frame in frames])
     cv2 = FakeCv2([camera])
     detector = FakeDetector([visible_pose(), visible_pose(), visible_pose()])
     capture = {}
@@ -195,6 +263,10 @@ def test_smoke_frames_publish_present_and_clean_up(tmp_path):
     assert result == 0
     assert capture["latest"].read().state is PresenceState.PRESENT
     assert capture["latest"].read().metrics["visible_core_landmarks"] == 4
+    assert capture["latest"].read().identity["state"] == "owner"
+    assert capture["latest"].read().identity["similarity"] == 0.72
+    assert detector.frames == frames
+    assert capture["face_verifier"].frames == frames
     assert detector.timestamps == sorted(set(detector.timestamps))
     assert camera.released is True
     assert detector.closed is True

@@ -9,9 +9,16 @@ param(
     [double]$HeartbeatSeconds = 15.0,
     [double]$CameraRetrySeconds = 5.0,
     [string]$Model = "",
+    [string]$FaceDetectorModel = "",
+    [string]$FaceRecognizerModel = "",
+    [string]$FaceTemplate = "",
+    [double]$FaceThreshold = 0.45,
+    [int]$FaceHits = 3,
+    [double]$NoFaceDelay = 1.0,
     [int]$SmokeFrames = 0,
     [string]$PythonExe = "python",
-    [switch]$Preview
+    [switch]$Preview,
+    [switch]$DisableFaceVerification
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +51,15 @@ $arguments = @(
 if ($Model) {
     $arguments += @("--model", $Model)
 }
+if ($FaceDetectorModel) { $arguments += @("--face-detector-model", $FaceDetectorModel) }
+if ($FaceRecognizerModel) { $arguments += @("--face-recognizer-model", $FaceRecognizerModel) }
+if ($FaceTemplate) { $arguments += @("--face-template", $FaceTemplate) }
+$arguments += @(
+    "--face-threshold", $FaceThreshold,
+    "--face-hits", $FaceHits,
+    "--no-face-delay", $NoFaceDelay
+)
+if ($DisableFaceVerification) { $arguments += "--disable-face-verification" }
 if ($Preview) {
     $arguments += "--preview"
 }

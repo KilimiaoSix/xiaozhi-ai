@@ -66,6 +66,90 @@ def test_parses_valid_report(payload):
     assert report.observed_at == NOW
 
 
+def test_optional_identity_round_trips_and_legacy_payload_remains_valid(payload):
+    assert parse(payload).identity is None
+    payload["identity"] = {
+        "state": "owner",
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 1,
+        "similarity": 0.712346,
+    }
+    clock = FakeClock()
+    registry = PresenceRegistry(clock=clock)
+
+    registry.accept(parse(payload, clock.utcnow()))
+    state = registry.get("desk-test")
+
+    assert state["identity"] == payload["identity"]
+    payload["identity"]["state"] = "unknown"
+    assert registry.get("desk-test")["identity"]["state"] == "owner"
+
+
+def test_accepts_identity_only_transition_reason(payload):
+    payload.update(
+        state="present",
+        previous_state="present",
+        changed=False,
+        reason="identity_changed",
+        identity={
+            "state": "unknown",
+            "previous_state": "owner",
+            "changed": True,
+            "face_count": 1,
+            "similarity": 0.2,
+        },
+    )
+
+    assert parse(payload).reason == "identity_changed"
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"state": "visitor"},
+        {
+            "state": [],
+            "previous_state": "starting",
+            "changed": True,
+            "face_count": 0,
+        },
+        {
+            "state": "owner",
+            "previous_state": "owner",
+            "changed": True,
+            "face_count": 1,
+        },
+        {
+            "state": "owner",
+            "previous_state": "starting",
+            "changed": True,
+            "face_count": 2,
+            "similarity": 0.7,
+        },
+        {
+            "state": "no_face",
+            "previous_state": "owner",
+            "changed": True,
+            "face_count": 0,
+            "similarity": 0.7,
+        },
+        {
+            "state": "unknown",
+            "previous_state": "owner",
+            "changed": True,
+            "face_count": 1,
+            "embedding": [0.1, 0.2],
+        },
+    ],
+)
+def test_rejects_invalid_identity(payload, identity):
+    payload["identity"] = identity
+
+    with pytest.raises(PresenceValidationError, match="identity"):
+        parse(payload)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

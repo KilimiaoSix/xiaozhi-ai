@@ -91,13 +91,21 @@ cd server/main/xiaozhi-server && python app.py
 > 私有配置放在 `server/main/xiaozhi-server/data/.config.yaml`，该目录已被 `.gitignore` 排除，
 > 不要把真实密钥提交进仓库。
 
-## 运行工位在岗检测
+## 运行工位在岗与本人识别
 
 Windows 本地演示可从仓库根目录一键启动：
 
 ```powershell
 .\run-presence-stack.ps1 -WorkstationId desk-tfzhang11
 ```
+
+首次使用先登记本人，登记成功后脚本继续启动完整检测链路：
+
+```powershell
+.\run-presence-stack.ps1 -WorkstationId desk-tfzhang11 -EnrollOwner
+```
+
+替换模板时增加 `-ForceEnrollment`；删除本地模板使用 `-DeleteFaceTemplate`。未登记时在岗检测仍正常运行，接口返回 `identity.state=not_enrolled`。
 
 脚本会优先复用 `http://127.0.0.1:8003` 上已运行且支持 presence API 的完整 Server。未找到时默认启动复用同一 Registry/Handler 的轻量 presence-only Server；若要由脚本启动完整 Server，显式传入其 Python 解释器：
 
@@ -116,9 +124,10 @@ $env:PRESENCE_AUTH_TOKEN = "<server.auth_key>"
   -WorkstationId desk-tfzhang11
 ```
 
-首次运行自动创建 `presence-agent/.venv` 并安装固定版本依赖。摄像头帧和完整人体关键点只在本机进程内使用，不上传到 Server。设计与接口见：
+首次运行自动创建 `presence-agent/.venv` 并安装固定版本依赖。同一采集循环完成 MediaPipe Pose 与 YuNet/SFace 推理，避免两个进程争用摄像头。摄像头帧、完整人体关键点、人脸 embedding 和本人模板只在本机使用，不上传到 Server；本人模板保存在被 Git 忽略的 `presence-agent/.runtime/owner_template.npz`。设计与接口见：
 
 - [`docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md`](docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md)
+- [`docs/superpowers/specs/2026-08-18-face-verification-integration-design.md`](docs/superpowers/specs/2026-08-18-face-verification-integration-design.md)
 - [`docs/api/camera-presence-api.md`](docs/api/camera-presence-api.md)
 
 ## 构建下位机 firmware

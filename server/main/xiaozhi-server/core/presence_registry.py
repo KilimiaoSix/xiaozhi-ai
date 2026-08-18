@@ -22,6 +22,7 @@ REASONS = frozenset(
         "camera_open_failed",
         "camera_read_failed",
         "camera_recovered",
+        "identity_changed",
         "heartbeat",
     }
 )
@@ -42,6 +43,7 @@ REPORT_FIELDS = frozenset(
         "sequence",
         "observed_at",
         "metrics",
+        "identity",
     }
 )
 METRIC_FIELDS = frozenset(
@@ -52,6 +54,21 @@ METRIC_FIELDS = frozenset(
         "seconds_since_last_positive",
     }
 )
+IDENTITY_STATES = frozenset(
+    {
+        "starting",
+        "not_enrolled",
+        "owner",
+        "unknown",
+        "multiple_faces",
+        "no_face",
+        "camera_error",
+    }
+)
+IDENTITY_REQUIRED_FIELDS = frozenset(
+    {"state", "previous_state", "changed", "face_count"}
+)
+IDENTITY_OPTIONAL_FIELDS = frozenset({"similarity", "camera"})
 
 
 class PresenceValidationError(ValueError):
@@ -143,6 +160,74 @@ def _validate_metrics(value: Any) -> dict[str, Any]:
     return metrics
 
 
+def _validate_identity(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise PresenceValidationError("identity must be a json object")
+    missing = IDENTITY_REQUIRED_FIELDS - set(value)
+    unexpected = set(value) - IDENTITY_REQUIRED_FIELDS - IDENTITY_OPTIONAL_FIELDS
+    if missing:
+        raise PresenceValidationError(
+            f"identity missing required fields: {', '.join(sorted(missing))}"
+        )
+    if unexpected:
+        raise PresenceValidationError(
+            f"identity unexpected fields: {', '.join(sorted(unexpected))}"
+        )
+
+    identity = deepcopy(value)
+    state = identity["state"]
+    previous_state = identity["previous_state"]
+    if (
+        not isinstance(state, str)
+        or not isinstance(previous_state, str)
+        or state not in IDENTITY_STATES
+        or previous_state not in IDENTITY_STATES
+    ):
+        raise PresenceValidationError("identity state must be a supported value")
+    changed = identity["changed"]
+    if not isinstance(changed, bool) or changed != (state != previous_state):
+        raise PresenceValidationError(
+            "identity changed must equal state != previous_state"
+        )
+    face_count = identity["face_count"]
+    if isinstance(face_count, bool) or not isinstance(face_count, int) or face_count < 0:
+        raise PresenceValidationError("identity face_count must be a nonnegative integer")
+    if state in {"owner", "unknown"} and face_count != 1:
+        raise PresenceValidationError("identity owner/unknown face_count must be 1")
+    if state == "multiple_faces" and face_count < 2:
+        raise PresenceValidationError("identity multiple_faces face_count must be at least 2")
+    if state in {"starting", "not_enrolled", "no_face", "camera_error"} and face_count != 0:
+        raise PresenceValidationError(f"identity {state} face_count must be 0")
+
+    similarity = identity.get("similarity")
+    if state in {"owner", "unknown"} and similarity is None:
+        raise PresenceValidationError("identity similarity is required for owner/unknown")
+    if similarity is not None:
+        if (
+            state not in {"owner", "unknown"}
+            or isinstance(similarity, bool)
+            or not isinstance(similarity, (int, float))
+            or not math.isfinite(similarity)
+            or not -1 <= similarity <= 1
+        ):
+            raise PresenceValidationError(
+                "identity similarity must be finite from -1 to 1 for owner/unknown"
+            )
+
+    camera = identity.get("camera")
+    if camera is not None:
+        if (
+            state != "camera_error"
+            or isinstance(camera, bool)
+            or not isinstance(camera, int)
+            or camera < 0
+        ):
+            raise PresenceValidationError(
+                "identity camera must be a nonnegative integer for camera_error"
+            )
+    return identity
+
+
 @dataclass(frozen=True)
 class PresenceReport:
     schema_version: str
@@ -157,6 +242,7 @@ class PresenceReport:
     sequence: int
     observed_at: datetime
     metrics: dict[str, Any]
+    identity: dict[str, Any] | None
 
     @classmethod
     def from_payload(
@@ -165,7 +251,7 @@ class PresenceReport:
         if not isinstance(payload, dict):
             raise PresenceValidationError("body must be a json object")
 
-        missing = REPORT_FIELDS - set(payload)
+        missing = REPORT_FIELDS - {"identity"} - set(payload)
         if missing:
             raise PresenceValidationError(
                 f"missing required fields: {', '.join(sorted(missing))}"
@@ -224,6 +310,11 @@ class PresenceReport:
             sequence=sequence,
             observed_at=_parse_observed_at(payload["observed_at"], now_utc),
             metrics=_validate_metrics(payload["metrics"]),
+            identity=(
+                _validate_identity(payload["identity"])
+                if "identity" in payload
+                else None
+            ),
         )
 
 
@@ -308,7 +399,7 @@ class PresenceRegistry:
             age_seconds = max(0.0, self._clock.monotonic() - record.received_monotonic)
             age_seconds = round(age_seconds, 3)
             report = record.report
-            return {
+            result = {
                 "workstation_id": report.workstation_id,
                 "source": report.source,
                 "effective_state": (
@@ -328,3 +419,6 @@ class PresenceRegistry:
                 "stale_after_seconds": self._stale_after_seconds,
                 "metrics": deepcopy(report.metrics),
             }
+            if report.identity is not None:
+                result["identity"] = deepcopy(report.identity)
+            return result

@@ -102,7 +102,7 @@ class PresenceReporter:
 
     def _build_event(self, snapshot: PresenceSnapshot, heartbeat: bool) -> dict:
         self._sequence += 1
-        return {
+        event = {
             "schema_version": "1.0",
             "event_id": self._event_id_factory(),
             "agent_instance_id": self._agent_instance_id,
@@ -118,6 +118,12 @@ class PresenceReporter:
             "observed_at": self._format_timestamp(snapshot),
             "metrics": deepcopy(snapshot.metrics),
         }
+        if snapshot.identity is not None:
+            event["identity"] = deepcopy(snapshot.identity)
+            if heartbeat:
+                event["identity"]["previous_state"] = event["identity"]["state"]
+                event["identity"]["changed"] = False
+        return event
 
     def _replace_pending(self, snapshot: PresenceSnapshot, now_monotonic: float) -> None:
         self._pending = self._build_event(snapshot, heartbeat=False)

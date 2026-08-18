@@ -184,3 +184,108 @@ def test_serialized_report_never_contains_camera_data(setup_reporter):
     assert "frame" not in payload
     assert "image" not in payload
     assert "landmarks" not in payload
+
+
+def test_identity_is_serialized_as_separate_optional_dimension(setup_reporter):
+    latest, transport, reporter = setup_reporter
+    latest.publish(
+        PresenceState.PRESENT,
+        "pose_confirmed",
+        NOW,
+        {"positive_streak": 3},
+        identity={
+            "state": "owner",
+            "previous_state": "starting",
+            "changed": True,
+            "face_count": 1,
+            "similarity": 0.712346,
+        },
+    )
+
+    reporter.step(0.0)
+
+    assert transport.attempts[-1]["identity"] == {
+        "state": "owner",
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 1,
+        "similarity": 0.712346,
+    }
+    assert "embedding" not in str(transport.attempts[-1]).lower()
+
+
+def test_identity_only_transition_and_heartbeat_do_not_repeat_other_transitions(
+    setup_reporter,
+):
+    latest, transport, reporter = setup_reporter
+    reporter.step(0.0)
+    latest.publish(
+        PresenceState.PRESENT,
+        "pose_confirmed",
+        NOW,
+        {},
+        identity={
+            "state": "owner",
+            "previous_state": "starting",
+            "changed": True,
+            "face_count": 1,
+            "similarity": 0.7,
+        },
+    )
+    reporter.step(0.1)
+    latest.publish(
+        PresenceState.PRESENT,
+        "pose_confirmed",
+        NOW + timedelta(seconds=1),
+        {},
+        identity={
+            "state": "unknown",
+            "previous_state": "owner",
+            "changed": True,
+            "face_count": 1,
+            "similarity": 0.2,
+        },
+    )
+
+    reporter.step(0.2)
+    identity_transition = transport.attempts[-1]
+    assert identity_transition["state"] == "present"
+    assert identity_transition["previous_state"] == "present"
+    assert identity_transition["changed"] is False
+    assert identity_transition["reason"] == "identity_changed"
+    assert identity_transition["identity"]["changed"] is True
+
+    reporter.step(15.2)
+    heartbeat = transport.attempts[-1]
+    assert heartbeat["reason"] == "heartbeat"
+    assert heartbeat["identity"]["previous_state"] == "unknown"
+    assert heartbeat["identity"]["changed"] is False
+
+
+def test_presence_transition_normalizes_unchanged_identity_transition(setup_reporter):
+    latest, transport, reporter = setup_reporter
+    reporter.step(0.0)
+    identity = {
+        "state": "owner",
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 1,
+        "similarity": 0.7,
+    }
+    latest.publish(PresenceState.STARTING, "initializing", NOW, {}, identity=identity)
+    reporter.step(0.1)
+
+    latest.publish(
+        PresenceState.PRESENT,
+        "pose_confirmed",
+        NOW + timedelta(seconds=1),
+        {},
+        identity=identity,
+    )
+    reporter.step(0.2)
+
+    event = transport.attempts[-1]
+    assert event["changed"] is True
+    assert event["identity"]["state"] == "owner"
+    assert event["identity"]["previous_state"] == "owner"
+    assert event["identity"]["changed"] is False

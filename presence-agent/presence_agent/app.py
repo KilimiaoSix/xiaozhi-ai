@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 from importlib import import_module
 import math
 import os
@@ -13,6 +14,8 @@ import threading
 import time
 
 from presence_agent.pose_detector import PoseDetector, PoseObservation
+from presence_agent.face_template import load_template
+from presence_agent.face_verifier import FaceEngine, FaceVerifier
 from presence_agent.render import render_frame
 from presence_agent.reporter import HttpPresenceTransport, PresenceReporter
 from presence_agent.snapshot import LatestSnapshot
@@ -21,6 +24,9 @@ from presence_agent.state import PresenceState, PresenceTracker
 
 AGENT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = AGENT_ROOT / "models" / "pose_landmarker_lite.task"
+DEFAULT_FACE_DETECTOR_PATH = AGENT_ROOT / "models" / "face_detection_yunet_2026may.onnx"
+DEFAULT_FACE_RECOGNIZER_PATH = AGENT_ROOT / "models" / "face_recognition_sface_2021dec.onnx"
+DEFAULT_FACE_TEMPLATE_PATH = AGENT_ROOT / ".runtime" / "owner_template.npz"
 WINDOW_NAME = "Launchcrush Camera Presence"
 REQUIRED_HITS = 3
 WORKSTATION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -44,6 +50,20 @@ def _nonnegative_int(value: str) -> int:
     number = int(value)
     if number < 0:
         raise argparse.ArgumentTypeError("must be nonnegative")
+    return number
+
+
+def _nonnegative_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("must be a finite nonnegative number")
+    return number
+
+
+def _similarity_threshold(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or not -1 <= number <= 1:
+        raise argparse.ArgumentTypeError("must be a finite number between -1 and 1")
     return number
 
 
@@ -91,6 +111,42 @@ def parse_args(argv=None):
         metavar="SECONDS",
     )
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, metavar="PATH")
+    parser.set_defaults(face_verification=True)
+    parser.add_argument(
+        "--disable-face-verification",
+        action="store_false",
+        dest="face_verification",
+    )
+    parser.add_argument(
+        "--face-detector-model",
+        type=Path,
+        default=DEFAULT_FACE_DETECTOR_PATH,
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--face-recognizer-model",
+        type=Path,
+        default=DEFAULT_FACE_RECOGNIZER_PATH,
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--face-template",
+        type=Path,
+        default=DEFAULT_FACE_TEMPLATE_PATH,
+        metavar="PATH",
+    )
+    parser.add_argument(
+        "--face-threshold",
+        type=_similarity_threshold,
+        default=0.45,
+    )
+    parser.add_argument("--face-hits", type=_positive_int, default=3)
+    parser.add_argument(
+        "--no-face-delay",
+        type=_nonnegative_float,
+        default=1.0,
+        metavar="SECONDS",
+    )
     parser.add_argument("--preview", action="store_true")
     parser.add_argument(
         "--smoke-frames", type=_nonnegative_int, default=0, metavar="COUNT"
@@ -111,6 +167,35 @@ def _default_reporter_factory(latest: LatestSnapshot, args) -> PresenceReporter:
     )
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as model_file:
+        for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _default_face_verifier_factory(args):
+    if not args.face_verification:
+        return None
+    template_path = Path(args.face_template)
+    detector_path = Path(args.face_detector_model)
+    recognizer_path = Path(args.face_recognizer_model)
+    for path in (detector_path, recognizer_path):
+        if not path.is_file():
+            raise FileNotFoundError(f"Face model file not found: {path}")
+    if not template_path.is_file():
+        return FaceVerifier.not_enrolled()
+    owner = load_template(template_path, _sha256(recognizer_path))
+    return FaceVerifier(
+        FaceEngine(detector_path, recognizer_path),
+        owner.embedding,
+        threshold=args.face_threshold,
+        required_hits=args.face_hits,
+        no_face_delay=args.no_face_delay,
+    )
+
+
 def _transition_reason(previous: PresenceState, current: PresenceState) -> str:
     if current is PresenceState.PRESENT:
         return "pose_confirmed"
@@ -128,6 +213,7 @@ def run(
     *,
     cv2_module=None,
     detector_factory=PoseDetector,
+    face_verifier_factory=_default_face_verifier_factory,
     reporter_factory=_default_reporter_factory,
     thread_factory=threading.Thread,
     sleep=time.sleep,
@@ -139,8 +225,22 @@ def run(
         print(f"Model file not found: {model_path}", file=sys.stderr)
         return 2
 
+    try:
+        face_verifier = face_verifier_factory(args)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"Cannot start face verification: {exc}", file=sys.stderr)
+        return 2
+
     cv2 = cv2_module or import_module("cv2")
     latest = LatestSnapshot(utcnow())
+    if face_verifier is not None:
+        latest.publish(
+            PresenceState.STARTING,
+            "initializing",
+            utcnow(),
+            {},
+            identity=face_verifier.identity.to_payload(),
+        )
     reporter = reporter_factory(latest, args)
     stop_event = threading.Event()
     reporter_thread = thread_factory(
@@ -163,11 +263,17 @@ def run(
                 if not camera.isOpened():
                     now = monotonic()
                     tracker.update(False, now, camera_ok=False)
+                    identity = (
+                        face_verifier.camera_error(args.camera).to_payload()
+                        if face_verifier is not None
+                        else None
+                    )
                     latest.publish(
                         PresenceState.CAMERA_ERROR,
                         "camera_open_failed",
                         utcnow(),
                         {},
+                        identity=identity,
                     )
                     camera.release()
                     camera = None
@@ -176,17 +282,28 @@ def run(
 
                 camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
                 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+                if (
+                    face_verifier is not None
+                    and face_verifier.identity.state.value == "camera_error"
+                ):
+                    face_verifier.camera_recovered()
 
                 while True:
                     ok, frame = camera.read()
                     now = monotonic()
                     if not ok:
                         tracker.update(False, now, camera_ok=False)
+                        identity = (
+                            face_verifier.camera_error(args.camera).to_payload()
+                            if face_verifier is not None
+                            else None
+                        )
                         latest.publish(
                             PresenceState.CAMERA_ERROR,
                             "camera_read_failed",
                             utcnow(),
                             {},
+                            identity=identity,
                         )
                         camera.release()
                         camera = None
@@ -197,6 +314,11 @@ def run(
                     timestamp_ms = _strict_timestamp_ms(now, previous_timestamp_ms)
                     previous_timestamp_ms = timestamp_ms
                     observation = detector.detect(frame, timestamp_ms)
+                    identity = (
+                        face_verifier.observe(frame, now).to_payload()
+                        if face_verifier is not None
+                        else None
+                    )
                     previous_state = tracker.state
                     state = tracker.update(observation.is_present(), now)
                     metrics = observation.diagnostic_metrics()
@@ -206,6 +328,7 @@ def run(
                         _transition_reason(previous_state, state),
                         utcnow(),
                         metrics,
+                        identity=identity,
                     )
 
                     if args.preview:
@@ -214,7 +337,9 @@ def run(
                             if previous_frame_time is None
                             else 1.0 / max(now - previous_frame_time, 1e-9)
                         )
-                        preview = render_frame(frame, observation, state, fps)
+                        preview = render_frame(
+                            frame, observation, state, fps, identity=identity
+                        )
                         cv2.imshow(WINDOW_NAME, preview)
                         if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
                             return 0

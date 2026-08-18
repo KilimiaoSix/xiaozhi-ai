@@ -9,10 +9,20 @@ param(
     [double]$HeartbeatSeconds = 15.0,
     [double]$CameraRetrySeconds = 5.0,
     [string]$Model = "",
+    [string]$FaceDetectorModel = "",
+    [string]$FaceRecognizerModel = "",
+    [string]$FaceTemplate = "",
+    [double]$FaceThreshold = 0.45,
+    [int]$FaceHits = 3,
+    [double]$NoFaceDelay = 1.0,
     [int]$SmokeFrames = 0,
     [string]$PythonExe = "python",
     [string]$ServerPython = "",
-    [switch]$Preview
+    [switch]$Preview,
+    [switch]$EnrollOwner,
+    [switch]$DeleteFaceTemplate,
+    [switch]$ForceEnrollment,
+    [switch]$DisableFaceVerification
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,8 +63,38 @@ function Wait-PresenceServer {
 try {
     if ($AuthToken) { $env:PRESENCE_AUTH_TOKEN = $AuthToken }
 
+    $resolvedFaceTemplate = if ($FaceTemplate) {
+        $FaceTemplate
+    } else {
+        Join-Path $runtimeRoot "owner_template.npz"
+    }
+    if ($DeleteFaceTemplate) {
+        if (Test-Path -LiteralPath $resolvedFaceTemplate -PathType Leaf) {
+            Remove-Item -LiteralPath $resolvedFaceTemplate
+            Write-Host "Deleted local face template: $resolvedFaceTemplate"
+        } else {
+            Write-Host "Local face template not found: $resolvedFaceTemplate"
+        }
+        exit 0
+    }
+
     & (Join-Path $agentRoot "setup.ps1") -PythonExe $PythonExe
     if (-not $?) { throw "presence-agent setup failed" }
+
+    if ($EnrollOwner) {
+        $enrollParameters = @{
+            Camera = $Camera
+            Width = $Width
+            Height = $Height
+            Template = $resolvedFaceTemplate
+            PythonExe = $PythonExe
+            Force = $ForceEnrollment
+        }
+        if ($FaceDetectorModel) { $enrollParameters["DetectorModel"] = $FaceDetectorModel }
+        if ($FaceRecognizerModel) { $enrollParameters["RecognizerModel"] = $FaceRecognizerModel }
+        & (Join-Path $agentRoot "enroll-face.ps1") @enrollParameters
+        if (-not $?) { throw "owner face enrollment failed" }
+    }
 
     if (-not (Test-PresenceServer -BaseUrl $ServerUrl)) {
         $uri = [Uri]$ServerUrl
@@ -92,8 +132,15 @@ try {
         SmokeFrames = $SmokeFrames
         PythonExe = $PythonExe
         Preview = $Preview
+        FaceTemplate = $resolvedFaceTemplate
+        FaceThreshold = $FaceThreshold
+        FaceHits = $FaceHits
+        NoFaceDelay = $NoFaceDelay
+        DisableFaceVerification = $DisableFaceVerification
     }
     if ($Model) { $runParameters["Model"] = $Model }
+    if ($FaceDetectorModel) { $runParameters["FaceDetectorModel"] = $FaceDetectorModel }
+    if ($FaceRecognizerModel) { $runParameters["FaceRecognizerModel"] = $FaceRecognizerModel }
 
     & (Join-Path $agentRoot "run.ps1") @runParameters
     exit $LASTEXITCODE
