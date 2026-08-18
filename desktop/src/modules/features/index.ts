@@ -1,6 +1,6 @@
 import { FeatureRegistry } from '../core/registry';
 import { awayMessagesModule } from './away-messages';
-import { codingAgentStatusModule } from './coding-agent-status';
+import { codingAgentStatusModule } from './coding-agent-status/module';
 import { feishuBriefingModule } from './feishu-briefing';
 import { focusModeModule } from './focus-mode';
 import { gestureApprovalModule } from './gesture-approval';

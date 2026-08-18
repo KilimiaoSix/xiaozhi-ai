@@ -4,7 +4,7 @@ import { featureCatalog, featureRegistry } from '../modules/features';
 import type {
   AgentSource,
   AgentTaskSnapshot,
-} from '../modules/features/coding-agent-status';
+} from '../modules/features/coding-agent-status/agent-hooks/contracts';
 import type { AgentHooksSnapshot } from '../modules/features/coding-agent-status/agent-hooks/runtime';
 import { featureRuntimeContext, serverGateway } from '../modules/runtime';
 import type { FeatureDefinition } from '../shared/features';
