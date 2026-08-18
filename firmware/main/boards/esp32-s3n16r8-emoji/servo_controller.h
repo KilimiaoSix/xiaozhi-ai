@@ -126,7 +126,10 @@ public:
     int GetCurrentYAngle() const { return current_y_angle_; }
 
 private:
-    // 舵机角度
+    // 舵机角度。有两个任务会驱动舵机——EmojiController 的动画任务，
+    // 以及 MCP 动作工具的执行任务——所以这两个值必须在锁的保护下读改，
+    // 否则 MoveTo 的收敛循环会因目标被并发改动而永远不满足退出条件（死循环）。
     int current_x_angle_ = SERVO_CENTER_X;
     int current_y_angle_ = SERVO_CENTER_Y;
+    SemaphoreHandle_t move_mutex_ = nullptr;
 };

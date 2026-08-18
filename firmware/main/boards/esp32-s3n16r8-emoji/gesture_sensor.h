@@ -238,7 +238,10 @@ private:
 
     static const int SEQUENCE_TIMEOUT_MS = 2000;  // 序列超时时间(毫秒)
     static const int MIN_SEQUENCE_COUNT = 3;      // 最小序列计数(连续3次才认为是摇头或点头)
-    static const int REPORT_MIN_INTERVAL_MS = 3000;  // 上报最小间隔，避免连续手势刷屏
+    // 挥手会开麦并触发一整轮对话，节流要狠；静默手势只是发一条文本，
+    // 审批场景需要能快速改主意（比了"上"马上改比"下"），节流要松
+    static const int REPORT_MIN_INTERVAL_MS = 3000;        // 挥手（开麦路径）
+    static const int SILENT_REPORT_MIN_INTERVAL_MS = 800;  // 静默路径
     
     // I2C总线互斥锁，用于与显示屏共享总线
     static SemaphoreHandle_t i2c_mutex_;

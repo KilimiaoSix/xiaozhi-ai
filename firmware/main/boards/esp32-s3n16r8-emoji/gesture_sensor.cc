@@ -1029,17 +1029,31 @@ void GestureSensor::ReportGestureToServer(GestureType gesture) {
         return;
     }
 
+    // 挥手走开麦路径（同事留言要说话），其余手势走静默路径（审批不能开麦）
+    bool opens_microphone = (gesture == GESTURE_WAVE);
+    int min_interval = opens_microphone ? REPORT_MIN_INTERVAL_MS
+                                        : SILENT_REPORT_MIN_INTERVAL_MS;
+
     // 连续手势会在短时间内多次触发，限流避免刷爆服务端
     TickType_t now = xTaskGetTickCount();
     if (last_report_time_ != 0 &&
-        pdTICKS_TO_MS(now - last_report_time_) < REPORT_MIN_INTERVAL_MS) {
+        pdTICKS_TO_MS(now - last_report_time_) < min_interval) {
         ESP_LOGD(TAG, "上报过于频繁，跳过手势: %s", name);
         return;
     }
     last_report_time_ = now;
 
-    ESP_LOGI(TAG, "上报手势到服务端: %s", name);
-    app.WakeWordInvoke(std::string("[gesture]") + name);
+    std::string text = std::string("[gesture]") + name;
+    if (opens_microphone) {
+        // 开麦：同事对着机器人留言依赖 WakeWordInvoke 打开音频通道
+        ESP_LOGI(TAG, "上报手势并开麦: %s", name);
+        app.WakeWordInvoke(text);
+    } else {
+        // 静默：一旦进 Listening，后续手势会被上面的空闲态守卫吞掉，
+        // 手势审批必须停留在 Idle 才能连续接收"同意/拒绝"
+        ESP_LOGI(TAG, "静默上报手势: %s", name);
+        app.SendDetectedText(text);
+    }
 }
 
 void GestureSensor::CheckSequentialGestures(GestureType gesture) {

@@ -15,6 +15,13 @@ ServoController::~ServoController() {
 }
 
 void ServoController::Initialize() {
+    if (move_mutex_ == nullptr) {
+        move_mutex_ = xSemaphoreCreateMutex();
+        if (move_mutex_ == nullptr) {
+            ESP_LOGE(TAG, "舵机互斥锁创建失败，并发驱动时可能卡死");
+        }
+    }
+
     // 配置LEDC定时器
     ledc_timer_config_t ledc_timer = {
         .speed_mode = LEDC_MODE,
@@ -75,8 +82,9 @@ void ServoController::SetServoAngle(int channel, int angle) {
     ledc_set_duty(LEDC_MODE, servo_channels[channel], duty);
     ledc_update_duty(LEDC_MODE, servo_channels[channel]);
     
-    // 开启日志，方便观察舵机是否收到了正确的数值
-    // ESP_LOGI(TAG, "Channel:%d Angle:%d Inv:%d Pulse:%lu Duty:%lu", channel, angle, inverse, pulse_width, duty);
+    // 这里刻意不打日志：SetServoAngle 在 MoveTo 的插值循环里逐步调用，
+    // 一次 HeadRoll 会产生数百行，115200 波特率下光传输就要数秒并干扰舵机时序。
+    // 观测改为在 MoveTo 里每段移动打一行。
 }
 
 void ServoController::HeadMove(int x_offset, int y_offset, int servo_delay) {
@@ -93,13 +101,29 @@ void ServoController::MoveTo(int target_x, int target_y, int servo_delay) {
     int clamped_x = std::max(SERVO_MIN_X, std::min(SERVO_MAX_X, target_x));
     int clamped_y = std::max(SERVO_MIN_Y, std::min(SERVO_MAX_Y, target_y));
     
-    if (clamped_x == current_x_angle_ && clamped_y == current_y_angle_) {
-        // 如果已在目标位置（或是已触碰边界无法再向该方向移动），则直接返回
+    // 整段移动必须独占舵机：并发改动 current_*_angle_ 会让收敛循环永远退不出去
+    if (move_mutex_ != nullptr &&
+        xSemaphoreTake(move_mutex_, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGW(TAG, "MoveTo 等锁超时，放弃本次移动 -> (%d,%d)", clamped_x, clamped_y);
         return;
     }
 
+    ESP_LOGI(TAG, "MoveTo (%d,%d) -> (%d,%d) delay=%dms",
+             current_x_angle_, current_y_angle_, clamped_x, clamped_y, servo_delay);
+
+    if (clamped_x == current_x_angle_ && clamped_y == current_y_angle_) {
+        // 如果已在目标位置（或是已触碰边界无法再向该方向移动），则直接返回
+        if (move_mutex_ != nullptr) xSemaphoreGive(move_mutex_);
+        return;
+    }
+
+    // 兜底上界：即使角度被意外改动也必须能退出（每轮至少推进 SERVO_STEP）
+    int max_steps = (abs(clamped_x - current_x_angle_) +
+                     abs(clamped_y - current_y_angle_)) / SERVO_STEP + 4;
+
     // 平滑插值移动：逐步趋近目标位置
-    while (current_x_angle_ != clamped_x || current_y_angle_ != clamped_y) {
+    while ((current_x_angle_ != clamped_x || current_y_angle_ != clamped_y) &&
+           max_steps-- > 0) {
         if (current_x_angle_ != clamped_x) {
             int diff = clamped_x - current_x_angle_;
             if (abs(diff) <= SERVO_STEP) {
@@ -119,6 +143,15 @@ void ServoController::MoveTo(int target_x, int target_y, int servo_delay) {
             SetServoAngle(1, current_y_angle_);
         }
         vTaskDelay(pdMS_TO_TICKS(servo_delay));
+    }
+
+    if (max_steps <= 0) {
+        ESP_LOGW(TAG, "MoveTo 步数触顶仍未到位，当前 (%d,%d) 目标 (%d,%d)",
+                 current_x_angle_, current_y_angle_, clamped_x, clamped_y);
+    }
+
+    if (move_mutex_ != nullptr) {
+        xSemaphoreGive(move_mutex_);
     }
 }
 

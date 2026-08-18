@@ -497,6 +497,9 @@ void Application::Start() {
             if (cJSON_IsObject(payload)) {
                 McpServer::GetInstance().ParseMessage(payload);
             }
+        } else if (strcmp(type->valuestring, "pong") == 0) {
+            // 常连保活的回包。收到即可，last_incoming_time_ 已在 OnData 中刷新，
+            // 这里只是避免落到下面的 Unknown message type 分支刷警告。
         } else if (strcmp(type->valuestring, "system") == 0) {
             auto command = cJSON_GetObjectItem(root, "command");
             if (cJSON_IsString(command)) {
@@ -515,7 +518,12 @@ void Application::Start() {
             auto message = cJSON_GetObjectItem(root, "message");
             auto emotion = cJSON_GetObjectItem(root, "emotion");
             if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
-                Alert(status->valuestring, message->valuestring, emotion->valuestring, Lang::Sounds::OGG_VIBRATION);
+                // silent=true 时不播提示音。基态恢复这类"把画面收回去"的推送每次都
+                // "嗡"一声会毁掉安静镜头，而它本身不是需要引起注意的事件。
+                auto silent = cJSON_GetObjectItem(root, "silent");
+                bool is_silent = cJSON_IsTrue(silent);
+                Alert(status->valuestring, message->valuestring, emotion->valuestring,
+                      is_silent ? std::string_view() : Lang::Sounds::OGG_VIBRATION);
             } else {
                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
             }
@@ -840,6 +848,23 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
             }
         });
     }
+}
+
+// WakeWordInvoke 的静默对偶：只把文本报给服务端，不碰设备状态、不开麦。
+// WakeWordInvoke 在 Idle 态会先 ToggleChatState 打开音频通道进 Listening，
+// 那之后手势上报会被空闲态守卫吞掉，手势审批场景因此失效。
+void Application::SendDetectedText(const std::string& text) {
+    if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
+        ESP_LOGW(TAG, "Audio channel not opened, drop detected text: %s", text.c_str());
+        return;
+    }
+
+    Schedule([this, text]() {
+        if (protocol_) {
+            ESP_LOGI(TAG, "Sending detected text: %s", text.c_str());
+            protocol_->SendWakeWordDetected(text);
+        }
+    });
 }
 
 bool Application::CanEnterSleepMode() {

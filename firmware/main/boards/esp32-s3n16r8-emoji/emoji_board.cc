@@ -70,6 +70,12 @@ enum class RobotAction {
     kLookRight,
     kLookUp,
     kLookDown,
+    // "保持"变体：转过去就停住不回中。流程四要小飞转向同事并保持注视，
+    // 而普通的 look_* 800ms 后强制回中，镜头上是"瞥一眼又扭回去"，明显穿帮。
+    kHoldLeft,
+    kHoldRight,
+    kHoldUp,
+    kHoldDown,
     kCenter
 };
 
@@ -118,6 +124,11 @@ private:
     
     // MCP 动作工具的异步执行队列
     QueueHandle_t action_queue_ = nullptr;
+    
+    // 随机空闲动画的总开关。StateMonitorTask 会随对话状态开关随机动画，
+    // 但那些都必须服从这个总开关——演示时要求机器人的每一次动作都是刻意的，
+    // 否则观众分不清它是在回应事件还是自己在乱动。
+    bool idle_animation_allowed_ = false;
     
     // 情感响应控制器
     EmotionResponseController* emotion_controller_ = nullptr;
@@ -231,25 +242,10 @@ private:
         });
 
         boot_button_.OnLongPress([this]() {
-            is_emoji_mode_ = !is_emoji_mode_;
             if (is_emoji_mode_) {
-                // 进入表情模式
-                SwitchScreen(true);
-                emoji_controller_->StartBlinkTimer();
-                emoji_controller_->EyeCenter();
-                GetDisplay()->ShowNotification("表情模式");
-                
-                // 初始化舵机位置
-                servo_controller_->HeadCenter();
+                ExitEmojiMode();
             } else {
-                // 退出表情模式
-                emoji_controller_->StopBlinkTimer();
-                SwitchScreen(false);
-                GetDisplay()->ShowNotification("对话模式");
-                emoji_controller_->CleanupEmojiScreen();
-                
-                // 舵机回到中心位置
-                servo_controller_->HeadCenter();
+                EnterEmojiMode(true);
             }
         });
 
@@ -342,6 +338,18 @@ private:
                         vTaskDelay(pdMS_TO_TICKS(800));
                         servo->HeadCenter();
                         break;
+                    case RobotAction::kHoldLeft:
+                        servo->HeadLeft(30);
+                        break;
+                    case RobotAction::kHoldRight:
+                        servo->HeadRight(30);
+                        break;
+                    case RobotAction::kHoldUp:
+                        servo->HeadUp(25);
+                        break;
+                    case RobotAction::kHoldDown:
+                        servo->HeadDown(25);
+                        break;
                     case RobotAction::kCenter:
                         servo->HeadCenter();
                         break;
@@ -362,6 +370,10 @@ private:
             {"look_right", RobotAction::kLookRight},
             {"look_up",    RobotAction::kLookUp},
             {"look_down",  RobotAction::kLookDown},
+            {"hold_left",  RobotAction::kHoldLeft},
+            {"hold_right", RobotAction::kHoldRight},
+            {"hold_up",    RobotAction::kHoldUp},
+            {"hold_down",  RobotAction::kHoldDown},
             {"center",     RobotAction::kCenter},
         };
         
@@ -375,10 +387,18 @@ private:
         }
         
         RobotAction action = it->second;
-        // 不阻塞主事件循环：队列满就丢弃，动作是即时反馈，堆积没有意义
+        // 绝不阻塞：EnqueueAction 跑在主事件循环上（McpServer::DoToolCall 的 app.Schedule）。
+        // 队列满时丢最旧的而不是丢新的——动作是即时反馈，堆积的旧动作播出来对不上画面，
+        // 而刚触发的这个才是当前想表达的意图。
         if (xQueueSend(action_queue_, &action, 0) != pdPASS) {
-            ESP_LOGW(TAG, "动作队列已满，丢弃动作: %s", name.c_str());
-            return false;
+            RobotAction discarded;
+            if (xQueueReceive(action_queue_, &discarded, 0) == pdPASS) {
+                ESP_LOGW(TAG, "动作队列已满，丢弃最旧动作以让位给: %s", name.c_str());
+            }
+            if (xQueueSend(action_queue_, &action, 0) != pdPASS) {
+                ESP_LOGW(TAG, "动作入队失败: %s", name.c_str());
+                return false;
+            }
         }
         ESP_LOGI(TAG, "已入队动作: %s", name.c_str());
         return true;
@@ -391,8 +411,9 @@ private:
             "Play a physical head action on the desktop robot, for embodied feedback.\n"
             "Available actions: `nod` (acknowledge / confirm / say yes), "
             "`shake` (deny / reject / say no), `roll` (celebrate a finished task), "
-            "`look_left`, `look_right`, `look_up`, `look_down` (glance around), "
-            "`center` (reset posture).\n"
+            "`look_left`, `look_right`, `look_up`, `look_down` (glance and return), "
+            "`hold_left`, `hold_right`, `hold_up`, `hold_down` (turn and STAY there — "
+            "use these to keep facing someone), `center` (reset posture).\n"
             "The action runs asynchronously and returns immediately.",
             PropertyList({
                 Property("action", kPropertyTypeString)
@@ -424,9 +445,64 @@ private:
                 return true;
             });
         
+        mcp_server.AddTool("self.robot.set_idle_animation",
+            "Enable or disable the robot's idle fidget animation (a random head "
+            "movement every ~10 seconds). Disabled by default so that every movement "
+            "the robot makes is a deliberate response. Turn it on to make the robot "
+            "look alive while standing by.",
+            PropertyList({
+                Property("enabled", kPropertyTypeBoolean)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                bool enabled = properties["enabled"].value<bool>();
+                if (emoji_controller_ == nullptr) {
+                    throw std::runtime_error("Emoji controller is not ready");
+                }
+                SetIdleAnimationAllowed(enabled);
+                return true;
+            });
+        
         ESP_LOGI(TAG, "已注册机器人动作与表情MCP工具");
     }
     
+    // 状态机想要的随机动画状态，与总开关求与后再落到控制器
+    void ApplyIdleAnimation(bool wanted) {
+        if (emoji_controller_ == nullptr) {
+            return;
+        }
+        emoji_controller_->SetRandomAnimationEnabled(wanted && idle_animation_allowed_);
+    }
+
+    void SetIdleAnimationAllowed(bool allowed) {
+        idle_animation_allowed_ = allowed;
+        ESP_LOGI(TAG, "随机空闲动画总开关: %s", allowed ? "开" : "关");
+        // 立即生效；后续状态机切换会再按对话状态收敛
+        ApplyIdleAnimation(allowed);
+    }
+
+    // 进入表情模式。announce=false 用于开机静默进入，不弹通知。
+    // 表情动画和舵机联动都依赖 emoji_screen_ 对象存在（见 emoji_controller.cc 各
+    // Execute*Animation 开头的空指针检查），不进这个模式的话推送来的表情全是哑的。
+    void EnterEmojiMode(bool announce) {
+        is_emoji_mode_ = true;
+        SwitchScreen(true);
+        emoji_controller_->StartBlinkTimer();
+        emoji_controller_->EyeCenter();
+        if (announce) {
+            GetDisplay()->ShowNotification("表情模式");
+        }
+        servo_controller_->HeadCenter();
+    }
+
+    void ExitEmojiMode() {
+        is_emoji_mode_ = false;
+        emoji_controller_->StopBlinkTimer();
+        SwitchScreen(false);
+        GetDisplay()->ShowNotification("对话模式");
+        emoji_controller_->CleanupEmojiScreen();
+        servo_controller_->HeadCenter();
+    }
+
     // 切换屏幕
     void SwitchScreen(bool to_emoji_mode) {
         DisplayLockGuard lock(display_);
@@ -584,6 +660,13 @@ public:
         state_params->board = this;
         xTaskCreate(StateMonitorTask, "StateMonitor", 8192, state_params, 1, NULL);
         
+        // 随机空闲动画默认关闭（idle_animation_allowed_ 默认 false），
+        // 需要时用 self.robot.set_idle_animation 运行时打开，不必重烧固件。
+        
+        // 开机直接进入表情模式：桌宠应当一直有张脸，
+        // 而且服务端推送来的表情/动作都要求 emoji_screen_ 已创建
+        EnterEmojiMode(false);
+        
         // 将自身实例赋值给全局变量
         g_board_instance = this;
     }
@@ -723,8 +806,8 @@ static void StateMonitorTask(void* arg) {
     
     // 确保初始状态下随机动画是启用的
     if (board->emoji_controller_) {
-        board->emoji_controller_->SetRandomAnimationEnabled(true);
-        ESP_LOGI(TAG, "初始化：启用随机表情动画");
+        board->ApplyIdleAnimation(true);
+        ESP_LOGI(TAG, "初始化：随机表情动画交由总开关决定");
     }
     
     // 监控设备状态
@@ -745,7 +828,7 @@ static void StateMonitorTask(void* arg) {
             
             // 停止随机表情动画
             if (board->emoji_controller_) {
-                board->emoji_controller_->SetRandomAnimationEnabled(false);
+                board->ApplyIdleAnimation(false);
                 board->emoji_controller_->ClearAnimationQueue();
                 ESP_LOGI(TAG, "对话开始，停止随机表情动画");
             }
@@ -770,7 +853,7 @@ static void StateMonitorTask(void* arg) {
             
             // 停止随机表情动画
             if (board->emoji_controller_) {
-                board->emoji_controller_->SetRandomAnimationEnabled(false);
+                board->ApplyIdleAnimation(false);
                 board->emoji_controller_->ClearAnimationQueue();
                 ESP_LOGI(TAG, "对话继续，停止随机表情动画");
             }
@@ -838,8 +921,8 @@ static void StateMonitorTask(void* arg) {
                 
                 // 恢复随机表情动画
                 if (board->emoji_controller_) {
-                    board->emoji_controller_->SetRandomAnimationEnabled(true);
-                    ESP_LOGI(TAG, "对话结束，恢复随机表情动画");
+                    board->ApplyIdleAnimation(true);
+                    ESP_LOGI(TAG, "对话结束，随机表情动画交由总开关决定");
                 }
                 
                 // 触发中性情感
