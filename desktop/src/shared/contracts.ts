@@ -23,4 +23,18 @@ export interface AgentHooksDesktopApi {
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
+  getCameraPermissionStatus: () => Promise<CameraPermissionStatus>;
+  requestCameraPermission: () => Promise<CameraPermissionStatus>;
+  openCameraPrivacySettings: () => Promise<void>;
+  enrollOwnerFace: (input: OwnerEnrollmentInput) => Promise<OwnerEnrollmentResult>;
+  uploadMonitoringFrame: (
+    input: MonitoringFrameInput,
+  ) => Promise<MonitoringFrameResult>;
 }
+import type {
+  CameraPermissionStatus,
+  MonitoringFrameInput,
+  MonitoringFrameResult,
+  OwnerEnrollmentInput,
+  OwnerEnrollmentResult,
+} from '../modules/features/camera-capture/types';

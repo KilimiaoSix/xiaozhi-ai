@@ -5,6 +5,9 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    extendInfo: {
+      NSCameraUsageDescription: '小飞需要使用摄像头来注册主人面部并进行本地人员监测。',
+    },
     download: {
       mirrorOptions: {
         mirror: 'https://npmmirror.com/mirrors/electron/',

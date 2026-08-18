@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { AgentHooksRuntime } from './modules/features/coding-agent-status/agent-hooks/runtime';
 import { registerAgentHooksIpc } from './main/agentHooksIpc';
+import { registerCameraIpc } from './main/camera/registerCameraIpc';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
@@ -22,6 +23,7 @@ const createWindow = (): void => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -53,6 +55,7 @@ app.whenReady().then(() => {
   void agentHooksRuntime.start().catch((error: unknown) => {
     console.error('Agent Hook 监控启动失败', error);
   });
+  registerCameraIpc();
   createWindow();
 
   app.on('activate', () => {

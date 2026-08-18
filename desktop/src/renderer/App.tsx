@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { featureCatalog, featureRegistry } from '../modules/features';
+import { CameraPage } from '../modules/features/camera-capture';
 import type {
   AgentSource,
   AgentTaskSnapshot,
@@ -92,6 +93,7 @@ const formatTaskTime = (value: string): string =>
   }).format(new Date(value));
 
 export function App() {
+  const [activePage, setActivePage] = useState<'dashboard' | 'camera'>('dashboard');
   const [activeFeature, setActiveFeature] = useState(featureCatalog[0]);
   const [events, setEvents] = useState(initialEvents);
   const [serverUrl, setServerUrl] = useState('http://192.168.1.100:8003');
@@ -247,6 +249,10 @@ export function App() {
     ].slice(0, 5));
   };
 
+  if (activePage === 'camera') {
+    return <CameraPage onNavigateHome={() => setActivePage('dashboard')} />;
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -258,6 +264,13 @@ export function App() {
           </div>
         </div>
         <div className="topbar-status">
+          <button
+            className="topbar-camera-link"
+            type="button"
+            onClick={() => setActivePage('camera')}
+          >
+            摄像头
+          </button>
           <span className="build-label">LAB BUILD 0.1.0</span>
           <span className="runtime-label">Electron {runtime.versions.electron}</span>
           <span className={`status-pill ${agentSnapshot.installations.some((item) => item.installed) ? 'is-live' : 'is-idle'}`}>

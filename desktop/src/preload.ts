@@ -38,6 +38,11 @@ const desktopApi: XiaofeiDesktopApi = {
       return () => { ipcRenderer.removeListener(AGENT_HOOKS_CHANNELS.snapshotChanged, handler); };
     },
   },
+  getCameraPermissionStatus: () => ipcRenderer.invoke('camera:get-permission'),
+  requestCameraPermission: () => ipcRenderer.invoke('camera:request-permission'),
+  openCameraPrivacySettings: () => ipcRenderer.invoke('camera:open-privacy-settings'),
+  enrollOwnerFace: (input) => ipcRenderer.invoke('camera:enroll-owner', input),
+  uploadMonitoringFrame: (input) => ipcRenderer.invoke('camera:upload-frame', input),
 };
 
 contextBridge.exposeInMainWorld('xiaofei', desktopApi);
