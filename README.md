@@ -131,6 +131,36 @@ FEISHU_USER_ACCESS_TOKEN=<token> FEISHU_SELF_OPEN_ID=<open_id> \
   python run_morning_brief_check.py
 ```
 
+## 告警值班中继
+
+线上告警进来后，**机器人抬头提醒人 + 飞书发卡片给值班人**；人在飞书回一句「帮我查」，
+Server 就调起**本机的 Claude Code**（复用 `diagnose-sae-alert` skill）做只读根因诊断，
+再把结论回帖成飞书卡片，同时让机器人点头播报一句话结论。
+
+```text
+POST /xiaozhi/alert/ingest             # SAE 告警接入
+POST /xiaozhi/alert/feishu/callback    # 飞书事件与卡片回调（人的回复）
+GET  /xiaozhi/alert/{alert_id}         # 查中继状态
+GET  /xiaozhi/alert/health             # 依赖自检
+```
+
+三条边界：**人不点头就不开跑诊断**（状态机层面禁止）、**全程只读不自动修复**、
+**查不出来就回失败卡片，绝不编根因**。诊断在本机子进程里跑，所以 Server 必须与
+Claude Code 同机部署，且那台机器能连内网 SAE。
+
+机器人应用需开通 `im:message:send_as_bot` 和 `im:message.reaction:write`，
+密钥走 `FEISHU_BOT_APP_ID` / `FEISHU_BOT_APP_SECRET` 环境变量或 `data/.config.yaml`。
+完整配置、状态机、硬件语汇和失败模式见
+[`docs/api/告警值班中继接口.md`](docs/api/告警值班中继接口.md)。
+
+改完代码可以先跑一遍全链路模拟（假飞书 + 假机器人，秒级）：
+
+```bash
+cd server/main/xiaozhi-server
+python run_alert_relay_check.py              # 假 CLI，只验管道
+python run_alert_relay_check.py --real-cli   # 用真的 Claude Code 跑诊断
+```
+
 ## 运行上位机 server
 
 - 入口：`server/main/xiaozhi-server/app.py`

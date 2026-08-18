@@ -65,6 +65,53 @@ morning_brief:
   excerpt_retention_days: 7
   resolved_retention_days: 30
 
+# 告警值班中继：SAE 告警 → 机器人抬头 + 飞书卡片叫人 → 人回「帮我查」→
+# 调起本机 Claude Code（diagnose-sae-alert skill）只读排查 → 结论回帖 + 机器人播报。
+# 机器人应用需开通：im:message:send_as_bot、im:message.reaction:write。
+alert_relay:
+  enabled: false
+  # 值班人：飞书 open_id（ou_ 开头）或群 chat_id（oc_ 开头）；
+  # 也可用 FEISHU_ALERT_RECEIVE_ID 环境变量提供。
+  receive_id: ""
+  # 多久没人回复就升级提醒（秒）
+  reply_timeout_seconds: 600
+  # 窗口内同集群+同 workload+同关键词的重复告警只累加计数，不再打扰机器人
+  dedupe_window_seconds: 300
+  # 超时是否自动开跑诊断。默认关：告警风暴下会同时拉起 N 个 Claude Code。
+  auto_diagnose_on_timeout: false
+  sweep_interval_seconds: 60
+  max_records: 200
+  # 集群名 → [projectId, clusterId]，与 diagnose-sae-alert skill 的映射表保持一致
+  cluster_map:
+    bj-jxq-autocar: [117, 3]
+  robot:
+    enabled: true
+    # 目标机器人 MAC；留空则只发飞书。也可用 ALERT_RELAY_DEVICE_ID 环境变量提供。
+    device_id: ""
+  feishu:
+    base_url: https://open.feishu.cn
+    # 密钥优先通过 FEISHU_BOT_APP_ID / FEISHU_BOT_APP_SECRET 环境变量
+    # 或 data/.config.yaml 提供，不要写进本文件（本文件入库）。
+    app_id: ""
+    app_secret: ""
+    # 事件订阅的 Verification Token；开放平台的 Encrypt Key 必须留空（本中继不解密）。
+    verification_token: ""
+    timeout_seconds: 10
+  diagnosis:
+    # 本机 Claude Code 的启动命令，可写成 "claude" 或 ["npx", "claude"]
+    cli_command: ["claude"]
+    skill: diagnose-sae-alert
+    # 留空则用 CLI 默认模型
+    model: ""
+    # 被诊断服务的源码目录，会以 --add-dir 挂进子进程工作区
+    source_dirs: []
+    cwd: ""
+    timeout_seconds: 900
+    permission_mode: dontAsk
+    # dontAsk 会拒掉不在白名单里的工具。PowerShell 不能删：skill 靠它跑 sae.ps1 拉日志。
+    allowed_tools: ["Read", "Grep", "Glob", "Bash", "PowerShell", "Skill", "TodoWrite"]
+    extra_args: []
+
 log:
   # 设置控制台输出的日志格式，时间、日志级别、标签、消息
   log_format: "<green>{time:YYMMDD HH:mm:ss}</green>[{version}_{selected_module}][<light-blue>{extra[tag]}</light-blue>]-<level>{level}</level>-<light-green>{message}</light-green>"
