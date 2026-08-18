@@ -39,4 +39,28 @@ describe('CodexUiApprovalMonitor', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(probe).toHaveBeenCalledTimes(4);
   });
+
+  it('探针暂时不可用时保持已有等待状态', async () => {
+    vi.useFakeTimers();
+    const probe = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(false);
+    const updates: Array<AgentAttention | null> = [];
+    const monitor = new CodexUiApprovalMonitor({
+      probe,
+      pollIntervalMs: 1_000,
+      now: () => new Date('2026-08-18T08:00:10.000Z'),
+    });
+
+    monitor.start((attention) => { updates.push(attention); });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(updates).toEqual([
+      expect.objectContaining({ reason: 'Computer Use 需要用户确认' }),
+      null,
+    ]);
+    await monitor.stop();
+  });
 });

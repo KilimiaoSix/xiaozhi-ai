@@ -98,6 +98,39 @@ lark-cli auth login --scope "task:task:read calendar:calendar:readonly"
 
 启动桌面端后，可在“飞书任务与会议”区域检查连接并刷新。日历或任务其中一项缺少权限时，另一项仍会正常展示，界面会列出缺失 scope 和最小权限授权命令。应用只读取结构化任务与日程字段，不保存 access token，也不采集完整飞书对话或文档内容。
 
+## 飞书每日关注晨报
+
+Server 提供三个只读接口，聚合时间窗内的消息、`@我` 消息和当天日程，生成最多三条待关注项：
+
+```text
+POST /xiaozhi/morning-brief/preview
+GET  /xiaozhi/morning-brief/latest
+GET  /xiaozhi/morning-brief/health
+```
+
+默认关闭（`morning_brief.enabled: false`）。接入方在自己的飞书租户用任意自建应用即可，需要开通四个消息权限，日历源另需一个：
+
+```text
+search:message
+im:message:readonly
+im:message.p2p_msg:get_as_user
+im:message.group_msg:get_as_user
+calendar:calendar:readonly       # 仅日历源需要，拿不到就设 calendar_enabled: false
+```
+
+从开通权限到本机联调的完整步骤、常见错误码和接口字段说明见
+[`docs/api/飞书每日关注晨报接口.md`](docs/api/飞书每日关注晨报接口.md)，
+设计取舍见 [`docs/技术方案-飞书每日关注晨报.md`](docs/技术方案-飞书每日关注晨报.md)。
+
+用户令牌不要写进 `config.yaml`，通过环境变量或被 Git 忽略的 `data/.config.yaml` 提供。
+配好后可用仓库内脚本一次性验证三个接口：
+
+```bash
+cd server/main/xiaozhi-server
+FEISHU_USER_ACCESS_TOKEN=<token> FEISHU_SELF_OPEN_ID=<open_id> \
+  python run_morning_brief_check.py
+```
+
 ## 运行上位机 server
 
 - 入口：`server/main/xiaozhi-server/app.py`

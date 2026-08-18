@@ -79,10 +79,12 @@ export const normalizeAgentEvent = (raw: RawAgentHookEvent): AgentEvent => {
     ...(asString(payload.notification_type)
       ? { notificationType: asString(payload.notification_type) }
       : {}),
+    ...(asString(payload.permission_mode)
+      ? { permissionMode: asString(payload.permission_mode) }
+      : {}),
     ...(asString(payload.error) ? { error: asString(payload.error) } : {}),
     ...(Array.isArray(backgroundTasks)
       ? { backgroundTaskCount: backgroundTasks.length }
       : {}),
   };
 };
-

@@ -4,8 +4,11 @@ from config.logger import setup_logging
 from core.api.ota_handler import OTAHandler
 from core.api.vision_handler import VisionHandler
 from core.api.event_handler import EventHandler
+from core.api.morning_brief_handler import MorningBriefHandler
 from core.api.presence_handler import PresenceHandler
 from core.api.camera_stream_handler import CameraStreamHandler
+from core.morning_brief.factory import create_morning_brief_service
+from core.morning_brief_routes import add_morning_brief_routes
 from core.presence_registry import PresenceRegistry
 from core.presence_routes import add_presence_routes
 
@@ -34,6 +37,12 @@ class SimpleHttpServer:
             self.presence_registry,
             logger=self.logger,
         )
+        self.morning_brief_service = create_morning_brief_service(config)
+        self.morning_brief_handler = MorningBriefHandler(
+            config,
+            self.morning_brief_service,
+            logger=self.logger,
+        )
 
     def _get_websocket_url(self, local_ip: str, port: int) -> str:
         """获取websocket地址
@@ -53,71 +62,64 @@ class SimpleHttpServer:
         else:
             return f"ws://{local_ip}:{port}/xiaozhi/v1/"
 
+    def create_app(self) -> web.Application:
+        app = web.Application()
+        add_presence_routes(
+            app,
+            self.presence_handler,
+            self.camera_stream_handler,
+        )
+        add_morning_brief_routes(app, self.morning_brief_handler)
+
+        if not self.config.get("read_config_from_api", False):
+            # 单模块运行时开放 OTA 和固件下载接口。
+            app.add_routes(
+                [
+                    web.get("/xiaozhi/ota/", self.ota_handler.handle_get),
+                    web.post("/xiaozhi/ota/", self.ota_handler.handle_post),
+                    web.options("/xiaozhi/ota/", self.ota_handler.handle_options),
+                    web.get(
+                        "/xiaozhi/ota/download/{filename}",
+                        self.ota_handler.handle_download,
+                    ),
+                    web.options(
+                        "/xiaozhi/ota/download/{filename}",
+                        self.ota_handler.handle_options,
+                    ),
+                ]
+            )
+        if self.event_handler:
+            # 外部工作事件推送接口（Codex / Claude Code / 告警等）
+            app.add_routes(
+                [
+                    web.post("/xiaozhi/event/push", self.event_handler.handle_push),
+                    web.get(
+                        "/xiaozhi/event/devices", self.event_handler.handle_devices
+                    ),
+                    web.options(
+                        "/xiaozhi/event/push", self.event_handler.handle_options
+                    ),
+                ]
+            )
+        app.add_routes(
+            [
+                web.get("/mcp/vision/explain", self.vision_handler.handle_get),
+                web.post("/mcp/vision/explain", self.vision_handler.handle_post),
+                web.options(
+                    "/mcp/vision/explain", self.vision_handler.handle_options
+                ),
+            ]
+        )
+        return app
+
     async def start(self):
         try:
             server_config = self.config["server"]
-            read_config_from_api = self.config.get("read_config_from_api", False)
             host = server_config.get("ip", "0.0.0.0")
             port = int(server_config.get("http_port", 8003))
 
             if port:
-                app = web.Application()
-                add_presence_routes(
-                    app,
-                    self.presence_handler,
-                    self.camera_stream_handler,
-                )
-
-                if not read_config_from_api:
-                    # 如果没有开启智控台，只是单模块运行，就需要再添加简单OTA接口，用于下发websocket接口
-                    app.add_routes(
-                        [
-                            web.get("/xiaozhi/ota/", self.ota_handler.handle_get),
-                            web.post("/xiaozhi/ota/", self.ota_handler.handle_post),
-                            web.options(
-                                "/xiaozhi/ota/", self.ota_handler.handle_options
-                            ),
-                            # 下载接口，仅提供 data/bin/*.bin 下载
-                            web.get(
-                                "/xiaozhi/ota/download/{filename}",
-                                self.ota_handler.handle_download,
-                            ),
-                            web.options(
-                                "/xiaozhi/ota/download/{filename}",
-                                self.ota_handler.handle_options,
-                            ),
-                        ]
-                    )
-                if self.event_handler:
-                    # 外部工作事件推送接口（Codex / Claude Code / 告警等）
-                    app.add_routes(
-                        [
-                            web.post(
-                                "/xiaozhi/event/push", self.event_handler.handle_push
-                            ),
-                            web.get(
-                                "/xiaozhi/event/devices",
-                                self.event_handler.handle_devices,
-                            ),
-                            web.options(
-                                "/xiaozhi/event/push",
-                                self.event_handler.handle_options,
-                            ),
-                        ]
-                    )
-
-                # 添加路由
-                app.add_routes(
-                    [
-                        web.get("/mcp/vision/explain", self.vision_handler.handle_get),
-                        web.post(
-                            "/mcp/vision/explain", self.vision_handler.handle_post
-                        ),
-                        web.options(
-                            "/mcp/vision/explain", self.vision_handler.handle_options
-                        ),
-                    ]
-                )
+                app = self.create_app()
 
                 # 运行服务
                 runner = web.AppRunner(app)

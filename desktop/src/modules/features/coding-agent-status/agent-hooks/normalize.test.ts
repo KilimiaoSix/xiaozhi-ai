@@ -80,6 +80,22 @@ describe('normalizeAgentEvent', () => {
     });
   });
 
+  it('保留自动授权模式供状态规则使用', () => {
+    const event = normalizeAgentEvent(createRaw('workbuddy', {
+      session_id: 'workbuddy-auto-approval',
+      hook_event_name: 'PermissionRequest',
+      permission_mode: 'bypassPermissions',
+      tool_name: 'Bash',
+    }));
+
+    expect(event).toMatchObject({
+      source: 'workbuddy',
+      eventName: 'PermissionRequest',
+      permissionMode: 'bypassPermissions',
+      toolName: 'Bash',
+    });
+  });
+
   it('缺少 session_id 时生成可关联的临时会话 ID', () => {
     const event = normalizeAgentEvent(createRaw('codex', {
       hook_event_name: 'SessionStart',

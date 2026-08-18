@@ -252,11 +252,13 @@ describe('AgentHooksRuntime', () => {
     await runtime.start();
 
     await spool.emitLive(event('UserPromptSubmit', {
+      source: 'claude-code',
       prompt: '执行完整 Hook 集成',
       occurredAt: '2026-08-18T08:00:10.000Z',
     }));
     await spool.emitLive(event('Notification', {
       id: 'permission-1',
+      source: 'claude-code',
       toolName: 'Bash',
       notificationType: 'permission_prompt',
       occurredAt: '2026-08-18T08:00:10.000Z',
@@ -268,7 +270,7 @@ describe('AgentHooksRuntime', () => {
       primaryTask: { status: 'needs_user', prompt: '执行完整 Hook 集成' },
       actionIntents: [expect.objectContaining({
         action: 'needs_user',
-        taskKey: 'codex:session-1',
+        taskKey: 'claude-code:session-1',
       })],
     });
     const persisted = JSON.parse(await readFile(
