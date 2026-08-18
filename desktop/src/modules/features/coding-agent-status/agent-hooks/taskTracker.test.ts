@@ -66,6 +66,44 @@ describe('AgentTaskTracker', () => {
     });
   });
 
+  it('WorkBuddy 的普通问候结束后保持完成', () => {
+    const tracker = createTracker();
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'workbuddy',
+      sessionId: 'workbuddy-greeting',
+      prompt: '打个招呼',
+    }));
+
+    tracker.apply(event('Stop', {
+      source: 'workbuddy',
+      sessionId: 'workbuddy-greeting',
+      finalMessage: '齐哥好。有什么需要帮忙的？',
+    }));
+
+    expect(tracker.primary()).toMatchObject({ status: 'completed' });
+  });
+
+  it('WorkBuddy 完成后的通用 idle_prompt 不会覆盖完成状态', () => {
+    const tracker = createTracker();
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'workbuddy',
+      sessionId: 'workbuddy-idle',
+      prompt: '没有就打个招呼',
+    }));
+    tracker.apply(event('Stop', {
+      source: 'workbuddy',
+      sessionId: 'workbuddy-idle',
+      finalMessage: '齐哥好，随时待命。',
+    }));
+    tracker.apply(event('Notification', {
+      source: 'workbuddy',
+      sessionId: 'workbuddy-idle',
+      notificationType: 'idle_prompt',
+    }));
+
+    expect(tracker.primary()).toMatchObject({ status: 'completed' });
+  });
+
   it('失败事件进入 failed，后续工具执行可恢复 running', () => {
     const tracker = createTracker();
     tracker.apply(event('UserPromptSubmit', { prompt: '运行测试' }));

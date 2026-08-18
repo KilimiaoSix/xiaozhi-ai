@@ -45,9 +45,14 @@ const responseError = (value: unknown): string | undefined => {
   return '工具执行失败';
 };
 
-const asksForUser = (message: string | undefined): boolean => {
+const asksForUserDecision = (message: string | undefined): boolean => {
   if (!message) return false;
-  return /(?:[?？]|请确认|请选择|需要你)\s*$/.test(message.trim());
+  const value = message.trim();
+  return /(?:请|需要(?:你|您)?|等待(?:你|您)?|麻烦(?:你|您)?).{0,16}(?:确认|选择|决定|决策|批准|授权|同意|允许|回复|输入|提供)/.test(value)
+    || /(?:是否|能否|可否|要不要|需不需要).{0,24}[?？]?\s*$/.test(value)
+    || /(?:还是|二选一|多选一|选项).{0,24}[?？]\s*$/.test(value)
+    || /(?:please\s+(?:confirm|choose|approve|authorize)|do you want me to|would you like me to)/i
+      .test(value);
 };
 
 interface ApplyOptions {
@@ -133,13 +138,13 @@ export class AgentTaskTracker {
 
     if (event.eventName === 'PermissionRequest'
       || (event.eventName === 'Notification'
-        && ['permission_prompt', 'idle_prompt'].includes(event.notificationType ?? ''))) {
+        && event.notificationType === 'permission_prompt')) {
       return 'needs_user';
     }
 
     if (event.eventName === 'Stop') {
       if ((event.backgroundTaskCount ?? 0) > 0) return 'running';
-      if (asksForUser(event.finalMessage)) return 'needs_user';
+      if (asksForUserDecision(event.finalMessage)) return 'needs_user';
       return 'completed';
     }
 
