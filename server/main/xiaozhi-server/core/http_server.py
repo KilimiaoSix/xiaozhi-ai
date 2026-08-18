@@ -9,8 +9,10 @@ from core.api.presence_handler import PresenceHandler
 from core.api.camera_stream_handler import CameraStreamHandler
 from core.morning_brief.factory import create_morning_brief_service
 from core.morning_brief_routes import add_morning_brief_routes
+from core.api.pomodoro_handler import PomodoroHandler
 from core.presence_registry import PresenceRegistry
 from core.presence_routes import add_presence_routes
+from core.pomodoro_routes import add_pomodoro_routes
 
 TAG = __name__
 
@@ -42,6 +44,10 @@ class SimpleHttpServer:
             config,
             self.morning_brief_service,
             logger=self.logger,
+        )
+        # 番茄钟同样要按 device_id 找活跃连接才能推画面，没有 ws_server 就不开放
+        self.pomodoro_handler = (
+            PomodoroHandler(config, ws_server.device_registry) if ws_server else None
         )
 
     def _get_websocket_url(self, local_ip: str, port: int) -> str:
@@ -101,6 +107,9 @@ class SimpleHttpServer:
                     ),
                 ]
             )
+        if self.pomodoro_handler:
+            # 桌面端的番茄钟控制面板接口
+            add_pomodoro_routes(app, self.pomodoro_handler)
         app.add_routes(
             [
                 web.get("/mcp/vision/explain", self.vision_handler.handle_get),

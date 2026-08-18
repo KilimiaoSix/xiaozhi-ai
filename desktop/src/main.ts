@@ -8,6 +8,7 @@ import { registerCameraIpc } from './main/camera/registerCameraIpc';
 import { registerMonitoringWindowGuard } from './main/camera/monitoringWindowGuard';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
 import { registerFeishuIpc } from './main/feishuIpc';
+import { PomodoroHttpClient } from './main/pomodoro/pomodoroHttpClient';
 import { registerPomodoroIpc } from './main/pomodoro/registerPomodoroIpc';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
@@ -75,7 +76,10 @@ app.whenReady().then(() => {
     console.error('Agent Hook 监控启动失败', error);
   });
   cameraIpc = registerCameraIpc();
-  cleanupPomodoroIpc = registerPomodoroIpc();
+  cleanupPomodoroIpc = registerPomodoroIpc({
+    ipcMain,
+    client: new PomodoroHttpClient(),
+  });
   createWindow();
 
   app.on('activate', () => {

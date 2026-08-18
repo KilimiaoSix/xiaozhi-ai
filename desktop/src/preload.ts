@@ -9,14 +9,31 @@ import type {
   FeishuBriefingSnapshot,
   FeishuCliStatus,
 } from './modules/features/feishu-briefing/contracts';
+import type {
+  PomodoroCommandInput,
+  PomodoroDeviceListResult,
+  PomodoroIpcResult,
+  PomodoroStatus,
+} from './modules/features/focus-mode/types';
 import type { XiaofeiDesktopApi } from './shared/contracts';
 import { CAMERA_STREAM_CHANNELS } from './main/camera/cameraStreamIpc';
+import { POMODORO_CHANNELS } from './main/pomodoro/registerPomodoroIpc';
 
 const invoke = async <T>(channel: string, ...args: unknown[]): Promise<T> => {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>;
   if (!result.ok) throw new Error(result.error);
   return result.value;
 };
+
+// 番茄钟不能复用上面的 invoke：它把失败信封拍成 new Error(message)，而 contextBridge
+// 只搬 Error 的 message，code/status 到不了 renderer。信封原样交出去，
+// 由 pomodoroDesktopGateway 还原成 PomodoroGatewayError。
+const invokeEnvelope = async <T>(
+  channel: string,
+  ...args: unknown[]
+): Promise<PomodoroIpcResult<T>> => (
+  await ipcRenderer.invoke(channel, ...args) as PomodoroIpcResult<T>
+);
 
 const desktopApi: XiaofeiDesktopApi = {
   getRuntimeInfo: () => ({
@@ -67,9 +84,12 @@ const desktopApi: XiaofeiDesktopApi = {
     getBriefing: () => invoke<FeishuBriefingSnapshot>(FEISHU_CHANNELS.briefing),
   },
   pomodoro: {
-    listDevices: () => ipcRenderer.invoke('pomodoro:list-devices'),
-    getStatus: (deviceId) => ipcRenderer.invoke('pomodoro:get-status', deviceId),
-    sendCommand: (input) => ipcRenderer.invoke('pomodoro:send-command', input),
+    listDevices: () =>
+      invokeEnvelope<PomodoroDeviceListResult>(POMODORO_CHANNELS.listDevices),
+    getStatus: (deviceId: string) =>
+      invokeEnvelope<PomodoroStatus>(POMODORO_CHANNELS.getStatus, deviceId),
+    sendCommand: (input: PomodoroCommandInput) =>
+      invokeEnvelope<PomodoroStatus>(POMODORO_CHANNELS.sendCommand, input),
   },
 };
 

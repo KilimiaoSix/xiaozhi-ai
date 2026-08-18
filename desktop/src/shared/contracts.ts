@@ -14,6 +14,7 @@ import type {
 import type {
   PomodoroCommandInput,
   PomodoroDeviceListResult,
+  PomodoroIpcResult,
   PomodoroStatus,
 } from '../modules/features/focus-mode/types';
 
@@ -35,10 +36,12 @@ export interface AgentHooksDesktopApi {
   onSnapshot: (listener: (snapshot: AgentHooksSnapshot) => void) => () => void;
 }
 
+// 番茄钟走信封而不是裸值：错误的 code/status 必须以数据形式跨 contextBridge，
+// 见 PomodoroIpcResult 的说明。拆信封的活儿在 pomodoroDesktopGateway。
 export interface PomodoroDesktopApi {
-  listDevices: () => Promise<PomodoroDeviceListResult>;
-  getStatus: (deviceId: string) => Promise<PomodoroStatus>;
-  sendCommand: (input: PomodoroCommandInput) => Promise<PomodoroStatus>;
+  listDevices: () => Promise<PomodoroIpcResult<PomodoroDeviceListResult>>;
+  getStatus: (deviceId: string) => Promise<PomodoroIpcResult<PomodoroStatus>>;
+  sendCommand: (input: PomodoroCommandInput) => Promise<PomodoroIpcResult<PomodoroStatus>>;
 }
 
 export interface FeishuDesktopApi {

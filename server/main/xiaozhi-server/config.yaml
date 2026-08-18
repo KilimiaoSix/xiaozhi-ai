@@ -235,6 +235,17 @@ plugins:
     max_results: 5
     # 秘塔API Key（mk-前缀） / Tavily API Key（tvly-前缀）
     api_key: "mk-xxx"
+
+# 番茄钟。计时权威在服务端，设备只负责渲染画面。
+# 经典循环：专注 → 短休 → …… → 第 long_break_interval 轮专注结束后长休 → 回到第 1 轮。
+# 这一整段都有代码默认值，不写也能跑。
+pomodoro:
+  focus_minutes: 25
+  short_break_minutes: 5
+  long_break_minutes: 15
+  # 每完成几轮专注后进入一次长休
+  long_break_interval: 4
+
 # 声纹识别配置
 voiceprint:
   # 声纹接口地址
@@ -339,6 +350,7 @@ Intent:
       - play_music
       #- hass_state
       #- hass_play_music
+      - pomodoro                    # 番茄钟语音控制（开始/暂停/继续/跳过/停止/查询）
 
 Memory:
   mem0ai:

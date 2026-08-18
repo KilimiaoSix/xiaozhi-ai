@@ -764,6 +764,12 @@ main {
   color: #ffc0bb;
 }
 
+.pomodoro-device-offline {
+  padding-left: 12px;
+  border-left: 2px solid var(--amber);
+  color: #ffd9a0;
+}
+
 .pomodoro-body {
   display: flex;
   flex-wrap: wrap;
