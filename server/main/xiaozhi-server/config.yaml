@@ -41,6 +41,28 @@ server:
   mqtt_signature_key: null
   # UDP网关配置
   udp_gateway: null
+
+# i讯飞每日关注晨报（Phase 0/1：只读预览，不主动发送消息）
+morning_brief:
+  enabled: false
+  base_url: https://open.xfchat.iflytek.com
+  # 敏感值优先通过 IFLYTEK_USER_ACCESS_TOKEN 环境变量或 data/.config.yaml 提供。
+  user_access_token: ""
+  # 用户 open_id 也可通过 IFLYTEK_SELF_OPEN_ID 环境变量提供。
+  self_open_id: ""
+  # i讯飞不发放日历读权限（calendar:calendar:readonly），因此默认关闭日历源。
+  # 关闭后不会请求日历接口，覆盖状态记为 DISABLED，不会把整体状态拖成 PARTIAL。
+  calendar_enabled: false
+  timezone: Asia/Shanghai
+  ledger_path: data/morning_brief.sqlite3
+  page_size: 50
+  max_pages: 40
+  timeout_seconds: 15
+  overlap_minutes: 10
+  excerpt_chars: 240
+  excerpt_retention_days: 7
+  resolved_retention_days: 30
+
 log:
   # 设置控制台输出的日志格式，时间、日志级别、标签、消息
   log_format: "<green>{time:YYMMDD HH:mm:ss}</green>[{version}_{selected_module}][<light-blue>{extra[tag]}</light-blue>]-<level>{level}</level>-<light-green>{message}</light-green>"

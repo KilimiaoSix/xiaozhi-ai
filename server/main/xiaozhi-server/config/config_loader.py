@@ -67,6 +67,8 @@ async def get_config_from_api_async(config):
         "url": config["manager-api"].get("url", ""),
         "secret": config["manager-api"].get("secret", ""),
     }
+    # 晨报包含本机 OAuth 和最小化存储配置，不由远端智控台覆盖。
+    config_data["morning_brief"] = config.get("morning_brief", {})
     auth_enabled = config_data.get("server", {}).get("auth", {}).get("enabled", False)
     # server的配置以本地为准
     if config.get("server"):
