@@ -62,6 +62,26 @@ const emptyAgentSnapshot: AgentHooksSnapshot = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const logAgentSnapshot = (
+  phase: 'initial' | 'snapshot',
+  snapshot: AgentHooksSnapshot,
+): void => {
+  if (!import.meta.env.DEV) return;
+  console.info(`[LaunchCrush][agent-hooks:${phase}]`, {
+    updatedAt: snapshot.updatedAt,
+    installations: snapshot.installations.map((item) => ({
+      source: item.source,
+      available: item.available,
+      installed: item.installed,
+      configPath: item.configPath,
+      message: item.message,
+    })),
+    primaryTask: snapshot.primaryTask,
+    tasks: snapshot.tasks,
+    actionIntents: snapshot.actionIntents,
+  });
+};
+
 const formatTaskTime = (value: string): string =>
   new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
@@ -85,12 +105,18 @@ export function App() {
   useEffect(() => {
     let active = true;
     const unsubscribe = window.xiaofei.agentHooks.onSnapshot((snapshot) => {
-      if (active) setAgentSnapshot(snapshot);
+      if (active) {
+        logAgentSnapshot('snapshot', snapshot);
+        setAgentSnapshot(snapshot);
+      }
     });
 
     void window.xiaofei.agentHooks.getSnapshot()
       .then((snapshot) => {
-        if (active) setAgentSnapshot(snapshot);
+        if (active) {
+          logAgentSnapshot('initial', snapshot);
+          setAgentSnapshot(snapshot);
+        }
         return window.xiaofei.agentHooks.detect();
       })
       .catch((error: unknown) => {
