@@ -103,6 +103,14 @@ module_test:
     - "What's the weather like today?"
     - "请用100字概括量子计算的基本原理和应用前景"
 
+# 设备唤醒词。wakenet 是针对具体词训练的神经网络，只能在 esp-sr 预训练模型里选，
+# 不是任意字符串。用 scripts/pack_wake_word_assets.py 把模型打成 assets 包放进
+# data/bin/，服务端在设备 MCP 就绪后下发下载地址，设备下次启动生效。
+# 留空则设备沿用固件 model 分区里的兜底模型。display 会自动并入下面的 wakeup_words。
+wake_word:
+  display: ""
+  assets_file: ""
+
 # 唤醒词，用于识别唤醒词还是讲话内容
 wakeup_words:
   - "你好小智"
@@ -116,8 +124,6 @@ wakeup_words:
   - "喵喵同学"
   - "小滨小滨"
   - "小冰小冰"
-# MCP接入点地址，地址格式为：ws://你的mcp接入点ip或者域名:端口号/mcp/?token=你的token
-# 详细教程 https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
 mcp_endpoint: 你的接入点 websocket地址
 
 # 上下文源配置

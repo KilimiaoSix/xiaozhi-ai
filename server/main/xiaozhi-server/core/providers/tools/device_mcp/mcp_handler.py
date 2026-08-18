@@ -216,6 +216,13 @@ async def handle_mcp_message(
                     if hasattr(conn, "func_handler") and conn.func_handler:
                         conn.func_handler.tool_manager.refresh_tools()
                         conn.func_handler.current_support_functions()
+
+                    # 唤醒词模型经 assets 包下发，设备下次启动时生效
+                    try:
+                        from core.utils.wake_word import push_wake_word_assets
+                        await push_wake_word_assets(conn)
+                    except Exception as e:
+                        logger.bind(tag=TAG).error(f"下发唤醒词assets包失败: {e}")
             return
 
     # Handle method calls (requests from the client)
