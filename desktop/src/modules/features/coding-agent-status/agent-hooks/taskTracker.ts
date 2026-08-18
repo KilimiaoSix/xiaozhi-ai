@@ -118,6 +118,10 @@ export class AgentTaskTracker {
     return this.actionIntents.splice(0).map((intent) => ({ ...intent }));
   }
 
+  restore(tasks: AgentTaskSnapshot[]): void {
+    for (const task of tasks) this.tasks.set(task.key, { ...task });
+  }
+
   private statusFor(event: AgentEvent, current: AgentTaskStatus): AgentTaskStatus {
     const responseFailure = responseError(event.toolResponse);
     if (event.eventName === 'StopFailure'

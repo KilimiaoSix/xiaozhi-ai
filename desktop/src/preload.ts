@@ -1,6 +1,16 @@
-import { contextBridge } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 
+import { AGENT_HOOKS_CHANNELS, type IpcResult } from './main/agentHooksIpc';
+import type { AgentSource } from './modules/features/coding-agent-status/agent-hooks/contracts';
+import type { AgentHookDetection, AgentHookInstallResult } from './modules/features/coding-agent-status/agent-hooks/install/types';
+import type { AgentHooksSnapshot } from './modules/features/coding-agent-status/agent-hooks/runtime';
 import type { XiaofeiDesktopApi } from './shared/contracts';
+
+const invoke = async <T>(channel: string, ...args: unknown[]): Promise<T> => {
+  const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>;
+  if (!result.ok) throw new Error(result.error);
+  return result.value;
+};
 
 const desktopApi: XiaofeiDesktopApi = {
   getRuntimeInfo: () => ({
@@ -11,6 +21,23 @@ const desktopApi: XiaofeiDesktopApi = {
       node: process.versions.node,
     },
   }),
+  agentHooks: {
+    detect: () => invoke<AgentHookDetection[]>(AGENT_HOOKS_CHANNELS.detect),
+    install: (source: AgentSource) =>
+      invoke<AgentHookInstallResult>(AGENT_HOOKS_CHANNELS.install, source),
+    installAll: () =>
+      invoke<AgentHookInstallResult[]>(AGENT_HOOKS_CHANNELS.installAll),
+    uninstall: (source: AgentSource) =>
+      invoke<AgentHookInstallResult>(AGENT_HOOKS_CHANNELS.uninstall, source),
+    getSnapshot: () => invoke<AgentHooksSnapshot>(AGENT_HOOKS_CHANNELS.snapshot),
+    onSnapshot: (listener: (snapshot: AgentHooksSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: AgentHooksSnapshot) => {
+        listener(snapshot);
+      };
+      ipcRenderer.on(AGENT_HOOKS_CHANNELS.snapshotChanged, handler);
+      return () => { ipcRenderer.removeListener(AGENT_HOOKS_CHANNELS.snapshotChanged, handler); };
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('xiaofei', desktopApi);
