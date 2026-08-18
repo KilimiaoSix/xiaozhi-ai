@@ -16,7 +16,9 @@ describe('featureCatalog', () => {
     ]);
   });
 
-  it('marks every scaffold capability as a placeholder', () => {
-    expect(featureCatalog.every((feature) => feature.status === 'placeholder')).toBe(true);
+  it('只把编码 Agent 监控标记为已就绪', () => {
+    expect(featureCatalog.filter((feature) => feature.status === 'ready').map(({ id }) => id))
+      .toEqual(['coding-agent-status']);
+    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(7);
   });
 });

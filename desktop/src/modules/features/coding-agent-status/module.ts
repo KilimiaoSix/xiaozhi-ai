@@ -6,16 +6,16 @@ export const codingAgentStatusModule: FeatureModule = {
     code: 'CODE',
     title: 'Codex / Claude 状态提醒',
     summary: '追踪开发 Agent 的完成、等待确认和异常状态。',
-    triggerLabel: '模拟完成',
-    status: 'placeholder',
+    triggerLabel: '查看 Agent 任务',
+    status: 'ready',
     tone: 'cyan',
   },
   async execute() {
     return {
-      title: '编码任务已完成 · Mock',
-      detail: '已预留 Codex、Claude Code 和 WorkBuddy 状态事件入口。',
+      title: 'Agent 实时监控已打开',
+      detail: '可发现并配置 Codex、Claude Code 和 WorkBuddy 的全局 Hook。',
       tone: 'cyan',
-      source: 'mock',
+      source: 'live',
     };
   },
 };

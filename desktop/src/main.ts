@@ -1,5 +1,12 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'node:path';
+
+import type { AgentHooksRuntime } from './modules/features/coding-agent-status/agent-hooks/runtime';
+import { registerAgentHooksIpc } from './main/agentHooksIpc';
+import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
+
+let agentHooksRuntime: AgentHooksRuntime | undefined;
+let cleanupAgentHooksIpc: (() => void) | undefined;
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -33,6 +40,19 @@ const createWindow = (): void => {
 };
 
 app.whenReady().then(() => {
+  agentHooksRuntime = createAgentHooksRuntime({
+    homeDir: app.getPath('home'),
+    userDataPath: app.getPath('userData'),
+    electronPath: process.execPath,
+  });
+  cleanupAgentHooksIpc = registerAgentHooksIpc({
+    ipcMain,
+    runtime: agentHooksRuntime,
+    getWindows: () => BrowserWindow.getAllWindows(),
+  });
+  void agentHooksRuntime.start().catch((error: unknown) => {
+    console.error('Agent Hook 监控启动失败', error);
+  });
   createWindow();
 
   app.on('activate', () => {
@@ -40,6 +60,12 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+});
+
+app.on('before-quit', () => {
+  cleanupAgentHooksIpc?.();
+  cleanupAgentHooksIpc = undefined;
+  void agentHooksRuntime?.stop();
 });
 
 app.on('window-all-closed', () => {

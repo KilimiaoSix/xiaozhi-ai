@@ -5,7 +5,7 @@ export interface FeatureExecutionResult {
   title: string;
   detail: string;
   tone: FeatureTone;
-  source: 'mock';
+  source: 'mock' | 'live';
 }
 
 export interface FeatureRuntimeContext {
