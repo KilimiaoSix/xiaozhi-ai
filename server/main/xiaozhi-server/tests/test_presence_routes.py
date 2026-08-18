@@ -33,3 +33,4 @@ def test_lightweight_server_uses_shared_routes():
 
     assert ("POST", "/xiaozhi/presence/report") in route_signatures(app)
     assert ("GET", "/xiaozhi/presence/{workstation_id}") in route_signatures(app)
+    assert ("GET", "/xiaozhi/presence/stream") in route_signatures(app)

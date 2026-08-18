@@ -3,8 +3,16 @@
 from aiohttp import web
 
 
-def add_presence_routes(app: web.Application, handler) -> None:
-    app.add_routes(
+def add_presence_routes(app: web.Application, handler, stream_handler=None) -> None:
+    routes = []
+    if stream_handler is not None:
+        routes.append(
+            web.get(
+                "/xiaozhi/presence/stream",
+                stream_handler.handle_websocket,
+            )
+        )
+    routes.extend(
         [
             web.post("/xiaozhi/presence/report", handler.handle_report),
             web.options("/xiaozhi/presence/report", handler.handle_options),
@@ -14,3 +22,4 @@ def add_presence_routes(app: web.Application, handler) -> None:
             ),
         ]
     )
+    app.add_routes(routes)

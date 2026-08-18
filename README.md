@@ -6,12 +6,13 @@ AI Agent 驱动的打工人桌面宠物，由桌面应用、Server 和 ESP32-S3 
 ## 通信架构
 
 ```text
-Electron 桌面端 ── HTTP ──> Server ── WebSocket ──> ESP32-S3 机器人
+Electron 桌面端 ── HTTP / 摄像头 WebSocket ──> Server ── WebSocket ──> ESP32-S3 机器人
 ```
 
 - 桌面端不直接连接机器人。
-- Server 与机器人只使用 WebSocket 通信。
-- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook，也可通过飞书 CLI 读取当前用户的今日日程与未完成任务；Server HTTP 与机器人反馈发送仍为 Mock/功能占位。
+- 桌面端通过 HTTP 发送工作事件，通过带背压的 WebSocket 持续发送摄像头 JPEG。
+- Server 对同一帧执行人体在场和主人核验，再通过 WebSocket 与机器人通信。
+- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook，也可通过飞书 CLI 读取当前用户的今日日程与未完成任务。
 
 ## 目录
 
@@ -107,12 +108,46 @@ lark-cli auth login --scope "task:task:read calendar:calendar:readonly"
 cd server/main/xiaozhi-server && python app.py
 ```
 
+摄像头识别统一运行在 Server 的 Python 3.10 进程中，不需要额外 Python worker。已有 Server 虚拟环境增加摄像头依赖：
+
+```bash
+cd server/main/xiaozhi-server
+python -m pip install -r requirements-camera.txt
+python -m pip check
+```
+
+使用 pyenv 时，一个项目固定一个版本即可：
+
+```bash
+pyenv install -s 3.10.16
+pyenv local 3.10.16
+python -m venv .venv
+source .venv/bin/activate
+```
+
+统一依赖基线为 Python 3.10、NumPy 1.26.4、OpenCV contrib 4.11.0.86 和 MediaPipe 0.10.35。
+
 > 私有配置放在 `server/main/xiaozhi-server/data/.config.yaml`，该目录已被 `.gitignore` 排除，
 > 不要把真实密钥提交进仓库。
 
-## 运行工位在岗与本人识别
+## 桌面摄像头监测与主人录入
 
-Windows 本地演示可从仓库根目录一键启动：
+启动 Server 和桌面端后，在桌面应用“摄像头”页完成主人录入，再打开“实时监测”开关。桌面端独占摄像头，以 5 FPS、最大 640×360 的 JPEG 流发送给 Server。监测会跨页面切换、窗口最小化、Server 重启和摄像头短暂中断持续运行，直到手动关闭开关或退出应用。
+
+Server 地址和认证只提供给 Electron 主进程：
+
+```bash
+export XIAOFEI_SERVER_URL=http://127.0.0.1:8003
+export XIAOFEI_SERVER_AUTH_TOKEN='<server.auth_key>'
+cd desktop
+npm run dev
+```
+
+主人注册连续接受 20 个合格人脸样本，以其中 18 个样本生成模板。原始帧只在内存中流转，不写入磁盘。该识别没有活体检测，只能用于低风险提醒和个性化反馈。
+
+### 独立 presence-agent（兼容工具）
+
+没有桌面端的 Windows 部署仍可从仓库根目录启动独立兼容工具：
 
 ```powershell
 .\run-presence-stack.ps1 -WorkstationId desk-tfzhang11
@@ -143,7 +178,7 @@ $env:PRESENCE_AUTH_TOKEN = "<server.auth_key>"
   -WorkstationId desk-tfzhang11
 ```
 
-首次运行自动创建 `presence-agent/.venv` 并安装固定版本依赖。同一采集循环完成 MediaPipe Pose 与 YuNet/SFace 推理，避免两个进程争用摄像头。摄像头帧、完整人体关键点、人脸 embedding 和本人模板只在本机使用，不上传到 Server；本人模板保存在被 Git 忽略的 `presence-agent/.runtime/owner_template.npz`。设计与接口见：
+不要同时运行桌面摄像头监测和独立 Agent，否则会争用摄像头。独立 Agent 与 Server 摄像头能力使用同一 Python 3.10 依赖基线；摄像头帧、完整人体关键点、人脸 embedding 和本人模板只在本机使用。模板保存在被 Git 忽略的 `presence-agent/.runtime/owner_template.npz`。设计与接口见：
 
 - [`docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md`](docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md)
 - [`docs/superpowers/specs/2026-08-18-face-verification-integration-design.md`](docs/superpowers/specs/2026-08-18-face-verification-integration-design.md)

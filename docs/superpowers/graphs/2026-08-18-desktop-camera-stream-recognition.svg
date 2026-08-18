@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="2670" height="868" viewBox="0 0 2670 868">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="40" y="48" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Desktop persistent camera stream with presence and face recognition</text>
+  <text x="40" y="78" font-family="Consolas, monospace" font-size="13" fill="#475569">desktop-camera-stream-recognition</text>
+  <g id="edges" fill="none">
+    <path data-edge-index="0" d="M 350 182.0 C 435.0 182.0, 435.0 360.0, 520 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="435.0" y="263.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass</text>
+    <path data-edge-index="1" d="M 350 182.0 C 435.0 182.0, 435.0 182.0, 520 182.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="435.0" y="174.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail 0/2</text>
+    <path data-edge-index="2" d="M 350 182.0 C 435.0 182.0, 435.0 716.0, 520 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="435.0" y="441.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="3" d="M 350 182.0 C 435.0 182.0, 435.0 538.0, 520 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="435.0" y="352.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="4" d="M 520 182.0 C 465 272.0, 405 272.0, 350 182.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="435.0" y="264.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass 0/2</text>
+    <path data-edge-index="5" d="M 520 182.0 C 465 824.0, 855 824.0, 800 716.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="816.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail</text>
+    <path data-edge-index="6" d="M 520 182.0 C 465 788.0, 855 788.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="780.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="7" d="M 520 182.0 C 465 628.0, 855 628.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="620.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="8" d="M 800 360.0 C 885.0 360.0, 885.0 360.0, 970 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="352.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass</text>
+    <path data-edge-index="9" d="M 800 360.0 C 885.0 360.0, 885.0 182.0, 970 182.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="263.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail 0/2</text>
+    <path data-edge-index="10" d="M 520 360.0 C 465 806.0, 855 806.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="798.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="11" d="M 520 360.0 C 465 646.0, 855 646.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="638.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="12" d="M 970 182.0 C 915 432.0, 855 432.0, 800 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="424.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass 0/2</text>
+    <path data-edge-index="13" d="M 970 182.0 C 915 806.0, 855 806.0, 800 716.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="798.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail</text>
+    <path data-edge-index="14" d="M 970 182.0 C 915 824.0, 855 824.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="816.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="15" d="M 970 182.0 C 915 610.0, 855 610.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="602.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="16" d="M 1250 360.0 C 1335.0 360.0, 1335.0 360.0, 1420 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="352.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass</text>
+    <path data-edge-index="17" d="M 1250 360.0 C 1335.0 360.0, 1335.0 182.0, 1420 182.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="263.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail 0/2</text>
+    <path data-edge-index="18" d="M 970 360.0 C 915 788.0, 855 788.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="780.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="19" d="M 970 360.0 C 915 628.0, 855 628.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="885.0" y="620.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="20" d="M 1420 182.0 C 1365 468.0, 1305 468.0, 1250 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="460.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass 0/2</text>
+    <path data-edge-index="21" d="M 1420 182.0 C 1365 788.0, 855 788.0, 800 716.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1110.0" y="780.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail</text>
+    <path data-edge-index="22" d="M 1420 182.0 C 1365 806.0, 855 806.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1110.0" y="798.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="23" d="M 1420 182.0 C 1365 646.0, 855 646.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1110.0" y="638.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="24" d="M 1700 360.0 C 1785.0 360.0, 1785.0 360.0, 1870 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1785.0" y="352.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass</text>
+    <path data-edge-index="25" d="M 1700 360.0 C 1785.0 360.0, 1785.0 182.0, 1870 182.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1785.0" y="263.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail 0/2</text>
+    <path data-edge-index="26" d="M 1420 360.0 C 1365 824.0, 855 824.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1110.0" y="816.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="27" d="M 1420 360.0 C 1365 610.0, 855 610.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1110.0" y="602.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="28" d="M 1870 182.0 C 1815 450.0, 1755 450.0, 1700 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1785.0" y="442.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass 0/2</text>
+    <path data-edge-index="29" d="M 1870 182.0 C 1815 824.0, 855 824.0, 800 716.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="816.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail</text>
+    <path data-edge-index="30" d="M 1870 182.0 C 1815 788.0, 855 788.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="780.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="31" d="M 1870 182.0 C 1815 628.0, 855 628.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="620.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="32" d="M 2150 360.0 C 2235.0 360.0, 2235.0 360.0, 2320 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="2235.0" y="352.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass</text>
+    <path data-edge-index="33" d="M 2150 360.0 C 2235.0 360.0, 2235.0 182.0, 2320 182.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="2235.0" y="263.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail 0/2</text>
+    <path data-edge-index="34" d="M 1870 360.0 C 1815 806.0, 855 806.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="798.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="35" d="M 1870 360.0 C 1815 646.0, 855 646.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1335.0" y="638.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="36" d="M 2320 182.0 C 2265 432.0, 2205 432.0, 2150 360.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="2235.0" y="424.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass 0/2</text>
+    <path data-edge-index="37" d="M 2320 182.0 C 2265 806.0, 855 806.0, 800 716.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1560.0" y="798.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail</text>
+    <path data-edge-index="38" d="M 2320 182.0 C 2265 824.0, 855 824.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1560.0" y="816.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+    <path data-edge-index="39" d="M 2320 182.0 C 2265 610.0, 855 610.0, 800 538.0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1560.0" y="602.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#7c3aed">scope_change</text>
+    <path data-edge-index="40" d="M 520 538.0 C 465 628.0, 405 628.0, 350 182.0" stroke="#15803d" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="435.0" y="620.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#15803d">pass 0/1</text>
+    <path data-edge-index="41" d="M 520 538.0 C 465 824.0, 855 824.0, 800 716.0" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="816.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#dc2626">fail</text>
+    <path data-edge-index="42" d="M 520 538.0 C 465 788.0, 855 788.0, 800 716.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="660.0" y="780.0" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#64748b">blocked</text>
+  </g>
+  <g id="nodes">
+    <g data-node-id="server-inference-domain">
+      <rect x="70" y="130" width="280" height="104" rx="14" fill="#dcfce7" stroke="#334155" stroke-width="2"/>
+      <text x="86" y="158" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Build unified Server camera inference dom…</text>
+      <text x="86" y="183" font-family="Consolas, monospace" font-size="12" fill="#475569">server-inference-domain</text>
+      <text x="86" y="208" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · passed</text>
+    </g>
+    <g data-node-id="rework-server-inference">
+      <rect x="520" y="130" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#334155" stroke-width="2"/>
+      <text x="536" y="158" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Diagnose Server inference or dependency f…</text>
+      <text x="536" y="183" font-family="Consolas, monospace" font-size="12" fill="#475569">rework-server-inference</text>
+      <text x="536" y="208" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · blocked</text>
+    </g>
+    <g data-node-id="server-websocket-session">
+      <rect x="520" y="308" width="280" height="104" rx="14" fill="#dcfce7" stroke="#334155" stroke-width="2"/>
+      <text x="536" y="336" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Integrate aiohttp stream session and regi…</text>
+      <text x="536" y="361" font-family="Consolas, monospace" font-size="12" fill="#475569">server-websocket-session</text>
+      <text x="536" y="386" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · passed</text>
+    </g>
+    <g data-node-id="rework-server-session">
+      <rect x="970" y="130" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#334155" stroke-width="2"/>
+      <text x="986" y="158" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Diagnose Server stream integration failure</text>
+      <text x="986" y="183" font-family="Consolas, monospace" font-size="12" fill="#475569">rework-server-session</text>
+      <text x="986" y="208" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · blocked</text>
+    </g>
+    <g data-node-id="electron-transport">
+      <rect x="970" y="308" width="280" height="104" rx="14" fill="#dcfce7" stroke="#334155" stroke-width="2"/>
+      <text x="986" y="336" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Build Electron WebSocket transport and IPC</text>
+      <text x="986" y="361" font-family="Consolas, monospace" font-size="12" fill="#475569">electron-transport</text>
+      <text x="986" y="386" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · passed</text>
+    </g>
+    <g data-node-id="rework-electron-transport">
+      <rect x="1420" y="130" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#334155" stroke-width="2"/>
+      <text x="1436" y="158" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Diagnose Electron transport failure</text>
+      <text x="1436" y="183" font-family="Consolas, monospace" font-size="12" fill="#475569">rework-electron-transport</text>
+      <text x="1436" y="208" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · blocked</text>
+    </g>
+    <g data-node-id="persistent-monitoring-ui">
+      <rect x="1420" y="308" width="280" height="104" rx="14" fill="#dcfce7" stroke="#334155" stroke-width="2"/>
+      <text x="1436" y="336" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Build app-level persistent monitoring and…</text>
+      <text x="1436" y="361" font-family="Consolas, monospace" font-size="12" fill="#475569">persistent-monitoring-ui</text>
+      <text x="1436" y="386" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · passed</text>
+    </g>
+    <g data-node-id="rework-persistent-ui">
+      <rect x="1870" y="130" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#334155" stroke-width="2"/>
+      <text x="1886" y="158" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Diagnose persistent monitoring UI failure</text>
+      <text x="1886" y="183" font-family="Consolas, monospace" font-size="12" fill="#475569">rework-persistent-ui</text>
+      <text x="1886" y="208" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · blocked</text>
+    </g>
+    <g data-node-id="integration-verification">
+      <rect x="1870" y="308" width="280" height="104" rx="14" fill="#dcfce7" stroke="#334155" stroke-width="2"/>
+      <text x="1886" y="336" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Verify the complete registration and moni…</text>
+      <text x="1886" y="361" font-family="Consolas, monospace" font-size="12" fill="#475569">integration-verification</text>
+      <text x="1886" y="386" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">gate · passed</text>
+    </g>
+    <g data-node-id="rework-integration">
+      <rect x="2320" y="130" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#334155" stroke-width="2"/>
+      <text x="2336" y="158" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Diagnose integration verification failure</text>
+      <text x="2336" y="183" font-family="Consolas, monospace" font-size="12" fill="#475569">rework-integration</text>
+      <text x="2336" y="208" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">action · blocked</text>
+    </g>
+    <g data-node-id="scope-approval">
+      <rect x="520" y="486" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#334155" stroke-width="2"/>
+      <text x="536" y="514" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Approve a material scope or topology chan…</text>
+      <text x="536" y="539" font-family="Consolas, monospace" font-size="12" fill="#475569">scope-approval</text>
+      <text x="536" y="564" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">approval · blocked</text>
+    </g>
+    <g data-node-id="success">
+      <rect x="2320" y="308" width="280" height="104" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="2336" y="336" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Complete camera stream recognition</text>
+      <text x="2336" y="361" font-family="Consolas, monospace" font-size="12" fill="#475569">success</text>
+      <text x="2336" y="386" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">terminal · passed</text>
+    </g>
+    <g data-node-id="stopped">
+      <rect x="520" y="664" width="280" height="104" rx="14" fill="#e5e7eb" stroke="#b91c1c" stroke-width="2"/>
+      <text x="536" y="692" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Stop and report preserved evidence</text>
+      <text x="536" y="717" font-family="Consolas, monospace" font-size="12" fill="#475569">stopped</text>
+      <text x="536" y="742" font-family="Segoe UI, sans-serif" font-size="12" fill="#334155">terminal · blocked</text>
+    </g>
+  </g>
+</svg>

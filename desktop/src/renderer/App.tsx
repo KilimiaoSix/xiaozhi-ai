@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { featureCatalog, featureRegistry } from '../modules/features';
 import { CameraPage } from '../modules/features/camera-capture';
+import { useCameraMonitoring } from '../modules/features/camera-capture/context/CameraMonitoringProvider';
 import type {
   AgentSource,
   AgentTaskSnapshot,
@@ -120,6 +121,7 @@ const formatFeishuDue = (value?: string, allDay = false): string => {
 };
 
 export function App() {
+  const cameraMonitoring = useCameraMonitoring();
   const [activePage, setActivePage] = useState<'dashboard' | 'camera'>('dashboard');
   const [activeFeature, setActiveFeature] = useState(featureCatalog[0]);
   const [events, setEvents] = useState(initialEvents);
@@ -361,6 +363,15 @@ export function App() {
           >
             摄像头
           </button>
+          {cameraMonitoring.enabled && (
+            <button
+              className={`status-pill camera-monitoring-pill ${cameraMonitoring.connection === 'online' ? 'is-live' : 'is-idle'}`}
+              type="button"
+              onClick={() => setActivePage('camera')}
+            >
+              <i />{cameraMonitoring.connection === 'online' ? '摄像头监测中' : '摄像头重连中'}
+            </button>
+          )}
           <span className="build-label">LAB BUILD 0.1.0</span>
           <span className="runtime-label">Electron {runtime.versions.electron}</span>
           <span className={`status-pill ${activeAgentHookCount > 0 ? 'is-live' : 'is-idle'}`}>

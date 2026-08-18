@@ -5,6 +5,7 @@ import os
 
 from aiohttp import web
 
+from core.api.camera_stream_handler import CameraStreamHandler
 from core.api.presence_handler import PresenceHandler
 from core.presence_registry import PresenceRegistry
 from core.presence_routes import add_presence_routes
@@ -17,7 +18,13 @@ def create_presence_app(
     app = web.Application()
     current_registry = registry or PresenceRegistry()
     app["presence_registry"] = current_registry
-    add_presence_routes(app, PresenceHandler(config, current_registry))
+    stream_handler = CameraStreamHandler(config, current_registry)
+    app["camera_stream_handler"] = stream_handler
+    add_presence_routes(
+        app,
+        PresenceHandler(config, current_registry),
+        stream_handler,
+    )
     return app
 
 

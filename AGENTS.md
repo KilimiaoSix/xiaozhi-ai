@@ -30,13 +30,12 @@ Claude Code 的工作方式约定另见 [CLAUDE.md](CLAUDE.md)，那里不重复
 Codex / Claude Code / WorkBuddy          摄像头
         │ hook 回调                        │
         ▼                                  ▼
-   desktop/                         presence-agent/
-   事件采集 + 看板                   在岗与本人识别
-   （规则判定，无 LLM）              （独立进程，独占摄像头）
-        │                                  │
-        │  ……尚未接通                      │ HTTP /xiaozhi/presence/report
-        │                                  ▼
-        └────────────────────────►    server/  ◄── 主要大脑
+   desktop/ ───────────────────────► WebSocket 摄像头流
+   事件采集 + 看板 + 摄像头所有者          │
+   （规则判定，无 LLM）                    ▼
+        │                            server/  ◄── 主要大脑
+        │  ……工作事件尚未接通          同帧人体与主人识别
+        └──────────────────────────►       │
                                      LLM · 意图 · 记忆 · 工具
                                      ASR · TTS · VAD
                                           │ WebSocket + 裸 Opus
@@ -55,6 +54,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 2. **ESP32-S3 的唯一通信对端。** `ws://host:8000/xiaozhi/v1/`，自定义 JSON 协议 + 裸 Opus 二进制帧。
 3. **外部工作事件入口。** `POST /xiaozhi/event/push` 按 `device_id` 从 `DeviceRegistry` 查到活跃连接后直接下发。这条路径**不经过 LLM**，只把文本写进对话历史供后续追问；"该不该打扰、配什么表情动作"由调用方决定。
 4. **在岗状态汇聚。** 接收 `POST /xiaozhi/presence/report` 并在内存维护每工位最新状态，超 30 秒无上报派生为 `stale`。
+5. **桌面摄像头识别。** `GET /xiaozhi/presence/stream` 升级为 WebSocket，接收桌面 JPEG 流，在同一解码帧上运行 MediaPipe Pose 与 YuNet/SFace，并把稳定状态写入同一个 PresenceRegistry。
 
 ### desktop/ — 事件采集与看板
 
@@ -62,7 +62,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 
 1. 往本机 Codex / Claude Code / WorkBuddy 的 JSON 配置注入带 `launchcrush-agent-hook` 标记的 hook，让它们在 SessionStart / PreToolUse / Stop 等时机回调一个落盘的 Node 脚本。
 2. hook 脚本把事件原子落盘到 `userData/agent-hooks/inbox`，主进程 watch 消费并用**纯规则**（关键字、正则、事件名映射，见 `taskTracker.ts`）判定成 running / completed / failed / needs_user 四态，经 IPC 推给界面。
-3. 一个摄像头页面，抓 JPEG 经 IPC 交主进程上传。
+3. 应用根 Provider 独占摄像头，监测开启后以 5 FPS 生成最大 640×360 JPEG，经 IPC 交给主进程 WebSocket 客户端；切页、最小化、Server 断线和摄像头短暂中断都保留监测意图，只有手动关闭或退出应用才停止。
 
 ### firmware/ — 表演终端
 
@@ -70,7 +70,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 
 ### presence-agent/ — 在岗与本人识别
 
-独立的本机 Python 命令行进程，**不是 desktop 的子模块，也不被 desktop 拉起**。独占一路摄像头，同一帧同时做两件事：MediaPipe Pose 判"工位上有没有人"、OpenCV YuNet + SFace 判"是不是本人"。两条状态机都做了防抖，稳定后把状态与相似度数值 POST 给 Server。**画面、landmark、人脸 embedding 都不出本机。**
+无桌面应用部署时的兼容 Python 命令行工具，**不是 desktop 的子模块，也不被 desktop 拉起**。它可独占一路摄像头，在本机同帧运行 MediaPipe Pose 与 YuNet/SFace，再把稳定状态 POST 给 Server。不能与桌面摄像头监测同时运行。默认产品链路使用 desktop → Server WebSocket，独立 Agent 只作为兼容入口。
 
 ## 关键接口契约
 
@@ -82,6 +82,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 | GET | `/xiaozhi/event/devices` | 列出 WebSocket 在线设备，联调必用 |
 | POST | `/xiaozhi/presence/report` | 在岗状态上报 |
 | GET | `/xiaozhi/presence/{workstation_id}` | 查询工位最新状态 |
+| WS | `/xiaozhi/presence/stream` | 桌面端主人注册与持续摄像头识别 |
 | GET/POST | `/xiaozhi/ota/` | 简易 OTA，下发 WebSocket 地址 |
 | GET/POST | `/mcp/vision/explain` | 视觉分析 |
 
@@ -123,7 +124,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 
 **没有的东西**（设计时别假设它存在）：
 
-- **没有摄像头**——机器人本体无任何视觉能力，视觉一律走 Mac 摄像头（presence-agent）。
+- **没有摄像头**——机器人本体无任何视觉能力，视觉一律走桌面应用持有的 Mac 摄像头；无桌面部署才使用独立 presence-agent。
 - **没有 PAJ7620U2 手势传感器**——`firmware/main/boards/esp32-s3n16r8-emoji/gesture_sensor.cc` 是上游带的死代码，开机探测失败后自动禁用。且该芯片原理上只能识别方向类动态手势，无法分类"竖大拇指"这种静态手型。
 - **不能做声源定位**——单颗全向麦不含方位信息，"云台自动转向说话人"物理上不可行；转向只能按剧本编排。
 - 屏幕画不出复合画面——16px 中文一行约 8 字、最多 4 行，无灰度。富信息一律落到电脑屏幕。
@@ -135,15 +136,14 @@ Codex / Claude Code / WorkBuddy          摄像头
 - 涉及授权或高风险操作时，只提醒用户，不代替用户确认。
 - 优先保证三分钟核心演示稳定，不随意扩展与主线无关的功能。
 - 模拟事件可以用于开发和演示，但必须明确标注为模拟或回放数据。
-- 摄像头相关：画面与人脸特征不出本机，只上报状态与聚合指标。
+- 摄像头相关：原始帧只在桌面与配置的 Server 间以内存流传输，不落盘、不写日志；人脸 embedding 与模板内容不离开 Server 推理进程。
 
 ## 当前尚未接通的地方
 
 这些是真实缺口，不是待办清单里的空话。动手前先确认是否已被别人补上：
 
 1. **desktop 的事件到不了 Server。** 它算出的 `RobotActionIntent` 只在界面打印，没有任何代码把它发给 Server。"编码 Agent 事件 → 机器人反应"这条主链路中间是断的。
-2. **desktop 的摄像头上传打空。** 它 POST 到 `/api/identity/enroll` 与 `/api/vision/frames`，而 Server 只有 `/xiaozhi/presence/*`，没有任何 `/api/*` 路由。
-3. **在岗状态没有消费方。** presence-agent → Server 已跑通，但 Server 收下后只存进内存字典，没有 LLM 工具、推送编排或固件动作读过它。
+2. **在岗状态没有消费方。** desktop/presence-agent → Server 已跑通，但 Server 收下后只存进内存 Registry，没有 LLM 工具、推送编排或固件动作读过它。
 
 ## 项目约定
 

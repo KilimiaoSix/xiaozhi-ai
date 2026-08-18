@@ -7,10 +7,9 @@ import type {
 } from '../modules/features/feishu-briefing/contracts';
 import type {
   CameraPermissionStatus,
-  MonitoringFrameInput,
-  MonitoringFrameResult,
-  OwnerEnrollmentInput,
-  OwnerEnrollmentResult,
+  FrameSendResult,
+  RecognitionEvent,
+  RecognitionStreamOptions,
 } from '../modules/features/camera-capture/types';
 
 export interface RuntimeInfo {
@@ -36,15 +35,23 @@ export interface FeishuDesktopApi {
   getBriefing: () => Promise<FeishuBriefingSnapshot>;
 }
 
+export interface CameraRecognitionDesktopApi {
+  start: (options: RecognitionStreamOptions) => Promise<void>;
+  sendFrame: (jpeg: ArrayBuffer) => Promise<FrameSendResult>;
+  stop: () => Promise<void>;
+  onEvent: (listener: (event: RecognitionEvent) => void) => () => void;
+}
+
+export interface CameraDesktopApi {
+  getPermissionStatus: () => Promise<CameraPermissionStatus>;
+  requestPermission: () => Promise<CameraPermissionStatus>;
+  openPrivacySettings: () => Promise<void>;
+  recognition: CameraRecognitionDesktopApi;
+}
+
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
-  getCameraPermissionStatus: () => Promise<CameraPermissionStatus>;
-  requestCameraPermission: () => Promise<CameraPermissionStatus>;
-  openCameraPrivacySettings: () => Promise<void>;
-  enrollOwnerFace: (input: OwnerEnrollmentInput) => Promise<OwnerEnrollmentResult>;
-  uploadMonitoringFrame: (
-    input: MonitoringFrameInput,
-  ) => Promise<MonitoringFrameResult>;
+  camera: CameraDesktopApi;
   feishu: FeishuDesktopApi;
 }

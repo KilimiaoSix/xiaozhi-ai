@@ -5,12 +5,15 @@ import type { AgentHooksRuntime } from './modules/features/coding-agent-status/a
 import { LarkCliClient } from './modules/features/feishu-briefing/larkCli';
 import { registerAgentHooksIpc } from './main/agentHooksIpc';
 import { registerCameraIpc } from './main/camera/registerCameraIpc';
+import { registerMonitoringWindowGuard } from './main/camera/monitoringWindowGuard';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
 import { registerFeishuIpc } from './main/feishuIpc';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
 let cleanupAgentHooksIpc: (() => void) | undefined;
 let cleanupFeishuIpc: (() => void) | undefined;
+let cameraIpc: ReturnType<typeof registerCameraIpc> | undefined;
+let isQuitting = false;
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -33,6 +36,11 @@ const createWindow = (): void => {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: 'deny' };
+  });
+  registerMonitoringWindowGuard({
+    window: mainWindow,
+    isMonitoringActive: () => cameraIpc?.isMonitoringActive() ?? false,
+    isQuitting: () => isQuitting,
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -64,7 +72,7 @@ app.whenReady().then(() => {
   void agentHooksRuntime.start().catch((error: unknown) => {
     console.error('Agent Hook 监控启动失败', error);
   });
-  registerCameraIpc();
+  cameraIpc = registerCameraIpc();
   createWindow();
 
   app.on('activate', () => {
@@ -75,6 +83,9 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  cameraIpc?.cleanup();
+  cameraIpc = undefined;
   cleanupAgentHooksIpc?.();
   cleanupAgentHooksIpc = undefined;
   cleanupFeishuIpc?.();

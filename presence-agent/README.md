@@ -1,6 +1,6 @@
 # 工位在岗与本人识别 Agent
 
-`presence-agent` 在一个摄像头采集循环中使用 MediaPipe 判断是否有人，并使用 YuNet/SFace 判断单张人脸是否为本机登记的本人。它只上报稳定状态、相似度和少量聚合指标，不会上传画面、截图、完整 landmark、人脸 embedding 或本人模板；除本地本人模板外也不会保存这些数据。
+`presence-agent` 是无桌面应用部署时的兼容 CLI。默认产品链路由 Electron 独占摄像头并把 JPEG 流发送到 Server；不要同时开启桌面监测和本 CLI。CLI 在一个采集循环中使用 MediaPipe 判断是否有人，并使用 YuNet/SFace 核验本人，只上报稳定状态、相似度和少量聚合指标，不会上传画面、截图、完整 landmark、人脸 embedding 或本人模板。
 
 ## 登记与删除本人模板
 
@@ -20,7 +20,7 @@
 
 ## 单独运行
 
-首次运行会自动创建独立 `.venv` 并安装固定版本依赖：
+首次运行会创建 `.venv`。它与 Server 摄像头能力使用同一基线：Python 3.10、NumPy 1.26.4、OpenCV contrib 4.11.0.86、MediaPipe 0.10.35，不需要为同一仓库维护多个 Python 版本：
 
 ```powershell
 cd presence-agent
