@@ -1,0 +1,108 @@
+import type {
+  AgentHookSourceDefinition,
+  OwnedHookCommandOptions,
+} from './types';
+
+export const OWNED_HOOK_MARKER = 'launchcrush-agent-hook';
+
+type JsonRecord = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is JsonRecord =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
+
+export const createOwnedHookCommand = (
+  options: OwnedHookCommandOptions,
+): string => [
+  'ELECTRON_RUN_AS_NODE=1',
+  shellQuote(options.electronPath),
+  shellQuote(options.runnerPath),
+  '--owner',
+  OWNED_HOOK_MARKER,
+  '--source',
+  options.source,
+  '--spool',
+  shellQuote(options.spoolPath),
+].join(' ');
+
+const handlerIsOwned = (value: unknown): boolean =>
+  isRecord(value)
+  && typeof value.command === 'string'
+  && value.command.includes(`--owner ${OWNED_HOOK_MARKER}`);
+
+const groupHasOwnedHandler = (value: unknown): boolean =>
+  isRecord(value)
+  && Array.isArray(value.hooks)
+  && value.hooks.some(handlerIsOwned);
+
+const configClone = (value: unknown): JsonRecord => {
+  if (!isRecord(value)) {
+    throw new Error('Hook 配置根节点必须是 JSON 对象');
+  }
+  return structuredClone(value);
+};
+
+export const mergeOwnedHooks = (
+  existing: unknown,
+  definition: AgentHookSourceDefinition,
+  command: string,
+): JsonRecord => {
+  const config = configClone(existing);
+  if ('hooks' in config && !isRecord(config.hooks)) {
+    throw new Error('Hook 配置中的 hooks 必须是 JSON 对象');
+  }
+  const hooks: JsonRecord = isRecord(config.hooks) ? config.hooks : {};
+
+  for (const eventName of definition.events) {
+    const current = hooks[eventName];
+    if (current !== undefined && !Array.isArray(current)) {
+      throw new Error(`${eventName} Hook 配置必须是数组`);
+    }
+    const groups = Array.isArray(current) ? current : [];
+    if (groups.some(groupHasOwnedHandler)) continue;
+
+    groups.push({
+      ...(definition.toolEvents.includes(eventName) ? { matcher: '.*' } : {}),
+      hooks: [{ type: 'command', command, timeout: 5 }],
+    });
+    hooks[eventName] = groups;
+  }
+
+  config.hooks = hooks;
+  return config;
+};
+
+export const unmergeOwnedHooks = (existing: unknown): JsonRecord => {
+  const config = configClone(existing);
+  if (!isRecord(config.hooks)) return config;
+
+  const nextHooks: JsonRecord = {};
+  for (const [eventName, rawGroups] of Object.entries(config.hooks)) {
+    if (!Array.isArray(rawGroups)) {
+      nextHooks[eventName] = rawGroups;
+      continue;
+    }
+
+    const groups = rawGroups.flatMap((rawGroup): unknown[] => {
+      if (!isRecord(rawGroup) || !Array.isArray(rawGroup.hooks)) return [rawGroup];
+      const handlers = rawGroup.hooks.filter((handler) => !handlerIsOwned(handler));
+      return handlers.length > 0 ? [{ ...rawGroup, hooks: handlers }] : [];
+    });
+    if (groups.length > 0) nextHooks[eventName] = groups;
+  }
+
+  if (Object.keys(nextHooks).length > 0) {
+    config.hooks = nextHooks;
+  } else {
+    delete config.hooks;
+  }
+  return config;
+};
+
+export const hasOwnedHooks = (existing: unknown): boolean =>
+  isRecord(existing)
+  && isRecord(existing.hooks)
+  && Object.values(existing.hooks).some((groups) =>
+    Array.isArray(groups) && groups.some(groupHasOwnedHandler));
+
