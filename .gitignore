@@ -1,0 +1,21 @@
+# ===== 通用 =====
+.DS_Store
+*~
+*.swp
+
+# ===== 下位机 firmware（ESP-IDF 编译产物，不入库）=====
+firmware/build/
+firmware/build-*/
+firmware/sdkconfig.old
+firmware/serial_log.txt
+firmware/**/tmp/
+firmware/.vscode/c_cpp_properties.json
+
+# ===== 上位机 server =====
+# server/ 目录下另有上游自带的 .gitignore，此处只补充易漏项
+server/main/xiaozhi-server/data/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/

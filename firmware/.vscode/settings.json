@@ -1,0 +1,9 @@
+{
+    "idf.currentSetup": "/Users/kilimiao/esp/esp-idf-v5.5.3",
+    "idf.buildPath": "${workspaceFolder}/build-macos",
+    "idf.port": "detect",
+    "idf.monitorPort": "",
+    "idf.flashBaudRate": "460800",
+    "idf.monitorBaudRate": "115200",
+    "idf.flashType": "UART"
+}
