@@ -91,6 +91,36 @@ cd server/main/xiaozhi-server && python app.py
 > 私有配置放在 `server/main/xiaozhi-server/data/.config.yaml`，该目录已被 `.gitignore` 排除，
 > 不要把真实密钥提交进仓库。
 
+## 运行工位在岗检测
+
+Windows 本地演示可从仓库根目录一键启动：
+
+```powershell
+.\run-presence-stack.ps1 -WorkstationId desk-tfzhang11
+```
+
+脚本会优先复用 `http://127.0.0.1:8003` 上已运行且支持 presence API 的完整 Server。未找到时默认启动复用同一 Registry/Handler 的轻量 presence-only Server；若要由脚本启动完整 Server，显式传入其 Python 解释器：
+
+```powershell
+.\run-presence-stack.ps1 `
+  -WorkstationId desk-tfzhang11 `
+  -ServerPython C:\path\to\python.exe
+```
+
+远程或 Docker Server 场景只启动本机 sidecar：
+
+```powershell
+$env:PRESENCE_AUTH_TOKEN = "<server.auth_key>"
+.\presence-agent\run.ps1 `
+  -ServerUrl http://server-host:8003 `
+  -WorkstationId desk-tfzhang11
+```
+
+首次运行自动创建 `presence-agent/.venv` 并安装固定版本依赖。摄像头帧和完整人体关键点只在本机进程内使用，不上传到 Server。设计与接口见：
+
+- [`docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md`](docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md)
+- [`docs/api/camera-presence-api.md`](docs/api/camera-presence-api.md)
+
 ## 构建下位机 firmware
 
 - 芯片：`esp32s3`（`CONFIG_IDF_TARGET="esp32s3"`）

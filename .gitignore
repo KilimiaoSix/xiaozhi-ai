@@ -22,3 +22,7 @@ node_modules/
 
 # ===== 本地隔离开发工作区 =====
 .worktrees/
+
+# ===== 工位在岗检测运行环境 =====
+presence-agent/.venv/
+presence-agent/.runtime/

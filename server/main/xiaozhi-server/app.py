@@ -98,6 +98,16 @@ async def main():
         get_local_ip(),
         port,
     )
+    logger.bind(tag=TAG).info(
+        "在岗状态上报是\thttp://{}:{}/xiaozhi/presence/report",
+        get_local_ip(),
+        port,
+    )
+    logger.bind(tag=TAG).info(
+        "在岗状态查询是\thttp://{}:{}/xiaozhi/presence/{{workstation_id}}",
+        get_local_ip(),
+        port,
+    )
     mcp_endpoint = config.get("mcp_endpoint", None)
     if mcp_endpoint is not None and "你" not in mcp_endpoint:
         # 校验MCP接入点格式
