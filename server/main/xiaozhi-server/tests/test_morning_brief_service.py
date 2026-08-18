@@ -6,13 +6,13 @@ import pytest
 from core.morning_brief.ledger import AttentionLedger
 from core.morning_brief.models import AttentionItem
 from core.morning_brief.service import MorningBriefService
-from core.morning_brief.xfchat_client import (
+from core.morning_brief.feishu_client import (
     AuthenticationRequired,
     CALENDAR_SCOPES,
     CollectionResult,
     MESSAGE_SCOPES,
     REQUIRED_SCOPES,
-    XfChatApiError,
+    FeishuApiError,
 )
 
 
@@ -137,7 +137,7 @@ async def test_complete_preview_uses_two_message_scans_and_deduplicates(tmp_path
     assert service.ledger.get_watermark("messages") == NOW
     assert [item["item_id"] for item in report["top_three"]] == ["om_1", "om_2"]
     assert report["other_unhandled_mentions"] == []
-    assert report["disclaimer"] == "待关注/未处理不等同于 i讯飞客户端真实未读。"
+    assert report["disclaimer"] == "待关注/未处理不等同于飞书客户端真实未读。"
 
 
 @pytest.mark.asyncio
@@ -244,7 +244,7 @@ async def test_user_reply_closes_an_older_item_in_the_same_topic(tmp_path):
                 mention_kind="DIRECT",
                 short_excerpt="请确认",
                 source_timestamp=NOW - timedelta(hours=1),
-                source_url="xfchat://message/om_original",
+                source_url="https://applink.feishu.cn/client/chat/open?openChatId=oc_om_original",
             )
         ],
         NOW - timedelta(hours=1),
@@ -308,7 +308,7 @@ async def test_all_sources_auth_failure_returns_failed_diagnostic(tmp_path):
 @pytest.mark.asyncio
 async def test_permission_failure_is_visible_in_report_and_health(tmp_path):
     client = FakeClient()
-    error = XfChatApiError(
+    error = FeishuApiError(
         "/open-apis/search/v2/message",
         400,
         99991672,
@@ -356,7 +356,7 @@ async def test_disabled_calendar_is_skipped_without_degrading_coverage(tmp_path)
 @pytest.mark.asyncio
 async def test_disabled_calendar_drops_calendar_scopes_from_permission_hint(tmp_path):
     client = FakeClient(calendar_enabled=False)
-    error = XfChatApiError(
+    error = FeishuApiError(
         "/open-apis/search/v2/message",
         400,
         99991672,

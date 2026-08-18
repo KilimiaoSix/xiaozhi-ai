@@ -7,7 +7,7 @@ from pathlib import Path
 
 from core.morning_brief.ledger import AttentionLedger
 from core.morning_brief.service import MorningBriefService
-from core.morning_brief.xfchat_client import XfChatClient
+from core.morning_brief.feishu_client import DEFAULT_BASE_URL, FeishuClient
 
 
 SERVER_ROOT = Path(__file__).resolve().parents[2]
@@ -15,10 +15,10 @@ SERVER_ROOT = Path(__file__).resolve().parents[2]
 
 def create_morning_brief_service(config: dict) -> MorningBriefService:
     brief_config = config.get("morning_brief", {})
-    token = os.environ.get("IFLYTEK_USER_ACCESS_TOKEN") or str(
+    token = os.environ.get("FEISHU_USER_ACCESS_TOKEN") or str(
         brief_config.get("user_access_token") or ""
     )
-    self_open_id = os.environ.get("IFLYTEK_SELF_OPEN_ID") or str(
+    self_open_id = os.environ.get("FEISHU_SELF_OPEN_ID") or str(
         brief_config.get("self_open_id") or ""
     )
     ledger_path = Path(
@@ -27,12 +27,8 @@ def create_morning_brief_service(config: dict) -> MorningBriefService:
     if not ledger_path.is_absolute():
         ledger_path = SERVER_ROOT / ledger_path
 
-    client = XfChatClient(
-        base_url=str(
-            brief_config.get(
-                "base_url", "https://open.xfchat.iflytek.com"
-            )
-        ),
+    client = FeishuClient(
+        base_url=str(brief_config.get("base_url", DEFAULT_BASE_URL)),
         user_access_token=token,
         page_size=int(brief_config.get("page_size", 50)),
         max_pages=int(brief_config.get("max_pages", 40)),

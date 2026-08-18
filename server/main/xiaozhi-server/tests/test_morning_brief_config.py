@@ -24,8 +24,8 @@ from core.morning_brief import factory
 
 
 def test_factory_treats_null_identity_and_token_as_unconfigured(tmp_path, monkeypatch):
-    monkeypatch.delenv("IFLYTEK_USER_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("IFLYTEK_SELF_OPEN_ID", raising=False)
+    monkeypatch.delenv("FEISHU_USER_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("FEISHU_SELF_OPEN_ID", raising=False)
 
     service = factory.create_morning_brief_service(
         {
@@ -43,8 +43,8 @@ def test_factory_treats_null_identity_and_token_as_unconfigured(tmp_path, monkey
 
 
 def test_factory_prefers_environment_credentials(tmp_path, monkeypatch):
-    monkeypatch.setenv("IFLYTEK_USER_ACCESS_TOKEN", "u-env-token")
-    monkeypatch.setenv("IFLYTEK_SELF_OPEN_ID", "ou_env")
+    monkeypatch.setenv("FEISHU_USER_ACCESS_TOKEN", "u-env-token")
+    monkeypatch.setenv("FEISHU_SELF_OPEN_ID", "ou_env")
 
     service = factory.create_morning_brief_service(
         {
@@ -62,7 +62,7 @@ def test_factory_prefers_environment_credentials(tmp_path, monkeypatch):
 
 
 def test_factory_defaults_calendar_to_enabled(tmp_path, monkeypatch):
-    monkeypatch.delenv("IFLYTEK_USER_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("FEISHU_USER_ACCESS_TOKEN", raising=False)
 
     service = factory.create_morning_brief_service(
         {"morning_brief": {"ledger_path": str(tmp_path / "brief.db")}}
@@ -75,7 +75,7 @@ def test_factory_defaults_calendar_to_enabled(tmp_path, monkeypatch):
 
 
 def test_factory_can_disable_calendar_source(tmp_path, monkeypatch):
-    monkeypatch.delenv("IFLYTEK_USER_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("FEISHU_USER_ACCESS_TOKEN", raising=False)
 
     service = factory.create_morning_brief_service(
         {

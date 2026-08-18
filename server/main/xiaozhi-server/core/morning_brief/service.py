@@ -17,18 +17,18 @@ from core.morning_brief.models import (
     resolve_timezone,
 )
 from core.morning_brief.ranking import RankedItem, rank_candidates
-from core.morning_brief.xfchat_client import (
+from core.morning_brief.feishu_client import (
     AuthenticationRequired,
     CollectionResult,
-    XfChatClient,
-    XfChatApiError,
+    FeishuClient,
+    FeishuApiError,
 )
 
 
 class MorningBriefService:
     def __init__(
         self,
-        client: XfChatClient,
+        client: FeishuClient,
         ledger: AttentionLedger,
         self_open_id: str,
         *,
@@ -316,7 +316,7 @@ class MorningBriefService:
             isinstance(result, AuthenticationRequired) for result in failures
         )
         permission_required = any(
-            isinstance(result, XfChatApiError)
+            isinstance(result, FeishuApiError)
             and str(result.code) == "99991672"
             for result in failures
         )
@@ -340,7 +340,7 @@ class MorningBriefService:
             "missing_scopes": (
                 list(self.client.required_scopes()) if permission_required else []
             ),
-            "disclaimer": "待关注/未处理不等同于 i讯飞客户端真实未读。",
+            "disclaimer": "待关注/未处理不等同于飞书客户端真实未读。",
         }
         self.ledger.save_brief(report)
         if message_sources_complete:

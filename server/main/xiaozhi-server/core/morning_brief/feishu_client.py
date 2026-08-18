@@ -1,4 +1,4 @@
-"""i讯飞私有飞书域的只读 OpenAPI 客户端。"""
+"""飞书开放平台的只读 OpenAPI 客户端。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,16 @@ from urllib.parse import quote
 import aiohttp
 
 
+DEFAULT_BASE_URL = "https://open.feishu.cn"
+
+# 搜索接口只返回 message_id，补详情走 im/v1/messages/mget。
+# 用户令牌读消息详情除基础权限外还要按会话类型补 get_as_user，
+# 单聊和群聊是两个独立权限，缺任意一个都会让对应会话的消息读不到。
 MESSAGE_SCOPES = (
     "search:message",
-    # 搜索接口只返回 message_id，补详情走 im/v1/messages/mget。
-    # 用户令牌读详情要的是 get_as_user，im:message:readonly 不够（实测 230027）。
-    "im:message:get_as_user",
+    "im:message:readonly",
+    "im:message.p2p_msg:get_as_user",
+    "im:message.group_msg:get_as_user",
 )
 CALENDAR_SCOPES = ("calendar:calendar:readonly",)
 REQUIRED_SCOPES = MESSAGE_SCOPES + CALENDAR_SCOPES
@@ -24,14 +29,14 @@ class AuthenticationRequired(RuntimeError):
     """没有可用于读取个人资源的用户令牌。"""
 
 
-class XfChatApiError(RuntimeError):
+class FeishuApiError(RuntimeError):
     def __init__(self, endpoint: str, http_status: int, code: Any, message: str):
         self.endpoint = endpoint
         self.http_status = http_status
         self.code = code
         self.api_message = message
         super().__init__(
-            f"i讯飞 OpenAPI {endpoint} failed: HTTP {http_status}, "
+            f"飞书 OpenAPI {endpoint} failed: HTTP {http_status}, "
             f"code={code}, message={message}"
         )
 
@@ -45,7 +50,7 @@ class CollectionResult:
     error: str = ""
 
 
-class XfChatClient:
+class FeishuClient:
     def __init__(
         self,
         base_url: str,
@@ -88,7 +93,7 @@ class XfChatClient:
 
     def _headers(self) -> dict[str, str]:
         if not self.user_access_token:
-            raise AuthenticationRequired("i讯飞 user access token is not configured")
+            raise AuthenticationRequired("飞书 user access token is not configured")
         return {
             "Authorization": f"Bearer {self.user_access_token}",
             "Accept": "application/json",
@@ -118,7 +123,7 @@ class XfChatClient:
                 try:
                     payload = await response.json(content_type=None)
                 except (aiohttp.ContentTypeError, ValueError) as exc:
-                    raise XfChatApiError(
+                    raise FeishuApiError(
                         path,
                         response.status,
                         "INVALID_RESPONSE",
@@ -129,7 +134,7 @@ class XfChatClient:
                 if response.status >= 400 or code not in (0, "0", None):
                     if response.status == 401 or code in (99991661, "99991661"):
                         raise AuthenticationRequired(
-                            f"i讯飞 user access token is expired or invalid for {path}"
+                            f"飞书 user access token is expired or invalid for {path}"
                         )
                     message = "unknown OpenAPI error"
                     if isinstance(payload, dict):
@@ -138,9 +143,9 @@ class XfChatClient:
                         message = message.replace(
                             self.user_access_token, "[REDACTED]"
                         )
-                    raise XfChatApiError(path, response.status, code, message)
+                    raise FeishuApiError(path, response.status, code, message)
                 if not isinstance(payload, dict):
-                    raise XfChatApiError(
+                    raise FeishuApiError(
                         path, response.status, "INVALID_RESPONSE", "response was not an object"
                     )
                 data = payload.get("data", {})
@@ -280,7 +285,7 @@ class XfChatClient:
         )
         calendar_id = self._calendar_id(primary)
         if not calendar_id:
-            raise XfChatApiError(
+            raise FeishuApiError(
                 "/open-apis/calendar/v4/calendars/primary",
                 200,
                 "INVALID_RESPONSE",

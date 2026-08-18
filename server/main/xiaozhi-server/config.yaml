@@ -42,17 +42,19 @@ server:
   # UDP网关配置
   udp_gateway: null
 
-# i讯飞每日关注晨报（Phase 0/1：只读预览，不主动发送消息）
+# 飞书每日关注晨报（Phase 0/1：只读预览，不主动发送消息）
+# 应用需开通：search:message、im:message:readonly、
+# im:message.p2p_msg:get_as_user、im:message.group_msg:get_as_user，
+# 启用日历源时另需 calendar:calendar:readonly。
 morning_brief:
   enabled: false
-  base_url: https://open.xfchat.iflytek.com
-  # 敏感值优先通过 IFLYTEK_USER_ACCESS_TOKEN 环境变量或 data/.config.yaml 提供。
+  base_url: https://open.feishu.cn
+  # 敏感值优先通过 FEISHU_USER_ACCESS_TOKEN 环境变量或 data/.config.yaml 提供。
   user_access_token: ""
-  # 用户 open_id 也可通过 IFLYTEK_SELF_OPEN_ID 环境变量提供。
+  # 用户 open_id 也可通过 FEISHU_SELF_OPEN_ID 环境变量提供。
   self_open_id: ""
-  # i讯飞不发放日历读权限（calendar:calendar:readonly），因此默认关闭日历源。
   # 关闭后不会请求日历接口，覆盖状态记为 DISABLED，不会把整体状态拖成 PARTIAL。
-  calendar_enabled: false
+  calendar_enabled: true
   timezone: Asia/Shanghai
   ledger_path: data/morning_brief.sqlite3
   page_size: 50

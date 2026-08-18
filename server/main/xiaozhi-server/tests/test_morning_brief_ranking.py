@@ -29,7 +29,7 @@ def message(
         mention_kind=mention_kind,
         short_excerpt=text,
         source_timestamp=NOW,
-        source_url=f"xfchat://message/{message_id}",
+        source_url=f"https://applink.feishu.cn/client/chat/open?openChatId=oc_{message_id}",
         status=status,
         user_replied=user_replied,
     )

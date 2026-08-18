@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 import pytest
 from aiohttp import web
 
-from core.morning_brief.xfchat_client import (
+from core.morning_brief.feishu_client import (
     AuthenticationRequired,
-    XfChatApiError,
-    XfChatClient,
+    FeishuApiError,
+    FeishuClient,
 )
 
 
@@ -23,11 +23,11 @@ def message(message_id):
     }
 
 
-async def make_xfchat_client(aiohttp_client, routes, **options):
+async def make_feishu_client(aiohttp_client, routes, **options):
     app = web.Application()
     app.add_routes(routes)
     test_client = await aiohttp_client(app)
-    client = XfChatClient(
+    client = FeishuClient(
         base_url=str(test_client.make_url("")).rstrip("/"),
         user_access_token="u-secret-token",
         session=test_client.session,
@@ -58,7 +58,7 @@ async def test_search_consumes_every_page_and_sends_user_token(aiohttp_client):
             }
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [web.post("/open-apis/search/v2/message", search)],
     )
@@ -109,7 +109,7 @@ async def test_search_marks_page_limit_as_incomplete(aiohttp_client):
             }
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [web.post("/open-apis/search/v2/message", search)],
         max_pages=1,
@@ -146,7 +146,7 @@ async def test_page_limited_results_are_still_enriched(aiohttp_client):
             {"code": 0, "data": {"messages": [message("om_1")]}}
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [
             web.post("/open-apis/search/v2/message", search),
@@ -189,7 +189,7 @@ async def test_id_only_search_results_are_enriched_with_mget(aiohttp_client):
             {"code": 0, "data": {"messages": [message("om_1")]}}
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [
             web.post("/open-apis/search/v2/message", search),
@@ -227,7 +227,7 @@ async def test_calendar_uses_primary_calendar_and_instance_view(aiohttp_client):
             {"code": 0, "data": {"items": [{"event_id": "event_1"}]}}
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [
             web.post("/open-apis/calendar/v4/calendars/primary", primary),
@@ -263,12 +263,12 @@ async def test_api_error_is_diagnostic_without_leaking_token(aiohttp_client):
             status=403,
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [web.post("/open-apis/search/v2/message", search)],
     )
 
-    with pytest.raises(XfChatApiError) as captured:
+    with pytest.raises(FeishuApiError) as captured:
         await client.search_messages(START, END)
 
     assert captured.value.code == 99991663
@@ -284,7 +284,7 @@ async def test_http_401_is_classified_as_reauthorization_required(aiohttp_client
             {"code": 99991661, "msg": "user token expired"}, status=401
         )
 
-    client, _ = await make_xfchat_client(
+    client, _ = await make_feishu_client(
         aiohttp_client,
         [web.post("/open-apis/search/v2/message", search)],
     )
@@ -295,8 +295,8 @@ async def test_http_401_is_classified_as_reauthorization_required(aiohttp_client
 
 @pytest.mark.asyncio
 async def test_missing_user_token_stops_before_network_access():
-    client = XfChatClient(
-        base_url="https://open.xfchat.iflytek.com",
+    client = FeishuClient(
+        base_url="https://open.feishu.cn",
         user_access_token="",
     )
 
@@ -306,14 +306,16 @@ async def test_missing_user_token_stops_before_network_access():
     assert client.capabilities()["user_token_configured"] is False
 
 
-def test_capabilities_expose_private_domain_scopes():
-    client = XfChatClient(
-        base_url="https://open.xfchat.iflytek.com",
+def test_capabilities_expose_required_scopes():
+    client = FeishuClient(
+        base_url="https://open.feishu.cn",
         user_access_token="u-token",
     )
 
     assert client.capabilities()["required_scopes"] == [
         "search:message",
-        "im:message:get_as_user",
+        "im:message:readonly",
+        "im:message.p2p_msg:get_as_user",
+        "im:message.group_msg:get_as_user",
         "calendar:calendar:readonly",
     ]

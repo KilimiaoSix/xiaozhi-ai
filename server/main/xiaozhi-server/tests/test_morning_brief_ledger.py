@@ -20,7 +20,7 @@ def item(message_id="om_1", topic_id="omt_1", text="请确认发布窗口"):
         mention_kind="DIRECT",
         short_excerpt=text,
         source_timestamp=NOW,
-        source_url=f"xfchat://message/{message_id}",
+        source_url=f"https://applink.feishu.cn/client/chat/open?openChatId=oc_{message_id}",
     )
 
 

@@ -156,7 +156,8 @@ def normalize_message(
     )
     source_url = _first_text(raw.get("source_url"), raw.get("message_url"))
     if not source_url:
-        source_url = f"xfchat://chat/{chat_id}/message/{message_id}"
+        # 飞书没有公开的单条消息 applink，只能定位到会话。
+        source_url = f"https://applink.feishu.cn/client/chat/open?openChatId={chat_id}"
 
     return AttentionItem(
         message_id=message_id,
@@ -235,6 +236,6 @@ def normalize_calendar_event(
             raw.get("source_url"),
             raw.get("event_url"),
             vchat.get("meeting_url"),
-            f"xfchat://calendar/event/{event_id}",
+            "https://applink.feishu.cn/client/calendar/open",
         ),
     )
