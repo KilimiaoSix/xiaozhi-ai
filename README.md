@@ -11,7 +11,7 @@ Electron 桌面端 ── HTTP ──> Server ── WebSocket ──> ESP32-S3 
 
 - 桌面端不直接连接机器人。
 - Server 与机器人只使用 WebSocket 通信。
-- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook；Server HTTP 与机器人反馈发送仍为 Mock/功能占位。
+- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook，也可通过飞书 CLI 读取当前用户的今日日程与未完成任务；Server HTTP 与机器人反馈发送仍为 Mock/功能占位。
 
 ## 目录
 
@@ -51,6 +51,8 @@ macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`
 
 任务卡会保留并显示 Hook 提供的完整提示词、工作目录、错误和等待原因。数据只在本机处理，不会由 Hook 上传到第三方；Hook 也不会替用户批准权限请求或直接控制机器人。
 
+Codex 页面内的 Computer Use 应用授权不会触发 Hook。macOS 版小飞会在用户授予“辅助功能”权限后，只读匹配该授权卡片的标题与按钮标签，并临时显示“需要你”；卡片消失后恢复原任务状态。检测不会点击批准按钮，也不会读取代码、提示词或对话正文。
+
 ### 配置位置与撤销
 
 | 工具 | 默认 Hook 配置 |
@@ -77,6 +79,23 @@ macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`
 | `diagnostics/runner-errors.ndjson` | Hook runner 的非阻塞错误记录 |
 
 桌面端离线期间产生的 inbox 事件会在下次启动时恢复，但不会补播已经过期的机器人动作。当前桌面端只生成 `quiet_companion`、`task_completed`、`task_failed`、`needs_user` 预设动作意图；通过 Server HTTP 发送到 ESP32-S3 的真实链路将在后续接入。
+
+## 飞书 CLI 工作台
+
+桌面端在 Electron 主进程中调用本机 `lark-cli`，渲染层只能通过只读 IPC 检查连接和刷新数据，不会执行创建、更新、完成或删除操作。当前工作台读取：
+
+- 当前飞书用户身份与 CLI 版本；
+- 当前用户主日历中的今日日程；
+- 分配给当前用户的未完成任务、所属任务清单、截止时间和任务链接。
+
+首次使用前需在终端完成飞书 CLI 配置和用户授权：
+
+```bash
+lark-cli config init
+lark-cli auth login --scope "task:task:read calendar:calendar:readonly"
+```
+
+启动桌面端后，可在“飞书任务与会议”区域检查连接并刷新。日历或任务其中一项缺少权限时，另一项仍会正常展示，界面会列出缺失 scope 和最小权限授权命令。应用只读取结构化任务与日程字段，不保存 access token，也不采集完整飞书对话或文档内容。
 
 ## 运行上位机 server
 

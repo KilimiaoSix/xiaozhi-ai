@@ -1,13 +1,16 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, systemPreferences } from 'electron';
 import path from 'node:path';
 
 import type { AgentHooksRuntime } from './modules/features/coding-agent-status/agent-hooks/runtime';
+import { LarkCliClient } from './modules/features/feishu-briefing/larkCli';
 import { registerAgentHooksIpc } from './main/agentHooksIpc';
 import { registerCameraIpc } from './main/camera/registerCameraIpc';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
+import { registerFeishuIpc } from './main/feishuIpc';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
 let cleanupAgentHooksIpc: (() => void) | undefined;
+let cleanupFeishuIpc: (() => void) | undefined;
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -46,11 +49,17 @@ app.whenReady().then(() => {
     homeDir: app.getPath('home'),
     userDataPath: app.getPath('userData'),
     electronPath: process.execPath,
+    isAccessibilityTrusted: () =>
+      systemPreferences.isTrustedAccessibilityClient(true),
   });
   cleanupAgentHooksIpc = registerAgentHooksIpc({
     ipcMain,
     runtime: agentHooksRuntime,
     getWindows: () => BrowserWindow.getAllWindows(),
+  });
+  cleanupFeishuIpc = registerFeishuIpc({
+    ipcMain,
+    client: new LarkCliClient(),
   });
   void agentHooksRuntime.start().catch((error: unknown) => {
     console.error('Agent Hook 监控启动失败', error);
@@ -68,6 +77,8 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   cleanupAgentHooksIpc?.();
   cleanupAgentHooksIpc = undefined;
+  cleanupFeishuIpc?.();
+  cleanupFeishuIpc = undefined;
   void agentHooksRuntime?.stop();
 });
 

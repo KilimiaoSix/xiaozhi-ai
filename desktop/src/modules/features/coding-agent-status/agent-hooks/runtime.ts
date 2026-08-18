@@ -24,11 +24,24 @@ export interface AgentHooksSpool {
   close(): Promise<void>;
 }
 
+export interface AgentAttention {
+  source: AgentSource;
+  reason: string;
+  detectedAt: string;
+}
+
+export interface AgentAttentionMonitor {
+  start(listener: (attention: AgentAttention | null) => void | Promise<void>): void;
+  stop(): Promise<void>;
+}
+
 export interface AgentHooksManager {
+  prepare?(): Promise<void>;
   detect(): Promise<AgentHookDetection[]>;
   install(source: AgentSource): Promise<AgentHookInstallResult>;
   uninstall(source: AgentSource): Promise<AgentHookInstallResult>;
   installAll(): Promise<AgentHookInstallResult[]>;
+  markActive?(source: AgentSource): Promise<void>;
 }
 
 interface AgentHooksRuntimeOptions {
@@ -36,6 +49,7 @@ interface AgentHooksRuntimeOptions {
   spool: AgentHooksSpool;
   tracker: AgentTaskTracker;
   statePath: string;
+  attentionMonitor?: AgentAttentionMonitor;
   now?: () => Date;
 }
 
@@ -54,6 +68,7 @@ export class AgentHooksRuntime {
   private readonly listeners = new Set<SnapshotListener>();
   private installations: AgentHookDetection[] = [];
   private actionIntents: RobotActionIntent[] = [];
+  private externalAttention: AgentAttention | null = null;
   private started = false;
 
   constructor(private readonly options: AgentHooksRuntimeOptions) {
@@ -62,8 +77,10 @@ export class AgentHooksRuntime {
 
   async start(): Promise<void> {
     if (this.started) return;
+    await this.options.manager.prepare?.();
     await this.restoreState();
     await this.options.spool.consumePending(async (event) => {
+      await this.acknowledgeHookEvent(event.source);
       this.options.tracker.apply(event, { recovered: true });
       await this.persistState();
     });
@@ -71,6 +88,8 @@ export class AgentHooksRuntime {
     this.actionIntents = [];
     this.started = true;
     this.options.spool.watch((event) => this.handleLiveEvent(event));
+    this.options.attentionMonitor?.start((attention) =>
+      this.handleExternalAttention(attention));
     await this.persistState();
     this.publish();
   }
@@ -78,15 +97,17 @@ export class AgentHooksRuntime {
   async stop(): Promise<void> {
     if (!this.started) return;
     await this.persistState();
+    await this.options.attentionMonitor?.stop();
     await this.options.spool.close();
+    this.externalAttention = null;
     this.started = false;
   }
 
   getSnapshot(): AgentHooksSnapshot {
-    const tasks = this.options.tracker.list();
+    const tasks = this.tasksWithExternalAttention();
     return cloneSnapshot({
       installations: this.installations,
-      primaryTask: this.options.tracker.primary(),
+      primaryTask: this.primaryTask(tasks),
       tasks,
       actionIntents: this.actionIntents,
       updatedAt: this.now().toISOString(),
@@ -123,10 +144,102 @@ export class AgentHooksRuntime {
   }
 
   private async handleLiveEvent(event: AgentEvent): Promise<void> {
+    await this.acknowledgeHookEvent(event.source);
     this.options.tracker.apply(event);
     this.actionIntents = this.options.tracker.drainActionIntents();
     await this.persistState();
     this.publish();
+  }
+
+  private async acknowledgeHookEvent(source: AgentSource): Promise<void> {
+    await this.options.manager.markActive?.(source);
+    this.installations = this.installations.map((installation) =>
+      installation.source === source && installation.installed
+        ? {
+            ...installation,
+            requiresTrustReview: false,
+            message: '监控 Hook 已生效',
+          }
+        : installation);
+  }
+
+  private async handleExternalAttention(attention: AgentAttention | null): Promise<void> {
+    if (attention && this.externalAttention
+      && attention.source === this.externalAttention.source
+      && attention.reason === this.externalAttention.reason) {
+      return;
+    }
+
+    this.externalAttention = attention;
+    const taskKey = attention
+      ? this.tasksWithExternalAttention().find((task) =>
+          task.source === attention.source && task.status === 'needs_user')?.key
+      : undefined;
+    this.actionIntents = attention ? [this.attentionIntent(attention, taskKey)] : [];
+    this.publish();
+  }
+
+  private tasksWithExternalAttention(): AgentTaskSnapshot[] {
+    const tasks = this.options.tracker.list();
+    if (!this.externalAttention) return tasks;
+
+    const index = tasks.findIndex((task) =>
+      task.source === this.externalAttention?.source
+      && (task.status === 'running' || task.status === 'needs_user'));
+    if (index < 0) {
+      return [{
+        key: `${this.externalAttention.source}:external-attention`,
+        source: this.externalAttention.source,
+        sessionId: 'external-attention',
+        status: 'needs_user',
+        title: `${this.externalAttention.source} 任务`,
+        startedAt: this.externalAttention.detectedAt,
+        updatedAt: this.externalAttention.detectedAt,
+        needsUserReason: this.externalAttention.reason,
+      }, ...tasks];
+    }
+
+    const current = tasks[index];
+    if (!current) return tasks;
+    const { completedAt: _completedAt, error: _error, needsUserReason: _reason, ...base } = current;
+    tasks[index] = {
+      ...base,
+      status: 'needs_user',
+      updatedAt: this.externalAttention.detectedAt,
+      needsUserReason: this.externalAttention.reason,
+    };
+    return tasks;
+  }
+
+  private primaryTask(tasks: AgentTaskSnapshot[]): AgentTaskSnapshot | null {
+    const priority: Record<AgentTaskSnapshot['status'], number> = {
+      needs_user: 4,
+      failed: 3,
+      running: 2,
+      completed: 1,
+    };
+    const task = [...tasks].sort((left, right) => {
+      const statusPriority = priority[right.status] - priority[left.status];
+      return statusPriority || Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    })[0];
+    return task ? { ...task } : null;
+  }
+
+  private attentionIntent(
+    attention: AgentAttention,
+    taskKey = `${attention.source}:external-attention`,
+  ): RobotActionIntent {
+    const createdMs = Date.parse(attention.detectedAt);
+    const safeCreatedMs = Number.isNaN(createdMs) ? this.now().getTime() : createdMs;
+    const ttlMs = 600_000;
+    return {
+      eventId: `external-attention:${attention.source}:${safeCreatedMs}`,
+      taskKey,
+      action: 'needs_user',
+      createdAt: new Date(safeCreatedMs).toISOString(),
+      expiresAt: new Date(safeCreatedMs + ttlMs).toISOString(),
+      ttlMs,
+    };
   }
 
   private publish(): void {
@@ -158,4 +271,3 @@ export class AgentHooksRuntime {
     await rename(temporaryPath, this.options.statePath);
   }
 }
-

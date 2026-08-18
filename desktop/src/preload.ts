@@ -1,9 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import { AGENT_HOOKS_CHANNELS, type IpcResult } from './main/agentHooksIpc';
+import { FEISHU_CHANNELS } from './main/feishuIpc';
 import type { AgentSource } from './modules/features/coding-agent-status/agent-hooks/contracts';
 import type { AgentHookDetection, AgentHookInstallResult } from './modules/features/coding-agent-status/agent-hooks/install/types';
 import type { AgentHooksSnapshot } from './modules/features/coding-agent-status/agent-hooks/runtime';
+import type {
+  FeishuBriefingSnapshot,
+  FeishuCliStatus,
+} from './modules/features/feishu-briefing/contracts';
 import type { XiaofeiDesktopApi } from './shared/contracts';
 
 const invoke = async <T>(channel: string, ...args: unknown[]): Promise<T> => {
@@ -43,6 +48,10 @@ const desktopApi: XiaofeiDesktopApi = {
   openCameraPrivacySettings: () => ipcRenderer.invoke('camera:open-privacy-settings'),
   enrollOwnerFace: (input) => ipcRenderer.invoke('camera:enroll-owner', input),
   uploadMonitoringFrame: (input) => ipcRenderer.invoke('camera:upload-frame', input),
+  feishu: {
+    getStatus: () => invoke<FeishuCliStatus>(FEISHU_CHANNELS.status),
+    getBriefing: () => invoke<FeishuBriefingSnapshot>(FEISHU_CHANNELS.briefing),
+  },
 };
 
 contextBridge.exposeInMainWorld('xiaofei', desktopApi);

@@ -16,9 +16,9 @@ describe('featureCatalog', () => {
     ]);
   });
 
-  it('只把编码 Agent 监控标记为已就绪', () => {
+  it('把飞书 CLI 与编码 Agent 监控标记为已就绪', () => {
     expect(featureCatalog.filter((feature) => feature.status === 'ready').map(({ id }) => id))
-      .toEqual(['coding-agent-status']);
-    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(7);
+      .toEqual(['feishu-briefing', 'coding-agent-status']);
+    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(6);
   });
 });

@@ -1,6 +1,17 @@
 import type { AgentSource } from '../modules/features/coding-agent-status/agent-hooks/contracts';
 import type { AgentHookDetection, AgentHookInstallResult } from '../modules/features/coding-agent-status/agent-hooks/install/types';
 import type { AgentHooksSnapshot } from '../modules/features/coding-agent-status/agent-hooks/runtime';
+import type {
+  FeishuBriefingSnapshot,
+  FeishuCliStatus,
+} from '../modules/features/feishu-briefing/contracts';
+import type {
+  CameraPermissionStatus,
+  MonitoringFrameInput,
+  MonitoringFrameResult,
+  OwnerEnrollmentInput,
+  OwnerEnrollmentResult,
+} from '../modules/features/camera-capture/types';
 
 export interface RuntimeInfo {
   platform: NodeJS.Platform;
@@ -20,6 +31,11 @@ export interface AgentHooksDesktopApi {
   onSnapshot: (listener: (snapshot: AgentHooksSnapshot) => void) => () => void;
 }
 
+export interface FeishuDesktopApi {
+  getStatus: () => Promise<FeishuCliStatus>;
+  getBriefing: () => Promise<FeishuBriefingSnapshot>;
+}
+
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
@@ -30,11 +46,5 @@ export interface XiaofeiDesktopApi {
   uploadMonitoringFrame: (
     input: MonitoringFrameInput,
   ) => Promise<MonitoringFrameResult>;
+  feishu: FeishuDesktopApi;
 }
-import type {
-  CameraPermissionStatus,
-  MonitoringFrameInput,
-  MonitoringFrameResult,
-  OwnerEnrollmentInput,
-  OwnerEnrollmentResult,
-} from '../modules/features/camera-capture/types';

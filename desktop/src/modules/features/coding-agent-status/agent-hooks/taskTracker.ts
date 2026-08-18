@@ -136,8 +136,9 @@ export class AgentTaskTracker {
       return 'failed';
     }
 
-    if (event.eventName === 'Notification'
-      && event.notificationType === 'permission_prompt') {
+    if (event.eventName === 'PermissionRequest'
+      || (event.eventName === 'Notification'
+        && event.notificationType === 'permission_prompt')) {
       return 'needs_user';
     }
 

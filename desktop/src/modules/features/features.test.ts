@@ -26,13 +26,14 @@ describe('默认功能模块', () => {
     expect(featureRegistry.list()).toHaveLength(8);
   });
 
-  it('编码 Agent 返回实时入口，其余模块保持场景化 Mock', async () => {
+  it('飞书与编码 Agent 返回实时入口，其余模块保持场景化 Mock', async () => {
     const results = await Promise.all(
       expectedIds.map((id) => featureRegistry.execute(id, context)),
     );
 
+    expect(results[1].source).toBe('live');
     expect(results[2].source).toBe('live');
-    expect(results.filter((_, index) => index !== 2)
+    expect(results.filter((_, index) => index !== 1 && index !== 2)
       .every((result) => result.source === 'mock')).toBe(true);
     expect(results.every((result) => result.title.length > 0 && result.detail.length > 0)).toBe(true);
     expect(new Set(results.map(({ title }) => title)).size).toBe(8);
