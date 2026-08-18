@@ -1,0 +1,1 @@
+export { feishuBriefingModule } from './module';

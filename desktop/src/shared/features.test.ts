@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { featureCatalog } from './features';
+import { featureCatalog } from '../modules/features';
 
 describe('featureCatalog', () => {
   it('provides all eight demo capabilities in priority order', () => {

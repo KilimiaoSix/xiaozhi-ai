@@ -1,0 +1,1 @@
+export { awayMessagesModule } from './module';

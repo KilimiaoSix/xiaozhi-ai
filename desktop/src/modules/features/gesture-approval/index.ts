@@ -1,0 +1,1 @@
+export { gestureApprovalModule } from './module';

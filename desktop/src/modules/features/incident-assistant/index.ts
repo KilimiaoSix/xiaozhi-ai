@@ -1,0 +1,1 @@
+export { incidentAssistantModule } from './module';

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 
-import { featureCatalog, type FeatureDefinition } from '../shared/features';
+import { featureCatalog, featureRegistry } from '../modules/features';
+import { featureRuntimeContext, serverGateway } from '../modules/runtime';
+import type { FeatureDefinition } from '../shared/features';
 
 interface TimelineEvent {
   id: number;
@@ -42,22 +44,35 @@ export function App() {
 
   const runtime = useMemo(() => window.xiaofei.getRuntimeInfo(), []);
 
-  const triggerFeature = (feature: FeatureDefinition): void => {
+  const triggerFeature = async (feature: FeatureDefinition): Promise<void> => {
     setActiveFeature(feature);
-    setEvents((current) => [
-      {
+
+    try {
+      const result = await featureRegistry.execute(feature.id, featureRuntimeContext);
+      setEvents((current) => [
+        {
+          id: Date.now(),
+          time: timeLabel(),
+          title: result.title,
+          detail: result.detail,
+          tone: result.tone,
+        },
+        ...current,
+      ].slice(0, 5));
+    } catch (error) {
+      const failureEvent: TimelineEvent = {
         id: Date.now(),
         time: timeLabel(),
-        title: `${feature.title} · Mock 已触发`,
-        detail: '当前只记录演示事件，后续在对应适配器中接入真实能力。',
-        tone: feature.tone,
-      },
-      ...current,
-    ].slice(0, 5));
+        title: `${feature.title}执行失败`,
+        detail: error instanceof Error ? error.message : '模块返回了未知错误。',
+        tone: 'coral',
+      };
+      setEvents((current) => [failureEvent, ...current].slice(0, 5));
+    }
   };
 
   const saveServerUrl = (): void => {
-    const normalizedUrl = serverUrl.trim();
+    const normalizedUrl = serverGateway.setBaseUrl(serverUrl);
     const eventTone: TimelineEvent['tone'] = normalizedUrl ? 'cyan' : 'amber';
     setSavedUrl(normalizedUrl);
     setEvents((current) => [
@@ -173,7 +188,7 @@ export function App() {
                   <p>{feature.summary}</p>
                   <button
                     type="button"
-                    onClick={() => triggerFeature(feature)}
+                    onClick={() => void triggerFeature(feature)}
                     aria-pressed={activeFeature.id === feature.id}
                   >
                     {feature.triggerLabel}<span aria-hidden="true">↗</span>
@@ -195,7 +210,7 @@ export function App() {
             <div className="active-feature">
               <span>当前模块 / {activeFeature.code}</span>
               <strong>{activeFeature.title}</strong>
-              <p>扩展入口已经预留，可从 Mock 触发逐步替换为真实适配器。</p>
+              <p>模块已注册，可从当前 Mock 实现逐步替换为真实适配器。</p>
             </div>
 
             <ol className="event-list">
