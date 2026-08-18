@@ -44,6 +44,32 @@ describe('Hook JSON 配置合并', () => {
     );
   });
 
+  it('刷新失效的 owned handler 命令并保留用户 Hook', () => {
+    const staleCommand = ownedCommand.replace(
+      '/Applications/工伴.app/Contents/MacOS/工伴',
+      '/deleted-worktree/node_modules/electron/Electron',
+    );
+    const staleConfig = mergeOwnedHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: '/user/notify.sh' }] }],
+      },
+    }, SOURCE_DEFINITIONS.codex, staleCommand);
+
+    const refreshed = mergeOwnedHooks(
+      staleConfig,
+      SOURCE_DEFINITIONS.codex,
+      ownedCommand,
+    );
+    const serialized = JSON.stringify(refreshed);
+
+    expect(serialized).not.toContain('/deleted-worktree/');
+    expect(serialized).toContain('/Applications/工伴.app/Contents/MacOS/工伴');
+    expect(serialized).toContain('/user/notify.sh');
+    expect(serialized.match(/launchcrush-agent-hook/g)).toHaveLength(
+      SOURCE_DEFINITIONS.codex.events.length,
+    );
+  });
+
   it('只从配置中移除 owned handler', () => {
     const existing = {
       hooks: {

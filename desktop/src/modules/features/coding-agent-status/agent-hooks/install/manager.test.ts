@@ -86,6 +86,50 @@ describe('AgentHookManager', () => {
     expect(firstContent.match(/launchcrush-agent-hook/g)).toHaveLength(7);
   });
 
+  it('识别并刷新指向已删除 worktree 的 WorkBuddy Hook', async () => {
+    const homeDir = await createHome();
+    const configPath = path.join(homeDir, '.workbuddy/settings.json');
+    const staleCommand = [
+      'ELECTRON_RUN_AS_NODE=1',
+      "'/deleted-worktree/desktop/node_modules/electron/Electron'",
+      "'/old/launchcrush-hook.cjs'",
+      '--owner launchcrush-agent-hook',
+      '--source workbuddy',
+      "--spool '/old/agent-hooks'",
+    ].join(' ');
+    await writeText(configPath, JSON.stringify({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'command', command: '/user/notify.sh' }] },
+          { hooks: [{ type: 'command', command: staleCommand, timeout: 5 }] },
+        ],
+      },
+    }, null, 2));
+    const manager = createManager(homeDir, { workbuddy: '/usr/local/bin/workbuddy' });
+
+    const before = (await manager.detect()).find(({ source }) => source === 'workbuddy');
+    expect(before).toMatchObject({
+      installed: false,
+      message: expect.stringContaining('失效'),
+    });
+
+    const installed = await manager.install('workbuddy');
+    const refreshed = await readFile(configPath, 'utf8');
+    const after = (await manager.detect()).find(({ source }) => source === 'workbuddy');
+
+    expect(installed).toMatchObject({
+      ok: true,
+      installed: true,
+      backupPath: `${configPath}.2026-08-18T08-00-00-000Z.launchcrush.bak`,
+      message: expect.stringContaining('刷新'),
+    });
+    expect(refreshed).not.toContain('/deleted-worktree/');
+    expect(refreshed).toContain('/Applications/工伴.app/Contents/MacOS/工伴');
+    expect(refreshed).toContain('/user/notify.sh');
+    expect(refreshed.match(/launchcrush-agent-hook/g)).toHaveLength(8);
+    expect(after).toMatchObject({ installed: true, message: '监控 Hook 已安装' });
+  });
+
   it('配置 JSON 损坏时拒绝覆盖原文件', async () => {
     const homeDir = await createHome();
     const configPath = path.join(homeDir, '.claude/settings.json');

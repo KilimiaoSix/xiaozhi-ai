@@ -36,6 +36,22 @@ const groupHasOwnedHandler = (value: unknown): boolean =>
   && Array.isArray(value.hooks)
   && value.hooks.some(handlerIsOwned);
 
+const groupHasOwnedCommand = (value: unknown, command: string): boolean =>
+  isRecord(value)
+  && Array.isArray(value.hooks)
+  && value.hooks.some((handler) =>
+    handlerIsOwned(handler) && handler.command === command);
+
+const refreshOwnedHandlers = (groups: unknown[], command: string): unknown[] =>
+  groups.map((group) => {
+    if (!isRecord(group) || !Array.isArray(group.hooks)) return group;
+    return {
+      ...group,
+      hooks: group.hooks.map((handler) =>
+        handlerIsOwned(handler) ? { ...handler, command } : handler),
+    };
+  });
+
 const configClone = (value: unknown): JsonRecord => {
   if (!isRecord(value)) {
     throw new Error('Hook 配置根节点必须是 JSON 对象');
@@ -59,8 +75,11 @@ export const mergeOwnedHooks = (
     if (current !== undefined && !Array.isArray(current)) {
       throw new Error(`${eventName} Hook 配置必须是数组`);
     }
-    const groups = Array.isArray(current) ? current : [];
-    if (groups.some(groupHasOwnedHandler)) continue;
+    const groups = refreshOwnedHandlers(Array.isArray(current) ? current : [], command);
+    if (groups.some(groupHasOwnedHandler)) {
+      hooks[eventName] = groups;
+      continue;
+    }
 
     groups.push({
       ...(definition.toolEvents.includes(eventName) ? { matcher: '.*' } : {}),
@@ -106,3 +125,16 @@ export const hasOwnedHooks = (existing: unknown): boolean =>
   && Object.values(existing.hooks).some((groups) =>
     Array.isArray(groups) && groups.some(groupHasOwnedHandler));
 
+export const ownedHooksMatchCommand = (
+  existing: unknown,
+  definition: AgentHookSourceDefinition,
+  command: string,
+): boolean => {
+  if (!isRecord(existing) || !isRecord(existing.hooks)) return false;
+  const hooks = existing.hooks;
+  return definition.events.every((eventName) => {
+    const groups = hooks[eventName];
+    return Array.isArray(groups)
+      && groups.some((group) => groupHasOwnedCommand(group, command));
+  });
+};

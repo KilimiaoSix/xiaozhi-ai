@@ -15,6 +15,7 @@ import {
   createOwnedHookCommand,
   hasOwnedHooks,
   mergeOwnedHooks,
+  ownedHooksMatchCommand,
   unmergeOwnedHooks,
 } from './jsonHookConfig';
 import { SOURCE_DEFINITIONS } from './sourceDefinitions';
@@ -94,7 +95,9 @@ export class AgentHookManager {
       const hadConfig = await exists(detection.configPath);
       const content = hadConfig ? await readFile(detection.configPath, 'utf8') : '{}';
       const config = parseConfig(content);
-      if (hasOwnedHooks(config)) {
+      await this.ensureRunner();
+      const command = this.ownedCommand(source);
+      if (ownedHooksMatchCommand(config, SOURCE_DEFINITIONS[source], command)) {
         return {
           source,
           ok: true,
@@ -104,13 +107,7 @@ export class AgentHookManager {
         };
       }
 
-      await this.ensureRunner();
-      const command = createOwnedHookCommand({
-        electronPath: this.options.electronPath,
-        runnerPath: this.options.runnerPath,
-        spoolPath: this.options.spoolPath,
-        source,
-      });
+      const refreshing = hasOwnedHooks(config);
       const merged = mergeOwnedHooks(config, SOURCE_DEFINITIONS[source], command);
       const backupPath = hadConfig
         ? await this.backup(detection.configPath)
@@ -123,7 +120,7 @@ export class AgentHookManager {
         installed: true,
         configPath: detection.configPath,
         ...(backupPath ? { backupPath } : {}),
-        message: '监控 Hook 安装成功',
+        message: refreshing ? '监控 Hook 已刷新' : '监控 Hook 安装成功',
       };
     } catch (error) {
       return {
@@ -196,8 +193,14 @@ export class AgentHookManager {
     let detail = available ? '已发现，尚未启用监控' : '未发现';
     if (configExists) {
       try {
-        installed = hasOwnedHooks(parseConfig(await readFile(configPath, 'utf8')));
+        const config = parseConfig(await readFile(configPath, 'utf8'));
+        installed = ownedHooksMatchCommand(
+          config,
+          SOURCE_DEFINITIONS[source],
+          this.ownedCommand(source),
+        );
         if (installed) detail = '监控 Hook 已安装';
+        else if (hasOwnedHooks(config)) detail = '监控 Hook 路径已失效，请重新接入';
       } catch (error) {
         detail = `配置 JSON 无法解析：${error instanceof Error ? error.message : '未知错误'}`;
       }
@@ -263,5 +266,13 @@ export class AgentHookManager {
     if (source === 'workbuddy') return 'WorkBuddy';
     return 'Codex';
   }
-}
 
+  private ownedCommand(source: AgentSource): string {
+    return createOwnedHookCommand({
+      electronPath: this.options.electronPath,
+      runnerPath: this.options.runnerPath,
+      spoolPath: this.options.spoolPath,
+      source,
+    });
+  }
+}
