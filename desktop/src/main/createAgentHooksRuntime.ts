@@ -59,6 +59,9 @@ export const createAgentHooksRuntime = (
         probe: createCodexUiApprovalProbe({
           platform,
           isAccessibilityTrusted: options.isAccessibilityTrusted,
+          onError: (error) => {
+            console.warn('Codex 等待批准状态检查失败', error);
+          },
         }),
       })
     : undefined;

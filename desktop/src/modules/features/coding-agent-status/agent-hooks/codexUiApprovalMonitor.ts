@@ -1,7 +1,7 @@
 import type { AgentAttention, AgentAttentionMonitor } from './runtime';
 
 interface CodexUiApprovalMonitorOptions {
-  probe: () => Promise<boolean>;
+  probe: () => Promise<boolean | undefined>;
   pollIntervalMs?: number;
   now?: () => Date;
 }
@@ -47,12 +47,13 @@ export class CodexUiApprovalMonitor implements AgentAttentionMonitor {
   }
 
   private async poll(): Promise<void> {
-    let visible: boolean;
+    let visible: boolean | undefined;
     try {
       visible = await this.options.probe();
     } catch {
       return;
     }
+    if (visible === undefined) return;
     if (visible === this.approvalVisible) return;
 
     this.approvalVisible = visible;

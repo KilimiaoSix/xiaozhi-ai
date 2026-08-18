@@ -48,7 +48,12 @@ const responseError = (value: unknown): string | undefined => {
 const asksForUserDecision = (message: string | undefined): boolean => {
   if (!message) return false;
   const value = message.trim();
-  return /(?:请|需要(?:你|您)?|等待(?:你|您)?|麻烦(?:你|您)?).{0,16}(?:确认|选择|决定|决策|批准|授权|同意|允许|回复|输入|提供)/.test(value)
+  const offersMoreWork = /(?:还是(?:有)?(?:其他|其它|别的)(?:事情|事|任务|问题)|还有(?:其他|其它|别的)?(?:事情|事|任务|问题)|有什么需要(?:我)?帮忙).{0,16}[?？]\s*$/.test(value)
+    || /(?:anything|something) else.{0,24}(?:help|do|work on)[?]?\s*$/i.test(value);
+  if (offersMoreWork) return false;
+
+  return /(?:请(?:你|您)?|需要(?:你|您)|等待(?:你|您)|麻烦(?:你|您)?).{0,16}(?:确认|选择|决定|决策|批准|授权|同意|允许|回复|输入|提供)/.test(value)
+    || /(?:需要|等待)用户.{0,8}(?:确认|选择|决定|决策|批准|授权|同意|允许|回复|输入|提供|介入)/.test(value)
     || /(?:是否|能否|可否|要不要|需不需要).{0,24}[?？]?\s*$/.test(value)
     || /(?:还是|二选一|多选一|选项).{0,24}[?？]\s*$/.test(value)
     || /(?:please\s+(?:confirm|choose|approve|authorize)|do you want me to|would you like me to)/i
@@ -124,7 +129,21 @@ export class AgentTaskTracker {
   }
 
   restore(tasks: AgentTaskSnapshot[]): void {
-    for (const task of tasks) this.tasks.set(task.key, { ...task });
+    for (const task of tasks) {
+      if (task.source !== 'codex'
+        || task.status !== 'needs_user'
+        || asksForUserDecision(task.needsUserReason)) {
+        this.tasks.set(task.key, { ...task });
+        continue;
+      }
+
+      const { needsUserReason: _reason, error: _error, ...restored } = task;
+      this.tasks.set(task.key, {
+        ...restored,
+        status: 'completed',
+        completedAt: task.completedAt ?? task.updatedAt,
+      });
+    }
   }
 
   private statusFor(event: AgentEvent, current: AgentTaskStatus): AgentTaskStatus {
@@ -136,10 +155,15 @@ export class AgentTaskTracker {
       return 'failed';
     }
 
-    if (event.eventName === 'PermissionRequest'
+    const isPermissionEvent = event.eventName === 'PermissionRequest'
       || (event.eventName === 'Notification'
-        && event.notificationType === 'permission_prompt')) {
-      return 'needs_user';
+        && event.notificationType === 'permission_prompt');
+    if (isPermissionEvent) {
+      // Codex permission hooks also fire for approvals handled by its own policy.
+      // Its sidebar monitor is the source of truth for actual user attention.
+      return event.source === 'codex' || event.permissionMode === 'bypassPermissions'
+        ? 'running'
+        : 'needs_user';
     }
 
     if (event.eventName === 'Stop') {
