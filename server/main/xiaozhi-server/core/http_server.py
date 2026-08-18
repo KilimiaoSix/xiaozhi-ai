@@ -5,6 +5,7 @@ from core.api.ota_handler import OTAHandler
 from core.api.vision_handler import VisionHandler
 from core.api.event_handler import EventHandler
 from core.api.presence_handler import PresenceHandler
+from core.api.camera_stream_handler import CameraStreamHandler
 from core.presence_registry import PresenceRegistry
 from core.presence_routes import add_presence_routes
 
@@ -24,6 +25,11 @@ class SimpleHttpServer:
         )
         self.presence_registry = PresenceRegistry()
         self.presence_handler = PresenceHandler(
+            config,
+            self.presence_registry,
+            logger=self.logger,
+        )
+        self.camera_stream_handler = CameraStreamHandler(
             config,
             self.presence_registry,
             logger=self.logger,
@@ -56,7 +62,11 @@ class SimpleHttpServer:
 
             if port:
                 app = web.Application()
-                add_presence_routes(app, self.presence_handler)
+                add_presence_routes(
+                    app,
+                    self.presence_handler,
+                    self.camera_stream_handler,
+                )
 
                 if not read_config_from_api:
                     # 如果没有开启智控台，只是单模块运行，就需要再添加简单OTA接口，用于下发websocket接口

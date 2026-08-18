@@ -1,6 +1,21 @@
 import type { AgentSource } from '../modules/features/coding-agent-status/agent-hooks/contracts';
 import type { AgentHookDetection, AgentHookInstallResult } from '../modules/features/coding-agent-status/agent-hooks/install/types';
 import type { AgentHooksSnapshot } from '../modules/features/coding-agent-status/agent-hooks/runtime';
+import type {
+  FeishuBriefingSnapshot,
+  FeishuCliStatus,
+} from '../modules/features/feishu-briefing/contracts';
+import type {
+  CameraPermissionStatus,
+  FrameSendResult,
+  RecognitionEvent,
+  RecognitionStreamOptions,
+} from '../modules/features/camera-capture/types';
+import type {
+  PomodoroCommandInput,
+  PomodoroDeviceListResult,
+  PomodoroStatus,
+} from '../modules/features/focus-mode/types';
 
 export interface RuntimeInfo {
   platform: NodeJS.Platform;
@@ -26,27 +41,29 @@ export interface PomodoroDesktopApi {
   sendCommand: (input: PomodoroCommandInput) => Promise<PomodoroStatus>;
 }
 
+export interface FeishuDesktopApi {
+  getStatus: () => Promise<FeishuCliStatus>;
+  getBriefing: () => Promise<FeishuBriefingSnapshot>;
+}
+
+export interface CameraRecognitionDesktopApi {
+  start: (options: RecognitionStreamOptions) => Promise<void>;
+  sendFrame: (jpeg: ArrayBuffer) => Promise<FrameSendResult>;
+  stop: () => Promise<void>;
+  onEvent: (listener: (event: RecognitionEvent) => void) => () => void;
+}
+
+export interface CameraDesktopApi {
+  getPermissionStatus: () => Promise<CameraPermissionStatus>;
+  requestPermission: () => Promise<CameraPermissionStatus>;
+  openPrivacySettings: () => Promise<void>;
+  recognition: CameraRecognitionDesktopApi;
+}
+
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
-  getCameraPermissionStatus: () => Promise<CameraPermissionStatus>;
-  requestCameraPermission: () => Promise<CameraPermissionStatus>;
-  openCameraPrivacySettings: () => Promise<void>;
-  enrollOwnerFace: (input: OwnerEnrollmentInput) => Promise<OwnerEnrollmentResult>;
-  uploadMonitoringFrame: (
-    input: MonitoringFrameInput,
-  ) => Promise<MonitoringFrameResult>;
+  camera: CameraDesktopApi;
+  feishu: FeishuDesktopApi;
   pomodoro: PomodoroDesktopApi;
 }
-import type {
-  CameraPermissionStatus,
-  MonitoringFrameInput,
-  MonitoringFrameResult,
-  OwnerEnrollmentInput,
-  OwnerEnrollmentResult,
-} from '../modules/features/camera-capture/types';
-import type {
-  PomodoroCommandInput,
-  PomodoroDeviceListResult,
-  PomodoroStatus,
-} from '../modules/features/focus-mode/types';

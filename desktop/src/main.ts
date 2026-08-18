@@ -1,15 +1,21 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, systemPreferences } from 'electron';
 import path from 'node:path';
 
 import type { AgentHooksRuntime } from './modules/features/coding-agent-status/agent-hooks/runtime';
+import { LarkCliClient } from './modules/features/feishu-briefing/larkCli';
 import { registerAgentHooksIpc } from './main/agentHooksIpc';
 import { registerCameraIpc } from './main/camera/registerCameraIpc';
+import { registerMonitoringWindowGuard } from './main/camera/monitoringWindowGuard';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
+import { registerFeishuIpc } from './main/feishuIpc';
 import { registerPomodoroIpc } from './main/pomodoro/registerPomodoroIpc';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
 let cleanupAgentHooksIpc: (() => void) | undefined;
+let cleanupFeishuIpc: (() => void) | undefined;
 let cleanupPomodoroIpc: (() => void) | undefined;
+let cameraIpc: ReturnType<typeof registerCameraIpc> | undefined;
+let isQuitting = false;
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -33,6 +39,11 @@ const createWindow = (): void => {
     void shell.openExternal(url);
     return { action: 'deny' };
   });
+  registerMonitoringWindowGuard({
+    window: mainWindow,
+    isMonitoringActive: () => cameraIpc?.isMonitoringActive() ?? false,
+    isQuitting: () => isQuitting,
+  });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
@@ -48,16 +59,22 @@ app.whenReady().then(() => {
     homeDir: app.getPath('home'),
     userDataPath: app.getPath('userData'),
     electronPath: process.execPath,
+    isAccessibilityTrusted: () =>
+      systemPreferences.isTrustedAccessibilityClient(true),
   });
   cleanupAgentHooksIpc = registerAgentHooksIpc({
     ipcMain,
     runtime: agentHooksRuntime,
     getWindows: () => BrowserWindow.getAllWindows(),
   });
+  cleanupFeishuIpc = registerFeishuIpc({
+    ipcMain,
+    client: new LarkCliClient(),
+  });
   void agentHooksRuntime.start().catch((error: unknown) => {
     console.error('Agent Hook 监控启动失败', error);
   });
-  registerCameraIpc();
+  cameraIpc = registerCameraIpc();
   cleanupPomodoroIpc = registerPomodoroIpc();
   createWindow();
 
@@ -69,8 +86,13 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  cameraIpc?.cleanup();
+  cameraIpc = undefined;
   cleanupAgentHooksIpc?.();
   cleanupAgentHooksIpc = undefined;
+  cleanupFeishuIpc?.();
+  cleanupFeishuIpc = undefined;
   cleanupPomodoroIpc?.();
   cleanupPomodoroIpc = undefined;
   void agentHooksRuntime?.stop();

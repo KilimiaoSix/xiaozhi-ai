@@ -1,6 +1,7 @@
 """Validated, atomic persistence for the local owner face template."""
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -117,3 +118,37 @@ def delete_template(path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+def save_metadata(path, value: dict) -> None:
+    destination = Path(path)
+    if not isinstance(value, dict):
+        raise ValueError("metadata must be an object")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            prefix=f".{destination.stem}-",
+            suffix=".json",
+            dir=destination.parent,
+            delete=False,
+            encoding="utf-8",
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(value, temporary, ensure_ascii=False, separators=(",", ":"))
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def load_metadata(path) -> dict:
+    with Path(path).open("r", encoding="utf-8") as metadata_file:
+        value = json.load(metadata_file)
+    if not isinstance(value, dict):
+        raise ValueError("metadata must be an object")
+    return value

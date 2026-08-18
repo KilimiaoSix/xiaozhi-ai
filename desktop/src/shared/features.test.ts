@@ -16,9 +16,9 @@ describe('featureCatalog', () => {
     ]);
   });
 
-  it('编码 Agent 监控和专注模式已就绪，其余仍是占位', () => {
+  it('飞书 CLI、编码 Agent 监控和专注模式已就绪，其余仍是占位', () => {
     expect(featureCatalog.filter((feature) => feature.status === 'ready').map(({ id }) => id))
-      .toEqual(['coding-agent-status', 'focus-mode']);
-    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(6);
+      .toEqual(['feishu-briefing', 'coding-agent-status', 'focus-mode']);
+    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(5);
   });
 });

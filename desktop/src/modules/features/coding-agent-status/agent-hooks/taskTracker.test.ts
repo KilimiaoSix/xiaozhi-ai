@@ -53,27 +53,32 @@ describe('AgentTaskTracker', () => {
     expect(tracker.primary()).toMatchObject({ status: 'completed' });
   });
 
-  it('不把三端可自动处理的 PermissionRequest 误报为用户介入', () => {
+  it('Codex 权限请求等待用户，工具继续后恢复运行', () => {
     const tracker = createTracker();
 
-    for (const source of ['codex', 'claude-code', 'workbuddy'] as const) {
-      tracker.apply(event('UserPromptSubmit', {
-        source,
-        sessionId: `${source}-auto-approval`,
-        prompt: '运行 Bash 任务',
-      }));
-      tracker.apply(event('PermissionRequest', {
-        source,
-        sessionId: `${source}-auto-approval`,
-        toolName: 'Bash',
-      }));
-    }
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'codex',
+      prompt: '运行 Bash 任务',
+    }));
+    tracker.apply(event('PermissionRequest', {
+      source: 'codex',
+      toolName: 'Bash',
+    }));
 
-    expect(tracker.list()).toEqual([
-      expect.objectContaining({ source: 'codex', status: 'running' }),
-      expect.objectContaining({ source: 'claude-code', status: 'running' }),
-      expect.objectContaining({ source: 'workbuddy', status: 'running' }),
-    ]);
+    expect(tracker.primary()).toMatchObject({
+      source: 'codex',
+      status: 'needs_user',
+      needsUserReason: 'Bash 需要用户确认',
+    });
+
+    tracker.apply(event('PostToolUse', {
+      source: 'codex',
+      toolName: 'Bash',
+    }));
+    expect(tracker.primary()).toMatchObject({
+      source: 'codex',
+      status: 'running',
+    });
   });
 
   it('Stop 在后台任务运行或最终回复提问时不会误报完成', () => {

@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { CameraMonitoringProvider } from './modules/features/camera-capture/context/CameraMonitoringProvider';
 import { App } from './renderer/App';
 import './renderer/styles.css';
 
@@ -12,6 +13,8 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <CameraMonitoringProvider>
+      <App />
+    </CameraMonitoringProvider>
   </StrictMode>,
 );

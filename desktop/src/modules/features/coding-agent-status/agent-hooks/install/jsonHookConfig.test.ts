@@ -4,13 +4,13 @@ import { SOURCE_DEFINITIONS } from './sourceDefinitions';
 import {
   createOwnedHookCommand,
   mergeOwnedHooks,
+  ownedHooksMatchCommand,
   unmergeOwnedHooks,
 } from './jsonHookConfig';
 
 describe('Hook JSON 配置合并', () => {
   const ownedCommand = createOwnedHookCommand({
-    electronPath: '/Applications/工伴.app/Contents/MacOS/工伴',
-    runnerPath: '/Users/demo/Library/Application Support/工伴/hooks/launchcrush-hook.cjs',
+    launcherPath: '/Users/demo/Library/Application Support/工伴/hooks/launchcrush-hook',
     spoolPath: '/Users/demo/Library/Application Support/工伴/agent-hooks',
     source: 'codex',
   });
@@ -46,8 +46,8 @@ describe('Hook JSON 配置合并', () => {
 
   it('刷新失效的 owned handler 命令并保留用户 Hook', () => {
     const staleCommand = ownedCommand.replace(
-      '/Applications/工伴.app/Contents/MacOS/工伴',
-      '/deleted-worktree/node_modules/electron/Electron',
+      '/Users/demo/Library/Application Support/工伴/hooks/launchcrush-hook',
+      '/deleted-worktree/launchcrush-hook',
     );
     const staleConfig = mergeOwnedHooks({
       hooks: {
@@ -63,11 +63,51 @@ describe('Hook JSON 配置合并', () => {
     const serialized = JSON.stringify(refreshed);
 
     expect(serialized).not.toContain('/deleted-worktree/');
-    expect(serialized).toContain('/Applications/工伴.app/Contents/MacOS/工伴');
+    expect(serialized).toContain('/Users/demo/Library/Application Support/工伴/hooks/launchcrush-hook');
     expect(serialized).toContain('/user/notify.sh');
     expect(serialized.match(/launchcrush-agent-hook/g)).toHaveLength(
       SOURCE_DEFINITIONS.codex.events.length,
     );
+  });
+
+  it('将 Codex SessionEnd 超时限制为 3 秒并刷新旧配置', () => {
+    const staleConfig = {
+      hooks: {
+        SessionEnd: [{
+          hooks: [{ type: 'command', command: ownedCommand, timeout: 5 }],
+        }],
+        PreToolUse: [{
+          matcher: '.*',
+          hooks: [{ type: 'command', command: ownedCommand, timeout: 5 }],
+        }],
+      },
+    };
+
+    expect(ownedHooksMatchCommand(
+      staleConfig,
+      SOURCE_DEFINITIONS.codex,
+      ownedCommand,
+    )).toBe(false);
+
+    const refreshed = mergeOwnedHooks(
+      staleConfig,
+      SOURCE_DEFINITIONS.codex,
+      ownedCommand,
+    );
+
+    expect(refreshed.hooks).toMatchObject({
+      SessionEnd: [{ hooks: [{ timeout: 3 }] }],
+      PreToolUse: [{ hooks: [{ timeout: 5 }] }],
+    });
+
+    const claudeConfig = mergeOwnedHooks(
+      {},
+      SOURCE_DEFINITIONS['claude-code'],
+      ownedCommand,
+    );
+    expect(claudeConfig.hooks).toMatchObject({
+      SessionEnd: [{ hooks: [{ timeout: 5 }] }],
+    });
   });
 
   it('只从配置中移除 owned handler', () => {
@@ -95,14 +135,12 @@ describe('Hook JSON 配置合并', () => {
 
   it('正确引用命令中的空格和单引号', () => {
     const command = createOwnedHookCommand({
-      electronPath: "/Applications/Worker's Desk.app/Contents/MacOS/Desk",
-      runnerPath: '/tmp/agent hook.cjs',
+      launcherPath: "/Applications/Worker's Desk/agent hook",
       spoolPath: '/tmp/agent spool',
       source: 'claude-code',
     });
 
-    expect(command).toContain("'/Applications/Worker'\"'\"'s Desk.app/Contents/MacOS/Desk'");
-    expect(command).toContain("'/tmp/agent hook.cjs'");
+    expect(command).toContain("'/Applications/Worker'\"'\"'s Desk/agent hook'");
     expect(command).toContain('--source claude-code');
     expect(command).toContain('--owner launchcrush-agent-hook');
   });

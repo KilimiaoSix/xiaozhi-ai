@@ -4,9 +4,11 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 
 const config: ForgeConfig = {
   packagerConfig: {
+    appBundleId: 'com.launchcrush.xiaofei',
     asar: true,
     extendInfo: {
       NSCameraUsageDescription: '小飞需要使用摄像头来注册主人面部并进行本地人员监测。',
+      NSAppleEventsUsageDescription: '用于只读识别 Codex 是否正在等待用户审批。',
     },
     download: {
       mirrorOptions: {

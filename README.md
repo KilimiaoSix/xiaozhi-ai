@@ -6,12 +6,13 @@ AI Agent 驱动的打工人桌面宠物，由桌面应用、Server 和 ESP32-S3 
 ## 通信架构
 
 ```text
-Electron 桌面端 ── HTTP ──> Server ── WebSocket ──> ESP32-S3 机器人
+Electron 桌面端 ── HTTP / 摄像头 WebSocket ──> Server ── WebSocket ──> ESP32-S3 机器人
 ```
 
 - 桌面端不直接连接机器人。
-- Server 与机器人只使用 WebSocket 通信。
-- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook；Server HTTP 与机器人反馈发送仍为 Mock/功能占位。
+- 桌面端通过 HTTP 发送工作事件，通过带背压的 WebSocket 持续发送摄像头 JPEG。
+- Server 对同一帧执行人体在场和主人核验，再通过 WebSocket 与机器人通信。
+- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook，也可通过飞书 CLI 读取当前用户的今日日程与未完成任务。
 
 ## 目录
 
@@ -51,6 +52,8 @@ macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`
 
 任务卡会保留并显示 Hook 提供的完整提示词、工作目录、错误和等待原因。数据只在本机处理，不会由 Hook 上传到第三方；Hook 也不会替用户批准权限请求或直接控制机器人。
 
+Codex 页面内的 Computer Use 应用授权不会触发 Hook。macOS 版小飞会在用户授予“辅助功能”权限后，只读匹配该授权卡片的标题与按钮标签，并临时显示“需要你”；卡片消失后恢复原任务状态。检测不会点击批准按钮，也不会读取代码、提示词或对话正文。
+
 ### 配置位置与撤销
 
 | 工具 | 默认 Hook 配置 |
@@ -78,6 +81,23 @@ macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`
 
 桌面端离线期间产生的 inbox 事件会在下次启动时恢复，但不会补播已经过期的机器人动作。当前桌面端只生成 `quiet_companion`、`task_completed`、`task_failed`、`needs_user` 预设动作意图；通过 Server HTTP 发送到 ESP32-S3 的真实链路将在后续接入。
 
+## 飞书 CLI 工作台
+
+桌面端在 Electron 主进程中调用本机 `lark-cli`，渲染层只能通过只读 IPC 检查连接和刷新数据，不会执行创建、更新、完成或删除操作。当前工作台读取：
+
+- 当前飞书用户身份与 CLI 版本；
+- 当前用户主日历中的今日日程；
+- 分配给当前用户的未完成任务、所属任务清单、截止时间和任务链接。
+
+首次使用前需在终端完成飞书 CLI 配置和用户授权：
+
+```bash
+lark-cli config init
+lark-cli auth login --scope "task:task:read calendar:calendar:readonly"
+```
+
+启动桌面端后，可在“飞书任务与会议”区域检查连接并刷新。日历或任务其中一项缺少权限时，另一项仍会正常展示，界面会列出缺失 scope 和最小权限授权命令。应用只读取结构化任务与日程字段，不保存 access token，也不采集完整飞书对话或文档内容。
+
 ## 运行上位机 server
 
 - 入口：`server/main/xiaozhi-server/app.py`
@@ -88,12 +108,46 @@ macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`
 cd server/main/xiaozhi-server && python app.py
 ```
 
+摄像头识别统一运行在 Server 的 Python 3.10 进程中，不需要额外 Python worker。已有 Server 虚拟环境增加摄像头依赖：
+
+```bash
+cd server/main/xiaozhi-server
+python -m pip install -r requirements-camera.txt
+python -m pip check
+```
+
+使用 pyenv 时，一个项目固定一个版本即可：
+
+```bash
+pyenv install -s 3.10.16
+pyenv local 3.10.16
+python -m venv .venv
+source .venv/bin/activate
+```
+
+统一依赖基线为 Python 3.10、NumPy 1.26.4、OpenCV contrib 4.11.0.86 和 MediaPipe 0.10.35。
+
 > 私有配置放在 `server/main/xiaozhi-server/data/.config.yaml`，该目录已被 `.gitignore` 排除，
 > 不要把真实密钥提交进仓库。
 
-## 运行工位在岗与本人识别
+## 桌面摄像头监测与主人录入
 
-Windows 本地演示可从仓库根目录一键启动：
+启动 Server 和桌面端后，在桌面应用“摄像头”页完成主人录入，再打开“实时监测”开关。桌面端独占摄像头，以 5 FPS、最大 640×360 的 JPEG 流发送给 Server。监测会跨页面切换、窗口最小化、Server 重启和摄像头短暂中断持续运行，直到手动关闭开关或退出应用。
+
+Server 地址和认证只提供给 Electron 主进程：
+
+```bash
+export XIAOFEI_SERVER_URL=http://127.0.0.1:8003
+export XIAOFEI_SERVER_AUTH_TOKEN='<server.auth_key>'
+cd desktop
+npm run dev
+```
+
+主人注册连续接受 20 个合格人脸样本，以其中 18 个样本生成模板。原始帧只在内存中流转，不写入磁盘。该识别没有活体检测，只能用于低风险提醒和个性化反馈。
+
+### 独立 presence-agent（兼容工具）
+
+没有桌面端的 Windows 部署仍可从仓库根目录启动独立兼容工具：
 
 ```powershell
 .\run-presence-stack.ps1 -WorkstationId desk-tfzhang11
@@ -137,7 +191,7 @@ $env:PRESENCE_AUTH_TOKEN = "<server.auth_key>"
   -WorkstationId desk-tfzhang11
 ```
 
-首次运行自动创建 `presence-agent/.venv` 并安装固定版本依赖。同一采集循环完成 MediaPipe Pose 与 YuNet/SFace 推理，避免两个进程争用摄像头。摄像头帧、完整人体关键点、人脸 embedding 和本人模板只在本机使用，不上传到 Server；本人模板保存在被 Git 忽略的 `presence-agent/.runtime/owner_template.npz`。设计与接口见：
+不要同时运行桌面摄像头监测和独立 Agent，否则会争用摄像头。独立 Agent 与 Server 摄像头能力使用同一 Python 3.10 依赖基线；摄像头帧、完整人体关键点、人脸 embedding 和本人模板只在本机使用。模板保存在被 Git 忽略的 `presence-agent/.runtime/owner_template.npz`。设计与接口见：
 
 - [`docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md`](docs/superpowers/specs/2026-08-18-camera-presence-integration-design.md)
 - [`docs/superpowers/specs/2026-08-18-face-verification-integration-design.md`](docs/superpowers/specs/2026-08-18-face-verification-integration-design.md)

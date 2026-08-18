@@ -5,17 +5,17 @@ export const feishuBriefingModule: FeatureModule = {
     id: 'feishu-briefing',
     code: 'LARK',
     title: '飞书待办与日程简报',
-    summary: '把今天最重要的会议、待办和时间冲突压缩成一分钟简报。',
-    triggerLabel: '模拟简报',
-    status: 'placeholder',
+    summary: '通过飞书 CLI 读取当前用户的今日日程与未完成任务。',
+    triggerLabel: '查看飞书工作台',
+    status: 'ready',
     tone: 'violet',
   },
   async execute() {
     return {
-      title: '今日工作简报已生成 · Mock',
-      detail: '已预留飞书日历、任务和简报生成适配入口。',
+      title: '飞书 CLI 工作台已打开',
+      detail: '可检查用户身份，并刷新今日日程和未完成任务。',
       tone: 'violet',
-      source: 'mock',
+      source: 'live',
     };
   },
 };

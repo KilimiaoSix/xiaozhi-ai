@@ -26,11 +26,11 @@ describe('默认功能模块', () => {
     expect(featureRegistry.list()).toHaveLength(8);
   });
 
-  it('编码 Agent 和专注模式返回实时入口，其余模块保持场景化 Mock', async () => {
+  it('飞书、编码 Agent 和专注模式返回实时入口，其余模块保持场景化 Mock', async () => {
     const results = await Promise.all(
       expectedIds.map((id) => featureRegistry.execute(id, context)),
     );
-    const liveIndexes = [2, 4]; // coding-agent-status, focus-mode
+    const liveIndexes = [1, 2, 4]; // feishu-briefing, coding-agent-status, focus-mode
 
     liveIndexes.forEach((index) => expect(results[index].source).toBe('live'));
     expect(results.filter((_, index) => !liveIndexes.includes(index))

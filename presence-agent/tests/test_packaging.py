@@ -30,15 +30,30 @@ def lines(path):
 def test_runtime_and_test_dependencies_are_exactly_pinned():
     assert lines(AGENT_ROOT / "requirements.txt") == {
         "aiohttp==3.13.2",
-        "mediapipe==1.0.1",
-        "numpy==2.5.2",
-        "opencv-contrib-python==5.0.0.93",
+        "mediapipe==0.10.35",
+        "numpy==1.26.4",
+        "opencv-contrib-python==4.11.0.86",
     }
     assert lines(AGENT_ROOT / "requirements-test.txt") == {
         "-r requirements.txt",
         "pytest==9.1.1",
         "pytest-aiohttp==1.1.0",
     }
+
+
+def test_presence_agent_has_installable_package_metadata():
+    pyproject = (AGENT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'name = "launchcrush-presence-agent"' in pyproject
+    assert 'requires-python = ">=3.10"' in pyproject
+    for requirement in lines(AGENT_ROOT / "requirements.txt"):
+        assert f'"{requirement}"' in pyproject
+
+    camera_requirements = (
+        REPO_ROOT / "server" / "main" / "xiaozhi-server" / "requirements-camera.txt"
+    ).read_text(encoding="utf-8")
+    assert "-r requirements.txt" not in camera_requirements
+    assert "-e ../../../presence-agent" in camera_requirements
 
 
 def test_bundled_model_matches_validated_demo():

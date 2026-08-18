@@ -1,43 +1,73 @@
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { CodexUiApprovalMonitor } from '../modules/features/coding-agent-status/agent-hooks/codexUiApprovalMonitor';
 import { AgentHookManager } from '../modules/features/coding-agent-status/agent-hooks/install/manager';
 import { AgentHooksRuntime } from '../modules/features/coding-agent-status/agent-hooks/runtime';
 import { EventSpool } from '../modules/features/coding-agent-status/agent-hooks/spool/eventSpool';
 import { HOOK_RUNNER_SOURCE } from '../modules/features/coding-agent-status/agent-hooks/spool/hookRunnerSource';
 import { AgentTaskTracker } from '../modules/features/coding-agent-status/agent-hooks/taskTracker';
+import { createCodexUiApprovalProbe } from './codexUiApprovalProbe';
 
 interface CreateAgentHooksRuntimeOptions {
   homeDir: string;
   userDataPath: string;
   electronPath: string;
+  platform?: NodeJS.Platform;
+  isAccessibilityTrusted?: () => boolean;
 }
 
-const writeHookRunner = async (runnerPath: string): Promise<void> => {
-  await mkdir(path.dirname(runnerPath), { recursive: true });
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
+
+const writeHookRunner = async (
+  launcherPath: string,
+  runnerPath: string,
+  electronPath: string,
+): Promise<void> => {
+  await mkdir(path.dirname(launcherPath), { recursive: true });
   const temporaryPath = `${runnerPath}.${process.pid}.tmp`;
   await writeFile(temporaryPath, HOOK_RUNNER_SOURCE, { encoding: 'utf8', mode: 0o700 });
   await rename(temporaryPath, runnerPath);
+
+  const launcherTemporaryPath = `${launcherPath}.${process.pid}.tmp`;
+  const launcherSource = [
+    '#!/bin/sh',
+    'export ELECTRON_RUN_AS_NODE=1',
+    `exec ${shellQuote(electronPath)} ${shellQuote(runnerPath)} "$@"`,
+    '',
+  ].join('\n');
+  await writeFile(launcherTemporaryPath, launcherSource, { encoding: 'utf8', mode: 0o700 });
+  await rename(launcherTemporaryPath, launcherPath);
 };
 
 export const createAgentHooksRuntime = (
   options: CreateAgentHooksRuntimeOptions,
 ): AgentHooksRuntime => {
   const rootPath = path.join(options.userDataPath, 'agent-hooks');
+  const launcherPath = path.join(rootPath, 'launchcrush-hook');
   const runnerPath = path.join(rootPath, 'launchcrush-hook.cjs');
   const manager = new AgentHookManager({
     homeDir: options.homeDir,
-    electronPath: options.electronPath,
-    runnerPath,
+    launcherPath,
     spoolPath: rootPath,
-    ensureRunner: () => writeHookRunner(runnerPath),
+    codexTrustMarkerPath: path.join(rootPath, 'state/codex-trust-required'),
+    ensureRunner: () => writeHookRunner(launcherPath, runnerPath, options.electronPath),
   });
+  const platform = options.platform ?? process.platform;
+  const attentionMonitor = platform === 'darwin'
+    ? new CodexUiApprovalMonitor({
+        probe: createCodexUiApprovalProbe({
+          platform,
+          isAccessibilityTrusted: options.isAccessibilityTrusted,
+        }),
+      })
+    : undefined;
 
   return new AgentHooksRuntime({
     manager,
     spool: new EventSpool({ rootPath }),
     tracker: new AgentTaskTracker(),
     statePath: path.join(rootPath, 'state/tasks.json'),
+    ...(attentionMonitor ? { attentionMonitor } : {}),
   });
 };
-

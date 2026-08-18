@@ -2,12 +2,17 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { featureCatalog, featureRegistry } from '../modules/features';
 import { CameraPage } from '../modules/features/camera-capture';
+import { useCameraMonitoring } from '../modules/features/camera-capture/context/CameraMonitoringProvider';
 import { PomodoroPanel } from '../modules/features/focus-mode/PomodoroPanel';
 import type {
   AgentSource,
   AgentTaskSnapshot,
 } from '../modules/features/coding-agent-status/agent-hooks/contracts';
 import type { AgentHooksSnapshot } from '../modules/features/coding-agent-status/agent-hooks/runtime';
+import type {
+  FeishuBriefingSnapshot,
+  FeishuCliStatus,
+} from '../modules/features/feishu-briefing/contracts';
 import { featureRuntimeContext, serverGateway } from '../modules/runtime';
 import type { FeatureDefinition } from '../shared/features';
 
@@ -75,6 +80,7 @@ const logAgentSnapshot = (
       source: item.source,
       available: item.available,
       installed: item.installed,
+      requiresTrustReview: item.requiresTrustReview,
       configPath: item.configPath,
       message: item.message,
     })),
@@ -93,7 +99,30 @@ const formatTaskTime = (value: string): string =>
     hour12: false,
   }).format(new Date(value));
 
+const formatFeishuTime = (value: string, allDay = false): string => {
+  if (allDay || /^\d{4}-\d{2}-\d{2}$/.test(value)) return '全天';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+};
+
+const formatFeishuDue = (value?: string, allDay = false): string => {
+  if (!value) return '未设截止时间';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return `截止 ${value}`;
+  return `截止 ${new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    ...(allDay ? {} : { hour: '2-digit', minute: '2-digit', hour12: false }),
+  }).format(date)}`;
+};
+
 export function App() {
+  const cameraMonitoring = useCameraMonitoring();
   const [activePage, setActivePage] = useState<'dashboard' | 'camera'>('dashboard');
   const [activeFeature, setActiveFeature] = useState(featureCatalog[0]);
   const [events, setEvents] = useState(initialEvents);
@@ -102,8 +131,14 @@ export function App() {
   const [agentSnapshot, setAgentSnapshot] = useState(emptyAgentSnapshot);
   const [agentBusy, setAgentBusy] = useState<AgentSource | 'all' | null>(null);
   const [agentError, setAgentError] = useState('');
+  const [feishuStatus, setFeishuStatus] = useState<FeishuCliStatus | null>(null);
+  const [feishuBriefing, setFeishuBriefing] = useState<FeishuBriefingSnapshot | null>(null);
+  const [feishuBusy, setFeishuBusy] = useState(false);
+  const [feishuError, setFeishuError] = useState('');
 
   const runtime = useMemo(() => window.xiaofei.getRuntimeInfo(), []);
+  const activeAgentHookCount = agentSnapshot.installations.filter((item) =>
+    item.installed && !item.requiresTrustReview).length;
 
   useEffect(() => {
     let active = true;
@@ -132,6 +167,24 @@ export function App() {
       active = false;
       unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void window.xiaofei.feishu.getStatus()
+      .then(async (status) => {
+        if (!active) return;
+        setFeishuStatus(status);
+        if (status.state !== 'ready') return;
+        const briefing = await window.xiaofei.feishu.getBriefing();
+        if (active) setFeishuBriefing(briefing);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setFeishuError(error instanceof Error ? error.message : '无法连接飞书 CLI。');
+        }
+      });
+    return () => { active = false; };
   }, []);
 
   const pushEvent = (event: Omit<TimelineEvent, 'id' | 'time'>): void => {
@@ -211,6 +264,45 @@ export function App() {
     document.querySelector('#pomodoro-panel')?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const focusFeishuWorkspace = (): void => {
+    document.querySelector('#feishu-workspace')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const checkFeishuConnection = async (): Promise<void> => {
+    setFeishuBusy(true);
+    setFeishuError('');
+    try {
+      const status = await window.xiaofei.feishu.getStatus();
+      setFeishuStatus(status);
+      if (status.state !== 'ready') setFeishuBriefing(null);
+    } catch (error) {
+      setFeishuError(error instanceof Error ? error.message : '无法检查飞书 CLI。');
+    } finally {
+      setFeishuBusy(false);
+    }
+  };
+
+  const refreshFeishuBriefing = async (): Promise<void> => {
+    setFeishuBusy(true);
+    setFeishuError('');
+    try {
+      const briefing = await window.xiaofei.feishu.getBriefing();
+      setFeishuStatus(briefing.status);
+      setFeishuBriefing(briefing);
+      pushEvent({
+        title: '飞书工作简报已刷新',
+        detail: `${briefing.meetings.length} 项今日日程，${briefing.tasks.length} 项未完成任务${briefing.warnings.length ? `；${briefing.warnings.join('；')}` : ''}`,
+        tone: briefing.warnings.length ? 'amber' : 'violet',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '飞书简报刷新失败。';
+      setFeishuError(message);
+      pushEvent({ title: '飞书简报刷新失败', detail: message, tone: 'coral' });
+    } finally {
+      setFeishuBusy(false);
+    }
+  };
+
   const triggerFeature = async (feature: FeatureDefinition): Promise<void> => {
     setActiveFeature(feature);
 
@@ -276,10 +368,19 @@ export function App() {
           >
             摄像头
           </button>
+          {cameraMonitoring.enabled && (
+            <button
+              className={`status-pill camera-monitoring-pill ${cameraMonitoring.connection === 'online' ? 'is-live' : 'is-idle'}`}
+              type="button"
+              onClick={() => setActivePage('camera')}
+            >
+              <i />{cameraMonitoring.connection === 'online' ? '摄像头监测中' : '摄像头重连中'}
+            </button>
+          )}
           <span className="build-label">LAB BUILD 0.1.0</span>
           <span className="runtime-label">Electron {runtime.versions.electron}</span>
-          <span className={`status-pill ${agentSnapshot.installations.some((item) => item.installed) ? 'is-live' : 'is-idle'}`}>
-            <i />{agentSnapshot.installations.some((item) => item.installed) ? 'Agent 监控中' : '系统待连接'}
+          <span className={`status-pill ${activeAgentHookCount > 0 ? 'is-live' : 'is-idle'}`}>
+            <i />{activeAgentHookCount > 0 ? 'Agent 监控中' : '系统待连接'}
           </span>
         </div>
       </header>
@@ -351,7 +452,7 @@ export function App() {
               <h2>AI Agent 任务监控</h2>
             </div>
             <div className="agent-heading-actions">
-              <span>{agentSnapshot.installations.filter((item) => item.installed).length} / 3 已接入</span>
+              <span>{activeAgentHookCount} / 3 已生效</span>
               <button
                 className="primary-action"
                 type="button"
@@ -369,12 +470,13 @@ export function App() {
             {(['codex', 'claude-code', 'workbuddy'] as const).map((source) => {
               const detection = agentSnapshot.installations.find((item) => item.source === source);
               const installed = detection?.installed ?? false;
+              const awaitingTrust = detection?.requiresTrustReview ?? false;
               return (
-                <article className={`agent-source-card ${installed ? 'is-installed' : ''}`} key={source}>
+                <article className={`agent-source-card ${installed ? 'is-installed' : ''} ${awaitingTrust ? 'is-pending' : ''}`} key={source}>
                   <div>
                     <span className="agent-source-code">{source.toUpperCase()}</span>
-                    <span className={`agent-install-state ${installed ? 'is-installed' : ''}`}>
-                      <i />{installed ? '正在监控' : detection?.available ? '可接入' : '未发现'}
+                    <span className={`agent-install-state ${installed ? 'is-installed' : ''} ${awaitingTrust ? 'is-pending' : ''}`}>
+                      <i />{awaitingTrust ? '等待授权' : installed ? '正在监控' : detection?.available ? '可接入' : '未发现'}
                     </span>
                   </div>
                   <h3>{sourceLabels[source]}</h3>
@@ -444,6 +546,98 @@ export function App() {
 
         <PomodoroPanel />
 
+        <section className="feishu-workspace" id="feishu-workspace">
+          <div className="section-heading feishu-heading">
+            <div>
+              <span className="section-index">FEISHU CLI / USER IDENTITY</span>
+              <h2>飞书任务与会议</h2>
+            </div>
+            <div className="feishu-actions">
+              <span className={`feishu-state state-${feishuStatus?.state ?? 'checking'}`}>
+                <i />{feishuStatus?.state === 'ready' ? 'CLI 已连接' : feishuStatus ? '需要配置' : '正在检查'}
+              </span>
+              <button type="button" disabled={feishuBusy} onClick={() => void checkFeishuConnection()}>
+                检查连接
+              </button>
+              <button className="primary-action" type="button" disabled={feishuBusy || feishuStatus?.state !== 'ready'} onClick={() => void refreshFeishuBriefing()}>
+                {feishuBusy ? '读取中…' : '刷新飞书数据'}
+              </button>
+            </div>
+          </div>
+
+          {feishuStatus && (
+            <div className="feishu-identity">
+              <div>
+                <span>当前用户</span>
+                <strong>{feishuStatus.userName ?? '尚未识别'}</strong>
+              </div>
+              <div>
+                <span>CLI 版本</span>
+                <strong>{feishuStatus.cliVersion ?? '未检测到'}</strong>
+              </div>
+              <p>{feishuStatus.message}</p>
+            </div>
+          )}
+
+          {feishuError && <p className="feishu-alert is-error" role="alert">{feishuError}</p>}
+          {feishuStatus?.missingScopes.length ? (
+            <div className="feishu-alert">
+              <strong>需要补充只读权限</strong>
+              <p>{feishuStatus.missingScopes.join('、')}</p>
+              <code>lark-cli auth login --scope &quot;{feishuStatus.missingScopes.join(' ')}&quot;</code>
+            </div>
+          ) : null}
+          {feishuBriefing?.warnings.map((warning) => (
+            <p className="feishu-alert" key={warning}>{warning}</p>
+          ))}
+
+          <div className="feishu-data-grid">
+            <article className="feishu-data-card">
+              <div className="task-card-heading">
+                <span>TODAY'S MEETINGS</span>
+                <small>{feishuBriefing?.meetings.length ?? 0} 项</small>
+              </div>
+              {feishuBriefing?.meetings.length ? (
+                <ol>
+                  {feishuBriefing.meetings.slice(0, 10).map((meeting) => (
+                    <li key={meeting.id}>
+                      <time>{formatFeishuTime(meeting.start, meeting.allDay)}</time>
+                      <div>
+                        {meeting.url ? <a href={meeting.url} target="_blank" rel="noreferrer">{meeting.title}</a> : <strong>{meeting.title}</strong>}
+                        {meeting.end && !meeting.allDay && <small>至 {formatFeishuTime(meeting.end)}</small>}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="feishu-empty">{feishuBriefing ? '今天没有日程' : '连接后读取今日日程'}</p>
+              )}
+            </article>
+
+            <article className="feishu-data-card">
+              <div className="task-card-heading">
+                <span>OPEN TASKS</span>
+                <small>{feishuBriefing?.tasks.length ?? 0} 项</small>
+              </div>
+              {feishuBriefing?.tasks.length ? (
+                <ol>
+                  {feishuBriefing.tasks.slice(0, 12).map((task) => (
+                    <li key={task.id}>
+                      <span className="feishu-task-mark" aria-hidden="true" />
+                      <div>
+                        {task.url ? <a href={task.url} target="_blank" rel="noreferrer">{task.title}</a> : <strong>{task.title}</strong>}
+                        <small>{task.projectName ? `${task.projectName} · ` : ''}{formatFeishuDue(task.due, task.allDay)}</small>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="feishu-empty">{feishuBriefing ? '当前没有未完成任务' : '连接后读取待办任务'}</p>
+              )}
+            </article>
+          </div>
+        </section>
+
         <section className="workspace-grid">
           <div className="capabilities">
             <div className="section-heading">
@@ -473,6 +667,10 @@ export function App() {
                     onClick={() => {
                       if (feature.id === 'coding-agent-status') focusAgentMonitor();
                       if (feature.id === 'focus-mode') focusPomodoroPanel();
+                      if (feature.id === 'feishu-briefing') {
+                        focusFeishuWorkspace();
+                        void refreshFeishuBriefing();
+                      }
                       void triggerFeature(feature);
                     }}
                     aria-pressed={activeFeature.id === feature.id}

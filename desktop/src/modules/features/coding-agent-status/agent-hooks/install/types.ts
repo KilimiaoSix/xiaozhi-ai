@@ -11,6 +11,7 @@ export interface AgentHookDetection {
   source: AgentSource;
   available: boolean;
   installed: boolean;
+  requiresTrustReview?: boolean;
   executablePath?: string;
   configPath: string;
   lastEventAt?: string;
@@ -21,15 +22,14 @@ export interface AgentHookInstallResult {
   source: AgentSource;
   ok: boolean;
   installed: boolean;
+  requiresTrustReview?: boolean;
   configPath: string;
   backupPath?: string;
   message: string;
 }
 
 export interface OwnedHookCommandOptions {
-  electronPath: string;
-  runnerPath: string;
+  launcherPath: string;
   spoolPath: string;
   source: AgentSource;
 }
-
