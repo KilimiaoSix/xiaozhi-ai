@@ -99,6 +99,19 @@ Windows 本地演示可从仓库根目录一键启动：
 .\run-presence-stack.ps1 -WorkstationId desk-tfzhang11
 ```
 
+macOS / Linux 使用同名 `.sh` 入口，参数改为长选项：
+
+```bash
+./run-presence-stack.sh --workstation-id desk-tfzhang11
+```
+
+macOS 需要注意两点：
+
+- 依赖固定在 `numpy==2.5.2`，要求 **Python 3.12 或更高**；系统自带的 `python3` 常常是 3.9/3.10，用
+  `--python /opt/homebrew/bin/python3.14` 显式指定即可，`setup.sh` 会在建 venv 前检查版本。
+- 首次运行会弹出摄像头授权，未授权时 OpenCV 只会报打开失败。允许当前终端后重试：
+  系统设置 > 隐私与安全性 > 摄像头。
+
 首次使用先登记本人，登记成功后脚本继续启动完整检测链路：
 
 ```powershell

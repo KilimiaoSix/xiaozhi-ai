@@ -16,9 +16,9 @@ describe('featureCatalog', () => {
     ]);
   });
 
-  it('只把编码 Agent 监控标记为已就绪', () => {
+  it('编码 Agent 监控和专注模式已就绪，其余仍是占位', () => {
     expect(featureCatalog.filter((feature) => feature.status === 'ready').map(({ id }) => id))
-      .toEqual(['coding-agent-status']);
-    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(7);
+      .toEqual(['coding-agent-status', 'focus-mode']);
+    expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(6);
   });
 });

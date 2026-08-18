@@ -43,6 +43,11 @@ const desktopApi: XiaofeiDesktopApi = {
   openCameraPrivacySettings: () => ipcRenderer.invoke('camera:open-privacy-settings'),
   enrollOwnerFace: (input) => ipcRenderer.invoke('camera:enroll-owner', input),
   uploadMonitoringFrame: (input) => ipcRenderer.invoke('camera:upload-frame', input),
+  pomodoro: {
+    listDevices: () => ipcRenderer.invoke('pomodoro:list-devices'),
+    getStatus: (deviceId) => ipcRenderer.invoke('pomodoro:get-status', deviceId),
+    sendCommand: (input) => ipcRenderer.invoke('pomodoro:send-command', input),
+  },
 };
 
 contextBridge.exposeInMainWorld('xiaofei', desktopApi);

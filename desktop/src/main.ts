@@ -5,9 +5,11 @@ import type { AgentHooksRuntime } from './modules/features/coding-agent-status/a
 import { registerAgentHooksIpc } from './main/agentHooksIpc';
 import { registerCameraIpc } from './main/camera/registerCameraIpc';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
+import { registerPomodoroIpc } from './main/pomodoro/registerPomodoroIpc';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
 let cleanupAgentHooksIpc: (() => void) | undefined;
+let cleanupPomodoroIpc: (() => void) | undefined;
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -56,6 +58,7 @@ app.whenReady().then(() => {
     console.error('Agent Hook 监控启动失败', error);
   });
   registerCameraIpc();
+  cleanupPomodoroIpc = registerPomodoroIpc();
   createWindow();
 
   app.on('activate', () => {
@@ -68,6 +71,8 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   cleanupAgentHooksIpc?.();
   cleanupAgentHooksIpc = undefined;
+  cleanupPomodoroIpc?.();
+  cleanupPomodoroIpc = undefined;
   void agentHooksRuntime?.stop();
 });
 

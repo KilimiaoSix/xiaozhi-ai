@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
+import sys
 
 
 CORE_LANDMARK_INDICES = (0, 11, 12, 13, 14, 23, 24)
@@ -46,11 +47,34 @@ class PoseObservation:
 
 
 class PoseDetector:
-    def __init__(self, model_path: str | Path) -> None:
-        mp = import_module("mediapipe")
+    """MediaPipe 姿态检测适配器。
+
+    macOS 上的 mediapipe 轮子把 TensorsToDetections 编译成了 Metal 路径：用默认
+    (CPU) delegate 建图会直接 abort（graph_service.h Check failed: service_），
+    改用 GPU delegate 后输入必须是 SRGBA，SRGB 会在推理时报 unsupported
+    ImageFrame format。Windows/Linux 保持原有的默认 delegate + SRGB。
+    """
+
+    def __init__(
+        self,
+        model_path: str | Path,
+        *,
+        mediapipe_module=None,
+        platform: str = sys.platform,
+    ) -> None:
+        mp = mediapipe_module or import_module("mediapipe")
         vision = mp.tasks.vision
+        self._macos = platform == "darwin"
+        base_options = (
+            mp.tasks.BaseOptions(
+                model_asset_path=str(model_path),
+                delegate=mp.tasks.BaseOptions.Delegate.GPU,
+            )
+            if self._macos
+            else mp.tasks.BaseOptions(model_asset_path=str(model_path))
+        )
         options = vision.PoseLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
+            base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_poses=1,
             min_pose_detection_confidence=0.5,
@@ -71,11 +95,16 @@ class PoseDetector:
 
     def detect(self, frame_bgr, timestamp_ms: int) -> PoseObservation:
         cv2 = import_module("cv2")
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        image = self._mp.Image(
-            image_format=self._mp.ImageFormat.SRGB,
-            data=frame_rgb,
-        )
+        if self._macos:
+            image = self._mp.Image(
+                image_format=self._mp.ImageFormat.SRGBA,
+                data=cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGBA),
+            )
+        else:
+            image = self._mp.Image(
+                image_format=self._mp.ImageFormat.SRGB,
+                data=cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB),
+            )
         result = self._landmarker.detect_for_video(image, timestamp_ms)
         if not result.pose_landmarks:
             return PoseObservation(())

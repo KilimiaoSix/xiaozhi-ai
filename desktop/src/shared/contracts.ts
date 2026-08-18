@@ -20,6 +20,12 @@ export interface AgentHooksDesktopApi {
   onSnapshot: (listener: (snapshot: AgentHooksSnapshot) => void) => () => void;
 }
 
+export interface PomodoroDesktopApi {
+  listDevices: () => Promise<PomodoroDeviceListResult>;
+  getStatus: (deviceId: string) => Promise<PomodoroStatus>;
+  sendCommand: (input: PomodoroCommandInput) => Promise<PomodoroStatus>;
+}
+
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
@@ -30,6 +36,7 @@ export interface XiaofeiDesktopApi {
   uploadMonitoringFrame: (
     input: MonitoringFrameInput,
   ) => Promise<MonitoringFrameResult>;
+  pomodoro: PomodoroDesktopApi;
 }
 import type {
   CameraPermissionStatus,
@@ -38,3 +45,8 @@ import type {
   OwnerEnrollmentInput,
   OwnerEnrollmentResult,
 } from '../modules/features/camera-capture/types';
+import type {
+  PomodoroCommandInput,
+  PomodoroDeviceListResult,
+  PomodoroStatus,
+} from '../modules/features/focus-mode/types';

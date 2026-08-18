@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { featureCatalog, featureRegistry } from '../modules/features';
 import { CameraPage } from '../modules/features/camera-capture';
+import { PomodoroPanel } from '../modules/features/focus-mode/PomodoroPanel';
 import type {
   AgentSource,
   AgentTaskSnapshot,
@@ -204,6 +205,10 @@ export function App() {
 
   const focusAgentMonitor = (): void => {
     document.querySelector('#agent-monitor')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const focusPomodoroPanel = (): void => {
+    document.querySelector('#pomodoro-panel')?.scrollIntoView({ behavior: 'smooth' });
   };
 
   const triggerFeature = async (feature: FeatureDefinition): Promise<void> => {
@@ -437,6 +442,8 @@ export function App() {
           )}
         </section>
 
+        <PomodoroPanel />
+
         <section className="workspace-grid">
           <div className="capabilities">
             <div className="section-heading">
@@ -465,6 +472,7 @@ export function App() {
                     type="button"
                     onClick={() => {
                       if (feature.id === 'coding-agent-status') focusAgentMonitor();
+                      if (feature.id === 'focus-mode') focusPomodoroPanel();
                       void triggerFeature(feature);
                     }}
                     aria-pressed={activeFeature.id === feature.id}
