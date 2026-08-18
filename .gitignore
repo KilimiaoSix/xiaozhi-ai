@@ -19,3 +19,6 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+
+# ===== 本地隔离开发工作区 =====
+.worktrees/
