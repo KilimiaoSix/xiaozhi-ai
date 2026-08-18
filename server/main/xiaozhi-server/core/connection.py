@@ -30,7 +30,7 @@ from core.utils.modules_initialize import (
 from core.handle.reportHandle import report, enqueue_tool_report
 from core.providers.tts.default import DefaultTTS
 from concurrent.futures import ThreadPoolExecutor
-from core.utils.dialogue import Message, Dialogue
+from core.utils.dialogue import Message, Dialogue, DEFAULT_MAX_HISTORY_MESSAGES
 from core.providers.asr.dto.dto import InterfaceType
 from core.handle.textHandle import handleTextMessage
 from core.providers.tools.unified_tool_handler import UnifiedToolHandler
@@ -163,7 +163,12 @@ class ConnectionHandler:
         self.system_introduced_speakers = set()  # 已在 system 注入过身份的说话人，控制 system 身份只首轮出现
 
         # llm相关变量
-        self.dialogue = Dialogue()
+        # 设备常连后本对象不再随对话结束销毁，历史必须截断，否则会撞 token 上限
+        self.dialogue = Dialogue(
+            max_history_messages=self.config.get(
+                "max_history_messages", DEFAULT_MAX_HISTORY_MESSAGES
+            )
+        )
 
         # tts相关变量
         self.sentence_id = None

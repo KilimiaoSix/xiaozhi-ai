@@ -7,26 +7,211 @@
 speak=True 时额外走一次 TTS 播报。注意固件收到 tts.stop 后，若当前不是
 kListeningModeManualStop 会切到 Listening（麦克风打开等待回话），所以默认不播报。
 """
+import asyncio
 import json
 import uuid
+from typing import Any, Dict, Optional
 
 TAG = __name__
 
 DEFAULT_EMOTION = "neutral"
 DEFAULT_STATUS = "通知"
 
+# 设备的"基态"——事件播完之后该回到的常驻画面。
+# 离席看家这类场景需要持续维持一个画面，而 alert 是覆盖式的，
+# 任何路过的瞬时事件都会把它永久冲掉，所以事件播完要能自动恢复。
+DEFAULT_BASE_STATE = {"status": "待机", "message": "", "emotion": "neutral"}
+
+# 按 device_id 存，不挂在 conn 上：固件断线 10s 就重连、conn 会被换掉，
+# 挂 conn 上的状态在 WiFi 抖动时会静默丢失。
+_base_states: Dict[str, Dict[str, str]] = {}
+_restore_tasks: Dict[str, Any] = {}
+
+
+def set_base_state(device_id: str, status: str, message: str, emotion: str) -> None:
+    """设定设备的常驻基态。"""
+    if not device_id:
+        return
+    _base_states[device_id] = {
+        "status": str(status or DEFAULT_BASE_STATE["status"]),
+        "message": str(message or ""),
+        "emotion": str(emotion or DEFAULT_BASE_STATE["emotion"]),
+    }
+
+
+def get_base_state(device_id: str) -> Dict[str, str]:
+    """读取基态，没设过就是默认待机态。"""
+    return dict(_base_states.get(device_id) or DEFAULT_BASE_STATE)
+
+
+def clear_base_state(device_id: str) -> None:
+    """清除自定义基态，回落到默认待机态。"""
+    if not device_id:
+        return
+    _base_states.pop(device_id, None)
+    _cancel_pending_restore(device_id)
+
+
+def _cancel_pending_restore(device_id: str) -> None:
+    task = _restore_tasks.pop(device_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _resolve_conn(fallback_conn, device_id: str):
+    """按 device_id 取当前活跃连接，取不到就退回传入的那个。
+
+    连接注册表挂在 WebSocketServer 上，这里经 conn.server 反查，避免把
+    pushHandle 和 websocket_server 绑死。
+    """
+    server = getattr(fallback_conn, "server", None)
+    registry = getattr(server, "device_registry", None)
+    if registry is None:
+        return fallback_conn
+    return registry.get(device_id)
+
+
+def _schedule_base_state_restore(conn, device_id: str, delay: float) -> None:
+    """安排 delay 秒后把设备画面恢复到基态。
+
+    新事件到来时取消上一个待恢复任务，否则旧的恢复会把新事件的画面冲掉。
+    """
+    _cancel_pending_restore(device_id)
+
+    async def _restore():
+        try:
+            await asyncio.sleep(delay)
+            # 不能用捕获的 conn：固件断线 10s 就重连，会议时长级的 restore_after
+            # 期间只要 WiFi 抖一次，这个 conn 就已经是死连接了（见本文件顶部注释）。
+            # 恢复时刻按 device_id 重新取当前活跃连接。
+            target = _resolve_conn(conn, device_id)
+            if target is None:
+                conn.logger.bind(tag=TAG).warning(
+                    f"设备 {device_id} 已离线，跳过基态恢复"
+                )
+                return
+            base = get_base_state(device_id)
+            # 基态恢复一律静音：它是把画面收回去，不是新事件
+            await push_alert_to_device(
+                target, base["message"], base["emotion"], base["status"], silent=True
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            conn.logger.bind(tag=TAG).warning(f"恢复设备基态失败: {e}")
+        finally:
+            if _restore_tasks.get(device_id) is not None:
+                _restore_tasks.pop(device_id, None)
+
+    _restore_tasks[device_id] = asyncio.create_task(_restore())
+
+
+def device_busy_reason(conn) -> Optional[str]:
+    """设备是否忙到不能接受主动播报，忙则返回原因，空闲返回 None。
+
+    推送随时可能到来，而设备的音频通道是独占的：正在播语音时再塞一段会音频交错，
+    用户正在说话时插播会污染这一轮的 ASR 与 client_abort 状态。
+    """
+    if getattr(conn, "tts", None) is None:
+        return "TTS 尚未就绪"
+    if getattr(conn, "client_is_speaking", False):
+        return "设备正在播放语音"
+    if getattr(conn, "client_have_voice", False):
+        return "用户正在说话"
+    return None
+
 
 async def push_alert_to_device(conn, text: str, emotion: str = DEFAULT_EMOTION,
-                               status: str = DEFAULT_STATUS) -> None:
-    """下发一条 alert。三个字段必须都是字符串，否则固件会直接丢弃。"""
+                               status: str = DEFAULT_STATUS,
+                               silent: bool = False) -> None:
+    """下发一条 alert。三个字段必须都是字符串，否则固件会直接丢弃。
+
+    silent=True 时固件不播提示音——基态恢复这类"收画面"的推送不该每次都响一声。
+    """
     message = {
         "type": "alert",
         "status": str(status or DEFAULT_STATUS),
         "message": str(text),
         "emotion": str(emotion or DEFAULT_EMOTION),
+        "silent": bool(silent),
         "session_id": getattr(conn, "session_id", ""),
     }
     await conn.websocket.send(json.dumps(message))
+
+
+# 固件里 emotion 只驱动表情动画，不碰舵机（emotion_response_controller.cc:335
+# 的 happy 只 PlayAnimation）。要让云台动必须显式调 MCP 动作工具。
+# 注意工具名用下划线版：MCPClient 按 sanitize_tool_name 后的键存查，带点的名字查不到。
+ROBOT_ACTION_TOOL = "self_robot_play_action"
+IDLE_ANIMATION_TOOL = "self_robot_set_idle_animation"
+VALID_ACTIONS = {"nod", "shake", "roll",
+                 # 瞥一眼后回中
+                 "look_left", "look_right", "look_up", "look_down",
+                 # 转过去保持不动（供"转向同事并保持注视"这类镜头）
+                 "hold_left", "hold_right", "hold_up", "hold_down",
+                 "center"}
+ACTION_MAX_ATTEMPTS = 2
+ACTION_RETRY_DELAY = 3.0
+
+
+async def play_action_on_device(conn, action: str) -> bool:
+    """让设备做一个头部动作，失败不影响本次推送的其它部分。"""
+    if action not in VALID_ACTIONS:
+        conn.logger.bind(tag=TAG).warning(f"未知动作，已忽略: {action}")
+        return False
+
+    mcp_client = getattr(conn, "mcp_client", None)
+    if mcp_client is None:
+        conn.logger.bind(tag=TAG).warning("设备未初始化 MCP，无法执行动作")
+        return False
+
+    from core.providers.tools.device_mcp.mcp_handler import call_mcp_tool
+
+    # 设备重连后 MCP 客户端要重新初始化，这几秒内调用必失败。
+    # 固件断线 10s 就重连，所以重试一次通常就能落地。
+    args = json.dumps({"action": action})
+    last_error = None
+    for attempt in range(ACTION_MAX_ATTEMPTS):
+        try:
+            await call_mcp_tool(conn, mcp_client, ROBOT_ACTION_TOOL, args, timeout=10)
+            conn.logger.bind(tag=TAG).info(
+                f"已下发动作: {action}" + (f"（第 {attempt + 1} 次尝试）" if attempt else "")
+            )
+            return True
+        except Exception as e:
+            last_error = e
+            if attempt < ACTION_MAX_ATTEMPTS - 1:
+                conn.logger.bind(tag=TAG).info(f"下发动作 {action} 失败，{ACTION_RETRY_DELAY}s 后重试: {e}")
+                await asyncio.sleep(ACTION_RETRY_DELAY)
+                mcp_client = getattr(conn, "mcp_client", None)
+                if mcp_client is None:
+                    break
+
+    conn.logger.bind(tag=TAG).warning(f"下发动作 {action} 最终失败: {last_error}")
+    return False
+
+
+async def set_idle_animation_on_device(conn, enabled: bool) -> bool:
+    """开关设备的随机空闲动画（每约 10 秒一次的自发转头）。
+
+    默认关闭，让机器人的每一次动作都是对事件的刻意回应；
+    需要"待机显得有生气"的镜头时再打开。
+    """
+    mcp_client = getattr(conn, "mcp_client", None)
+    if mcp_client is None:
+        conn.logger.bind(tag=TAG).warning("设备未初始化 MCP，无法开关空闲动画")
+        return False
+
+    from core.providers.tools.device_mcp.mcp_handler import call_mcp_tool
+
+    try:
+        await call_mcp_tool(conn, mcp_client, IDLE_ANIMATION_TOOL,
+                            json.dumps({"enabled": bool(enabled)}), timeout=10)
+        conn.logger.bind(tag=TAG).info(f"空闲动画已{'开启' if enabled else '关闭'}")
+        return True
+    except Exception as e:
+        conn.logger.bind(tag=TAG).warning(f"开关空闲动画失败: {e}")
+        return False
 
 
 async def speak_on_device(conn, text: str) -> bool:
@@ -40,9 +225,17 @@ async def speak_on_device(conn, text: str) -> bool:
 
     # 重依赖（opus 等）只在真正播报时才加载，保证 alert 路径足够轻
     from core.providers.tts.dto.dto import ContentType, SentenceType, TTSMessageDTO
+    from core.handle.sendAudioHandle import send_tts_message
 
     conn.client_abort = False
     conn.sentence_id = uuid.uuid4().hex
+
+    # 关键：设备只有收到 tts.start 才会从 Idle 切到 Speaking，
+    # 而 OnIncomingAudio 只在 Speaking 态收包（application.cc:426-429）。
+    # 少了这一条，推送的音频会被固件静默丢弃，真机上听不到任何声音。
+    conn.client_is_speaking = True
+    await send_tts_message(conn, "start")
+
     tts.store_tts_text(conn.sentence_id, text)
     tts.tts_text_queue.put(
         TTSMessageDTO(
@@ -63,13 +256,48 @@ async def speak_on_device(conn, text: str) -> bool:
 
 
 async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
-                          status: str = DEFAULT_STATUS, speak: bool = False) -> bool:
-    """推送一条工作事件，返回是否完成了语音播报。"""
-    await push_alert_to_device(conn, text, emotion, status)
+                          status: str = DEFAULT_STATUS, speak: bool = False,
+                          restore_after: Optional[float] = None,
+                          action: Optional[str] = None,
+                          idle_animation: Optional[bool] = None,
+                          silent: bool = False) -> bool:
+    """推送一条工作事件，返回是否完成了语音播报。
+
+    restore_after 传正数时，该秒数之后把画面恢复到设备基态；不传则保持覆盖式行为。
+    """
+    await push_alert_to_device(conn, text, emotion, status, silent=silent)
+
+    if idle_animation is not None:
+        await set_idle_animation_on_device(conn, idle_animation)
+
+    # 把推送内容写进对话历史，否则用户追问"刚才那个告警怎么回事"时 LLM 毫无上下文。
+    # 历史已有截断（dialogue.py DEFAULT_MAX_HISTORY_MESSAGES），不怕撑爆。
+    try:
+        from core.utils.dialogue import Message
+
+        conn.dialogue.put(Message(role="assistant", content=text))
+    except Exception as e:
+        conn.logger.bind(tag=TAG).warning(f"推送内容写入对话历史失败: {e}")
+
+    if action:
+        await play_action_on_device(conn, action)
+
+    if restore_after is not None and restore_after > 0:
+        device_id = getattr(conn, "device_id", None)
+        if device_id:
+            _schedule_base_state_restore(conn, device_id, float(restore_after))
+
     if not speak:
         return False
+
+    busy = device_busy_reason(conn)
+    if busy:
+        conn.logger.bind(tag=TAG).info(f"{busy}，本次推送降级为仅提示: {text}")
+        return False
+
     try:
         return await speak_on_device(conn, text)
     except Exception as e:
+        conn.client_is_speaking = False
         conn.logger.bind(tag=TAG).warning(f"推送事件语音播报失败，已降级为仅提示: {e}")
         return False

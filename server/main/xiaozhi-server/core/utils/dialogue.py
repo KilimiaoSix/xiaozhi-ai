@@ -22,11 +22,35 @@ class Message:
         self.is_temporary = is_temporary  # 标记临时消息（如工具调用提醒）
 
 
+# 送给大模型的历史消息条数上限（不含 system 与 few-shot）。
+# 设备改为常连之后 ConnectionHandler 不再随对话结束销毁，历史会累积一整天，
+# 每轮全量重发最终会撞 token 上限报 400。40 条约等于 20 轮问答。
+DEFAULT_MAX_HISTORY_MESSAGES = 40
+
+
 class Dialogue:
-    def __init__(self):
+    def __init__(self, max_history_messages: int = DEFAULT_MAX_HISTORY_MESSAGES):
         self.dialogue: List[Message] = []
+        # 0 或负数表示不截断
+        self.max_history_messages = max_history_messages
         # 获取当前时间
         self.current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _truncate_history(self, messages: List[Message]) -> List[Message]:
+        """只保留最近若干条实际对话。
+
+        截断可能把 assistant 的 tool_calls 切掉而留下孤儿 tool 消息，
+        这种消息发给大模型会直接 400，所以从头丢弃直到第一条非 tool 消息。
+        尾部的悬空 tool_calls 由 _ensure_tool_calls_complete 补齐。
+        """
+        limit = self.max_history_messages
+        if not limit or limit <= 0 or len(messages) <= limit:
+            return messages
+
+        kept = messages[-limit:]
+        while kept and kept[0].role == "tool":
+            kept.pop(0)
+        return kept
 
     def put(self, message: Message):
         self.dialogue.append(message)
@@ -156,6 +180,7 @@ class Dialogue:
 
         # 第三段：实际对话历史（不含 few-shot）
         actual_messages = [m for m in non_system_messages if not m.is_temporary]
+        actual_messages = self._truncate_history(actual_messages)
         complete_actual = self._ensure_tool_calls_complete(actual_messages)
         for m in complete_actual:
             self.getMessages(m, dialogue)

@@ -13,6 +13,17 @@ from core.handle.pushHandle import DEFAULT_EMOTION, DEFAULT_STATUS, push_work_ev
 TAG = __name__
 
 
+def _positive_float(value):
+    """把 restore_after 解析成正浮点数，非法或非正一律当作不恢复。"""
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class EventHandler(BaseHandler):
     def __init__(self, config: dict, device_registry):
         super().__init__(config)
@@ -48,7 +59,8 @@ class EventHandler(BaseHandler):
     async def handle_push(self, request):
         """推送一条工作事件到指定设备。
 
-        Body: {"device_id": 必填, "text": 必填, "emotion": 可选, "status": 可选, "speak": 可选}
+        Body: {"device_id": 必填, "text": 必填, "emotion": 可选, "status": 可选,
+               "speak": 可选, "restore_after": 可选（秒，到点把画面恢复到设备基态）}
         """
         if not self._authorized(request):
             return self._json_response({"ok": False, "message": "unauthorized"}, 401)
@@ -87,6 +99,11 @@ class EventHandler(BaseHandler):
                 emotion=str(data.get("emotion") or DEFAULT_EMOTION),
                 status=str(data.get("status") or DEFAULT_STATUS),
                 speak=bool(data.get("speak", False)),
+                restore_after=_positive_float(data.get("restore_after")),
+                action=(str(data["action"]).strip() if data.get("action") else None),
+                idle_animation=(bool(data["idle_animation"])
+                                if "idle_animation" in data else None),
+                silent=bool(data.get("silent", False)),
             )
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"推送事件到设备 {device_id} 失败: {e}")

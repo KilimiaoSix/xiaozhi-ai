@@ -41,6 +41,14 @@ async def resume_vad_detection(conn: "ConnectionHandler"):
 
 
 async def startToChat(conn: "ConnectionHandler", text):
+    # 剧本模式：拍摄时把语音输入与 LLM 断开。
+    # 每条 speak=true 播完后固件都会自动开麦（tts.stop 之后进 Listening），
+    # 演员这时说的任何话都会被 ASR 拾到并触发真 LLM 应答录进素材。
+    # 开启后语音只做"设备在听"的画面，实际内容由分镜脚本经 /xiaozhi/event/push 下发。
+    if conn.config.get("script_mode", False):
+        conn.logger.bind(tag=TAG).info(f"剧本模式已开启，不送 LLM: {text}")
+        return
+
     # 检查输入是否是JSON格式（包含说话人信息）
     speaker_name = None
     actual_text = text
