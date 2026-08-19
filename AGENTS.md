@@ -95,6 +95,9 @@ Codex / Claude Code / WorkBuddy          摄像头
 | GET | `/xiaozhi/approval/{approval_id}` | 轮询审批状态；`POST .../decision` 为人工兜底决策 |
 | POST | `/xiaozhi/incident/webhook` | 告警入站：P0/P1 立即播报，P2/P3 进台账；`status:resolved` 触发恢复观察 |
 | GET | `/xiaozhi/incident/latest` | 当前活跃故障与今日列表 |
+| GET | `/xiaozhi/incident/list` | 桌面端告警管理列表：incident 链路（内存+落盘）与 alert_relay 的归一化合并视图，参数 `date`/`state`/`limit` |
+| POST | `/xiaozhi/incident/{id}/ack` | 桌面端标记已处理（已恢复 409、未知 404、中继条目 400） |
+| POST | `/xiaozhi/incident/{id}/diagnose` | 对指定故障触发只读诊断；并发 409，recovered 允许复盘，中继条目 400 |
 | POST | `/xiaozhi/morning-brief/preview` | 飞书晨报采集（`latest`/`health` 见 docs/api） |
 | GET/POST | `/xiaozhi/pomodoro/…` | 番茄钟设备列表/快照/命令 |
 | GET/POST | `/xiaozhi/ota/` | 简易 OTA，下发 WebSocket 地址 |

@@ -364,6 +364,9 @@ class SimpleHttpServer:
             self.alert_relay_service,
             logger=self.logger,
         )
+        # 桌面端告警管理列表要合并展示值班中继的条目：只读注入，不碰其状态机
+        if self.incident_handler:
+            self.incident_handler.set_alert_relay(self.alert_relay_service)
 
     def _get_websocket_url(self, local_ip: str, port: int) -> str:
         """获取websocket地址

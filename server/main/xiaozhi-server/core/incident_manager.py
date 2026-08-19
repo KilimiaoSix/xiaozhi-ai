@@ -89,6 +89,15 @@ EVENT_DIAGNOSIS_RESULT = "diagnosis_result"
 EVENT_RESOLVED_REPORTED = "resolved_reported"
 EVENT_REIGNITED = "reignited"
 EVENT_RECOVERED = "recovered"
+EVENT_ACKNOWLEDGED = "acknowledged"
+
+# ack / request_diagnosis 的结构化结果，HTTP 层按它翻状态码
+OUTCOME_ACKED = "acked"
+OUTCOME_ALREADY_ACKED = "already_acked"
+OUTCOME_ALREADY_RECOVERED = "already_recovered"
+OUTCOME_NOT_FOUND = "not_found"
+OUTCOME_ACCEPTED = "accepted"
+OUTCOME_ALREADY_RUNNING = "already_running"
 
 # incident_id 会直接拼进文件名，必须先过滤：监控系统的 id 里带 "/" 或 ".."
 # 就能把时间线写到 data/incidents 之外去。
@@ -496,30 +505,62 @@ class IncidentManager:
 
     # ------------------------------------------------------------ 诊断
 
-    async def start_diagnosis(self) -> Optional[str]:
-        """对当前最该关注的故障起一次只读诊断。
+    async def start_diagnosis(self, incident_id: Optional[str] = None) -> Optional[str]:
+        """语音路径：起一次只读诊断，返回给用户的确认语。
 
-        立刻返回一句给用户的确认语，真正的 claude -p 在后台跑（一次要几十秒，
-        内联 await 会把语音回复卡到超时）。没有活跃故障时返回 None，
-        由调用方决定怎么措辞。
+        不传 id 保持原契约——取当前最该关注的活跃故障，没有则返回 None，
+        由调用方决定怎么措辞；诊断已在跑返回 DIAGNOSIS_BUSY。真正的
+        claude -p 在后台跑（一次要几十秒，内联 await 会把语音回复卡到超时）。
         """
-        record = self._active_record()
-        if record is None:
-            return None
+        if incident_id is None:
+            record = self._active_record()
+            if record is None:
+                return None
+            incident_id = record["incident_id"]
 
-        incident_id = record["incident_id"]
+        result = await self.request_diagnosis(incident_id)
+        if result["outcome"] == OUTCOME_ALREADY_RUNNING:
+            return DIAGNOSIS_BUSY
+        if result["outcome"] == OUTCOME_NOT_FOUND:
+            return None
+        return DIAGNOSIS_ACK
+
+    async def request_diagnosis(self, incident_id: str) -> dict:
+        """HTTP 路径：对指定故障起诊断，返回结构化结果（不拼话术）。
+
+        outcome ∈ accepted / already_running / not_found。并发闸门按
+        incident_id 查任务表：同一故障已有诊断在跑绝不并行起第二个 claude
+        子进程（打断它的超时强杀节奏，还双倍花钱）。recovered 的故障允许
+        事后诊断（复盘场景）；进程重启后只剩落盘时间线的故障也接受——
+        落盘 JSON 本身就是 snapshot() 的产物，直接当诊断上下文用。
+        """
+        incident_id = _safe_id(str(incident_id or ""))
         running = self._diagnosis_tasks.get(incident_id)
         if running is not None and not running.done():
-            return DIAGNOSIS_BUSY
+            return {"ok": False, "outcome": OUTCOME_ALREADY_RUNNING}
 
-        self._append_event(record, EVENT_DIAGNOSIS_STARTED, "启动只读诊断")
-        self._persist(record)
+        record = self._incidents.get(incident_id)
+        if record is not None:
+            self._append_event(record, EVENT_DIAGNOSIS_STARTED, "启动只读诊断")
+            self._persist(record)
+            snapshot = self.snapshot(record)
+        else:
+            found = self._find_disk_record(incident_id)
+            if found is None:
+                return {"ok": False, "outcome": OUTCOME_NOT_FOUND}
+            path, snapshot = found
+            self._append_event(snapshot, EVENT_DIAGNOSIS_STARTED, "启动只读诊断（复盘）")
+            self._write_disk_record(path, snapshot)
 
-        snapshot = self.snapshot(record)
         task = asyncio.create_task(self._run_diagnosis(snapshot))
         self._diagnosis_tasks[incident_id] = task
         self._track(task)
-        return DIAGNOSIS_ACK
+        return {"ok": True, "outcome": OUTCOME_ACCEPTED}
+
+    def diagnosis_running(self, incident_id: str) -> bool:
+        """列表接口据此报 diagnosis.state=running（结果本身要等回调落盘）。"""
+        task = self._diagnosis_tasks.get(_safe_id(str(incident_id or "")))
+        return task is not None and not task.done()
 
     async def _run_diagnosis(self, snapshot: dict) -> None:
         incident_id = snapshot["incident_id"]
@@ -569,17 +610,27 @@ class IncidentManager:
             text = f"诊断没有跑完：{error}"
             emotion = EMOTION_DIAGNOSIS_FAILED
 
+        diagnosis = {
+            "ok": ok and bool(summary),
+            "summary": summary,
+            "error": "" if (ok and summary) else error,
+            "at": self._now_iso(),
+        }
         if record is not None:
-            record["diagnosis"] = {
-                "ok": ok and bool(summary),
-                "summary": summary,
-                "error": "" if (ok and summary) else error,
-                "at": self._now_iso(),
-            }
+            record["diagnosis"] = diagnosis
             self._append_event(record, EVENT_DIAGNOSIS_RESULT, text)
             self._persist(record)
         else:
-            self._logger.warning(f"诊断结果找不到对应故障 {incident_id}，仅播报")
+            # 复盘路径：进程重启后故障只剩落盘时间线，结论写回原文件，
+            # 否则桌面端轮询永远停在 running。
+            found = self._find_disk_record(incident_id)
+            if found is not None:
+                path, data = found
+                data["diagnosis"] = diagnosis
+                self._append_event(data, EVENT_DIAGNOSIS_RESULT, text)
+                self._write_disk_record(path, data)
+            else:
+                self._logger.warning(f"诊断结果找不到对应故障 {incident_id}，仅播报")
 
         await self._push(text, emotion=emotion, status=STATUS_TEXT_DIAGNOSIS)
 
@@ -591,6 +642,40 @@ class IncidentManager:
                 self._config, logger=self._logger
             )
         return self._diagnosis_runner
+
+    # ------------------------------------------------------------ 标记已处理
+
+    def ack(self, incident_id: str) -> dict:
+        """桌面端「标记已处理」。acknowledged 只是人的批注，不改故障状态机。
+
+        已恢复的故障拒绝标记（时间线已定稿，标记没有意义，HTTP 层翻 409）；
+        重复标记幂等成功——桌面端两次点击不该看到报错。内存没有时落到盘上
+        找（进程重启后的历史条目），直接改文件。不提供删除：时间线是审计记录。
+        """
+        incident_id = _safe_id(str(incident_id or ""))
+        record = self._incidents.get(incident_id)
+        if record is not None:
+            if record["state"] == STATUS_RECOVERED:
+                return {"ok": False, "outcome": OUTCOME_ALREADY_RECOVERED}
+            if record.get("acknowledged"):
+                return {"ok": True, "outcome": OUTCOME_ALREADY_ACKED}
+            record["acknowledged"] = True
+            self._append_event(record, EVENT_ACKNOWLEDGED, "桌面端标记已处理")
+            self._persist(record)
+            return {"ok": True, "outcome": OUTCOME_ACKED}
+
+        found = self._find_disk_record(incident_id)
+        if found is None:
+            return {"ok": False, "outcome": OUTCOME_NOT_FOUND}
+        path, data = found
+        if data.get("state") == STATUS_RECOVERED:
+            return {"ok": False, "outcome": OUTCOME_ALREADY_RECOVERED}
+        if data.get("acknowledged"):
+            return {"ok": True, "outcome": OUTCOME_ALREADY_ACKED}
+        data["acknowledged"] = True
+        self._append_event(data, EVENT_ACKNOWLEDGED, "桌面端标记已处理（历史条目补记）")
+        self._write_disk_record(path, data)
+        return {"ok": True, "outcome": OUTCOME_ACKED}
 
     # ------------------------------------------------------------ 查询
 
@@ -616,16 +701,24 @@ class IncidentManager:
         record = self._active_record()
         return self.snapshot(record) if record is not None else None
 
-    def list_today(self) -> List[dict]:
-        """今天的全部故障，供日终总结用。
+    def current_day(self) -> str:
+        """今天的 YYYY-MM-DD。走注入时钟，列表接口的缺省日期必须与它一致。"""
+        return self._clock().strftime("%Y-%m-%d")
 
-        内存优先，再补上盘里今天但内存没有的（进程重启前发生的）。
-        坏文件跳过：日终总结不该因为一个半截 JSON 就整个报不出来。
+    def list_today(self) -> List[dict]:
+        """今天的全部故障，供日终总结用。"""
+        return self.list_for_date(self.current_day())
+
+    def list_for_date(self, day: str) -> List[dict]:
+        """指定日期（YYYY-MM-DD）的全部故障，桌面端列表与日终总结共用。
+
+        内存优先，再补上盘里当天但内存没有的（进程重启前发生的）。
+        坏文件跳过：列表不该因为一个半截 JSON 就整个报不出来。
+        day 必须先在 HTTP 层校验过格式——它会直接进 glob 模式。
         """
-        today = self._clock().strftime("%Y-%m-%d")
         merged: Dict[str, dict] = {}
 
-        for path in sorted(self._storage_dir.glob(f"{today}-*.json")):
+        for path in sorted(self._storage_dir.glob(f"{day}-*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
@@ -636,7 +729,7 @@ class IncidentManager:
                 merged[incident_id] = data
 
         for incident_id, record in self._incidents.items():
-            if str(record.get("first_seen_at", ""))[:10] == today:
+            if str(record.get("first_seen_at", ""))[:10] == day:
                 merged[incident_id] = self.snapshot(record)
 
         return sorted(merged.values(), key=lambda r: str(r.get("first_seen_at") or ""))
@@ -708,6 +801,9 @@ class IncidentManager:
             "state": STATUS_FIRING,
             "repeat_count": 1,
             "announced": False,
+            # 桌面端「标记已处理」的批注位，独立于状态机；老落盘文件没有这个键，
+            # 读取侧一律用 .get(..., False) 兜底
+            "acknowledged": False,
             "last_announced_at": None,
             # 上一次「对外做了点什么」（播报或进摘要）的时刻，dedup 冷却按它算
             "last_notified_at": None,
@@ -735,7 +831,9 @@ class IncidentManager:
         record["simulated"] = bool(record.get("simulated")) or event["simulated"]
 
     def _append_event(self, record: dict, event: str, detail: str = "") -> None:
-        record["timeline"].append(
+        # setdefault 兜底：复盘路径会对盘上读回的历史 JSON 追加事件，
+        # 手工构造或异源写入的文件可能缺 timeline 键
+        record.setdefault("timeline", []).append(
             {"at": self._now_iso(), "event": event, "detail": str(detail or "")}
         )
 
@@ -825,19 +923,47 @@ class IncidentManager:
         return self._storage_dir / f"{day}-{record['incident_id']}.json"
 
     def _persist(self, record: dict) -> None:
-        """原子写：先写 .tmp 再 rename，进程被 kill 也不会留半截 JSON。"""
-        path = self._record_path(record)
+        self._write_disk_record(self._record_path(record), self.snapshot(record))
+
+    def _write_disk_record(self, path: Path, data: dict) -> None:
+        """原子写：先写 .tmp 再 rename，进程被 kill 也不会留半截 JSON。
+
+        落盘失败只影响事后复盘，不影响这一轮播报。
+        """
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(
-                json.dumps(self.snapshot(record), ensure_ascii=False, indent=2),
-                encoding="utf-8",
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             tmp.replace(path)
         except Exception as e:
-            # 落盘失败只影响事后复盘，不影响这一轮播报
             self._logger.warning(f"故障时间线落盘失败: {e}")
+
+    def _find_disk_record(self, incident_id: str) -> Optional[tuple]:
+        """按 id 在盘上找最近一天的时间线文件（内存态丢失后的复盘路径）。
+
+        返回 (path, data) 或 None。id 必须已过 _safe_id——它会拼进 glob 模式，
+        不过滤的话 "*" 或路径分隔符都能改变匹配范围。文件名是 {日期}-{id}.json，
+        同一 id 多天复发时取最近那天。
+        """
+        if not incident_id:
+            return None
+        try:
+            paths = sorted(self._storage_dir.glob(f"*-{incident_id}.json"))
+        except OSError:
+            return None
+        for path in reversed(paths):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                self._logger.warning(f"故障时间线文件损坏，已跳过: {path}")
+                continue
+            # glob 后缀匹配可能误命中更长 id 的文件（a-b.json 匹配 *-b.json），
+            # 必须再核对文件内的 incident_id
+            if isinstance(data, dict) and data.get("incident_id") == incident_id:
+                return path, data
+        return None
 
 
 def _epoch(value: Optional[str]) -> float:
