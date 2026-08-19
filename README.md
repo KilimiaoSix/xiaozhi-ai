@@ -137,8 +137,26 @@ FEISHU_USER_ACCESS_TOKEN=<token> FEISHU_SELF_OPEN_ID=<open_id> \
 - 依赖：`server/main/xiaozhi-server/requirements.txt`
 - 部署方式、管理后台与各模块说明见 [`server/README.md`](server/README.md) 与 [`server/docs/`](server/docs/)。
 
+macOS 本地开发统一使用仓库根目录的管理脚本。双击 `server.command` 或不带参数运行时默认启动完整 Server：
+
 ```bash
-cd server/main/xiaozhi-server && python app.py
+./server.command start
+./server.command status
+./server.command logs
+./server.command restart
+./server.command stop
+```
+
+首次运行先执行 `./server.command doctor`。脚本固定使用
+`server/main/xiaozhi-server/.venv/bin/python`，并在启动前检查 Python 3.10、Opus、FFmpeg、配置文件和默认端口。后台进程 PID 与日志位于被 Git 忽略的
+`server/main/xiaozhi-server/tmp/launcher/`。如配置修改了默认端口，可通过
+`XIAOFEI_WS_PORT` 和 `XIAOFEI_HTTP_PORT` 覆盖脚本的端口检查。
+
+需要直接调试 Python 进程时仍可运行底层入口：
+
+```bash
+cd server/main/xiaozhi-server
+.venv/bin/python app.py
 ```
 
 摄像头识别统一运行在 Server 的 Python 3.10 进程中，不需要额外 Python worker。已有 Server 虚拟环境增加摄像头依赖：
