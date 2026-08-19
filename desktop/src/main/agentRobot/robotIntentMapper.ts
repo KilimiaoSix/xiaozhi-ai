@@ -44,14 +44,20 @@ const SOURCE_NAMES: Record<string, string> = {
   workbuddy: 'WorkBuddy',
 };
 
+const sourceName = (task: AgentTaskSnapshot | undefined): string =>
+  task?.source ? SOURCE_NAMES[task.source] ?? task.source : '';
+
 const ledgerFields = (
   intent: Pick<RobotActionIntent, 'action'> & Partial<RobotActionIntent>,
   task: AgentTaskSnapshot | undefined,
-): Pick<RobotPushBody, 'kind' | 'task_key' | 'source'> => ({
-  kind: LEDGER_KINDS[intent.action],
-  ...(intent.taskKey ? { task_key: intent.taskKey } : {}),
-  ...(task?.source ? { source: SOURCE_NAMES[task.source] ?? task.source } : {}),
-});
+): Pick<RobotPushBody, 'kind' | 'task_key' | 'source'> => {
+  const source = sourceName(task);
+  return {
+    kind: LEDGER_KINDS[intent.action],
+    ...(intent.taskKey ? { task_key: intent.taskKey } : {}),
+    ...(source ? { source } : {}),
+  };
+};
 
 const clip = (value: string | undefined, max: number): string => {
   const text = (value ?? '').replace(/\s+/g, ' ').trim();
@@ -66,8 +72,8 @@ const clip = (value: string | undefined, max: number): string => {
  * 等待介入歪头提醒。emotion 本身就会驱动舵机（happy→HeadUp、sad→HeadDown），
  * 所以只在需要额外手势时才叠 action。
  *
- * 文案只用任务标题与错误/等待原因——快照里没有改动文件数、测试数这类字段，
- * 编造出来在演示里一追问就穿帮。
+ * 完成文案明确说出 Agent 来源；其他状态使用任务标题与等待原因。快照里没有改动
+ * 文件数、测试数这类字段，编造出来在演示里一追问就穿帮。
  */
 export const mapIntentToPush = (
   deviceId: string,
@@ -75,13 +81,14 @@ export const mapIntentToPush = (
   task: AgentTaskSnapshot | undefined,
 ): RobotPushBody => {
   const title = clip(task?.title, MAX_TITLE) || FALLBACK_TITLE;
+  const agentName = sourceName(task);
   const ledger = ledgerFields(intent, task);
 
   switch (intent.action) {
     case 'task_completed':
       return {
         device_id: deviceId,
-        text: `${title} 完成了`,
+        text: agentName ? `${agentName} 的任务完成了` : `${title} 完成了`,
         emotion: 'happy',
         status: '任务完成',
         action: 'nod',
@@ -140,19 +147,25 @@ export const mapIntentToPush = (
 /**
  * 多个任务在同一窗口内落到同一终态时，合并成一条播报。
  *
- * 连播三句「X 完成了」在真机上会互相撞：设备一次只播一句，后到的会被服务端
- * 按忙态降级成提示音，等于白发。合并成「3 个任务完成了」既说得完整，也更像人话。
+ * 连播三句完成提醒在真机上会互相撞：设备一次只播一句，后到的会被服务端按忙态
+ * 降级成提示音，等于白发。合并后仍保留 Agent 来源，避免只听见「完成了」却不知道是谁。
  */
 export const mapMergedIntentToPush = (
   deviceId: string,
   action: RobotActionIntent['action'],
   count: number,
+  tasks: Array<AgentTaskSnapshot | undefined> = [],
 ): RobotPushBody => {
   const single = mapIntentToPush(deviceId, { action } as RobotActionIntent, undefined);
+  const agentNames = [...new Set(tasks.map(sourceName).filter(Boolean))];
+  const agents = agentNames.join(' 和 ');
 
   switch (action) {
     case 'task_completed':
-      return { ...single, text: `${count} 个任务完成了` };
+      return {
+        ...single,
+        text: agents ? `${agents} 的 ${count} 个任务完成了` : `${count} 个任务完成了`,
+      };
     case 'task_failed':
       return { ...single, text: `${count} 个任务失败了` };
     case 'needs_user':

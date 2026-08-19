@@ -157,7 +157,12 @@ export class AgentRobotNotifier {
     return [...byAction.entries()].map(([action, group]) =>
       group.length === 1
         ? mapIntentToPush(this.deviceId, group[0], this.tasks.get(group[0].taskKey))
-        : mapMergedIntentToPush(this.deviceId, action, group.length));
+        : mapMergedIntentToPush(
+            this.deviceId,
+            action,
+            group.length,
+            group.map((intent) => this.tasks.get(intent.taskKey)),
+          ));
   }
 
   private async send(push: RobotPushBody): Promise<void> {
