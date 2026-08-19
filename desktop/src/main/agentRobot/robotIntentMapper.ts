@@ -6,6 +6,10 @@ import type {
 /**
  * `/xiaozhi/event/push` 的请求体。字段含义见 AGENTS.md「关键接口契约」。
  * device_id 与 text 必填，其余可选。
+ *
+ * kind / task_key / source 是给服务端离席台账（返岗汇总）用的：
+ * 同一任务的多次状态变化靠 task_key 折叠成一条，「Codex 完成了 N 个任务」
+ * 的来源名靠 source。设备侧不消费这三个字段。
  */
 export interface RobotPushBody {
   device_id: string;
@@ -16,11 +20,38 @@ export interface RobotPushBody {
   silent?: boolean;
   action?: string;
   restore_after?: number;
+  kind?: string;
+  task_key?: string;
+  source?: string;
 }
 
 const MAX_TITLE = 20;
 const MAX_DETAIL = 24;
 const FALLBACK_TITLE = '编码任务';
+
+/** 意图动作 → 服务端台账事件类型（away_ledger 的 kind 枚举）。 */
+const LEDGER_KINDS: Record<RobotActionIntent['action'], string> = {
+  task_completed: 'agent_completed',
+  task_failed: 'agent_failed',
+  needs_user: 'agent_needs_user',
+  quiet_companion: 'generic',
+};
+
+/** 返岗汇总里的来源名。播报要念出来，用产品名而不是内部标识。 */
+const SOURCE_NAMES: Record<string, string> = {
+  codex: 'Codex',
+  'claude-code': 'Claude Code',
+  workbuddy: 'WorkBuddy',
+};
+
+const ledgerFields = (
+  intent: Pick<RobotActionIntent, 'action'> & Partial<RobotActionIntent>,
+  task: AgentTaskSnapshot | undefined,
+): Pick<RobotPushBody, 'kind' | 'task_key' | 'source'> => ({
+  kind: LEDGER_KINDS[intent.action],
+  ...(intent.taskKey ? { task_key: intent.taskKey } : {}),
+  ...(task?.source ? { source: SOURCE_NAMES[task.source] ?? task.source } : {}),
+});
 
 const clip = (value: string | undefined, max: number): string => {
   const text = (value ?? '').replace(/\s+/g, ' ').trim();
@@ -44,6 +75,7 @@ export const mapIntentToPush = (
   task: AgentTaskSnapshot | undefined,
 ): RobotPushBody => {
   const title = clip(task?.title, MAX_TITLE) || FALLBACK_TITLE;
+  const ledger = ledgerFields(intent, task);
 
   switch (intent.action) {
     case 'task_completed':
@@ -55,6 +87,7 @@ export const mapIntentToPush = (
         action: 'nod',
         speak: true,
         restore_after: 10,
+        ...ledger,
       };
 
     case 'task_failed': {
@@ -66,6 +99,7 @@ export const mapIntentToPush = (
         status: '任务失败',
         speak: true,
         restore_after: 12,
+        ...ledger,
       };
     }
 
@@ -80,6 +114,7 @@ export const mapIntentToPush = (
         speak: true,
         // 不设 restore_after：等待介入是唯一必须持续可见的态，
         // 只应由后续同任务的完成或失败事件清场，不该被定时器抹掉。
+        ...ledger,
       };
     }
 
@@ -94,6 +129,7 @@ export const mapIntentToPush = (
         // 运行中一次任务会触发多次，既不出声也不响提示音，
         // 免得占着 TTS 通道、跟紧随其后的终态播报抢麦。
         silent: true,
+        ...ledger,
       };
   }
 };
