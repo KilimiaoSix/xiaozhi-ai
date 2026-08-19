@@ -34,6 +34,7 @@ from core.camera_stream.gesture_observer import create_gesture_observer
 from core.camera_stream.observers import frame_observer_hub
 from core.incident_manager import get_incident_manager
 from core.incident_routes import add_incident_routes
+from core.morning_brief.announcer import create_morning_brief_announcer
 from core.morning_brief.factory import create_morning_brief_service
 from core.morning_brief_routes import add_morning_brief_routes
 from core.api.pomodoro_handler import PomodoroHandler
@@ -139,6 +140,18 @@ class SimpleHttpServer:
             config,
             self.morning_brief_service,
             logger=self.logger,
+        )
+        # 早上第一次认出主人时主动播晨报，同样要按 device_id 找活跃连接
+        self.morning_brief_announcer = (
+            create_morning_brief_announcer(
+                config,
+                self.presence_registry,
+                ws_server.device_registry,
+                self.morning_brief_service,
+                logger=self.logger,
+            )
+            if ws_server
+            else None
         )
         self.owner_status_handler = OwnerStatusHandler(config, self.owner_status_store)
         self.away_summary_handler = AwaySummaryHandler(
@@ -381,6 +394,15 @@ class SimpleHttpServer:
 
             app.on_startup.append(start_wellbeing)
             app.on_cleanup.append(stop_wellbeing)
+        if self.morning_brief_announcer:
+            async def start_morning_brief(_app):
+                await self.morning_brief_announcer.start()
+
+            async def stop_morning_brief(_app):
+                await self.morning_brief_announcer.stop()
+
+            app.on_startup.append(start_morning_brief)
+            app.on_cleanup.append(stop_morning_brief)
         add_presence_routes(
             app,
             self.presence_handler,

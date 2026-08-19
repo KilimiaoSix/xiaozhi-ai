@@ -64,6 +64,34 @@ morning_brief:
   excerpt_chars: 240
   excerpt_retention_days: 7
   resolved_retention_days: 30
+  # 早上时间窗内第一次认出主人（identity.state=owner）时扫一次并让机器人念出来。
+  # 注意是「窗口内的第一次」：7:50 就到工位的人在 8:00 一样会收到晨报。
+  announce:
+    enabled: true
+    # 播报时间窗与生效星期（ISO 星期，1 为周一）。改完重启进程生效。
+    window_start: "08:00"
+    window_end: "09:30"
+    workdays: [1, 2, 3, 4, 5]
+    # 开场称呼、屏幕状态栏文案、表情。表情名要是固件认识的，否则只显示文字。
+    # presence_robot 的到岗迎接已经说过「早上好」，不想听第二遍就把 greeting 置为空串。
+    greeting: "早上好"
+    status: "早报"
+    emotion: happy
+    # 播报几条待办、每条截断到多少字。屏幕和 TTS 都容不下长摘要。
+    max_items: 3
+    item_chars: 16
+    # 机器人不在线或扫描失败时的重试间隔与当天最大尝试次数。
+    retry_seconds: 60
+    max_attempts: 3
+    # 设备正忙（到岗迎接的 TTS 还在放、用户正在说话）时最多等这么久，
+    # 超时就照发——只上屏也比今天不播强。
+    busy_grace_seconds: 120
+    poll_seconds: 5
+    restore_after_seconds: 20
+    # 与 wellbeing.bindings 保持一致；device_id 留空时仅在恰好一台机器人在线时自动绑定。
+    bindings:
+      - workstation_id: desktop-local
+        device_id: ""
 
 # 基于摄像头本人核验的关怀提醒。只有 identity.state=owner 时触发；设备离线不补发。
 wellbeing:
