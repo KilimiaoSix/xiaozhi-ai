@@ -45,6 +45,9 @@
 
 LV_FONT_DECLARE(font_puhui_14_1);
 LV_FONT_DECLARE(font_awesome_14_1);
+// 番茄钟倒计时大字。30px 是已随 xiaozhi-fonts 链接进固件、且覆盖数字与冒号的
+// 最大字号（4bpp，在单色屏上由 LVGL 阈值二值化，效果需真机确认）
+LV_FONT_DECLARE(font_puhui_basic_30_4);
 
 // 声明一个静态函数，用于处理AI回复
 static void ProcessAIResponseTask(void* arg);
@@ -138,7 +141,23 @@ private:
     
     // 对话模式屏幕
     lv_obj_t* chat_screen_ = nullptr;
-    
+
+    // ── 番茄钟画面（服务端 self.pomodoro.show 驱动，见 InitializeTools）──
+    // 会话状态的权威在服务端，这里只保留渲染所需的最小状态
+    lv_obj_t* pomodoro_screen_ = nullptr;
+    lv_obj_t* pomo_phase_label_ = nullptr;
+    lv_obj_t* pomo_round_label_ = nullptr;
+    lv_obj_t* pomo_clock_label_ = nullptr;
+    lv_obj_t* pomo_bar_ = nullptr;
+    lv_timer_t* pomo_timer_ = nullptr;
+    bool pomodoro_active_ = false;   // 有进行中的会话（含暂停）
+    bool pomo_paused_ = false;
+    int pomo_total_s_ = 0;
+    // 运行中的到点时刻（esp_timer 时基）。paused 时画面停在推送来的剩余秒上，不自减
+    int64_t pomo_deadline_us_ = 0;
+    // SyncPomodoroScreen 的 100ms 计数：idle 稳定 2 秒才把画面收回来
+    int pomo_idle_ticks_ = 0;
+
     // 上一次处理的AI回复
     std::string last_ai_response_;
     
@@ -248,6 +267,20 @@ private:
                 EnterEmojiMode(true);
             }
         });
+
+        // 双击/三击：番茄钟控制。固件只上报"按了几下"，语义（双击=开始/暂停/继续、
+        // 三击=取消）定死在服务端 listenMessageHandler 的 BUTTON_COMMANDS 里，
+        // 改玩法不用重烧固件；文本必须逐字对上服务端的键名。
+        // 回调跑在 esp_timer 任务上，SendDetectedText 自查通道状态后 Schedule 回
+        // 主循环发送（同 gesture_sensor.cc 的上报路径），这里只做一次轻量调用。
+        // 单击的 180ms 判定延迟是 iot_button 状态机固有行为，注册双击并不会引入。
+        boot_button_.OnDoubleClick([]() {
+            Application::GetInstance().SendDetectedText("[button]boot_double");
+        });
+
+        boot_button_.OnMultipleClick([]() {
+            Application::GetInstance().SendDetectedText("[button]boot_triple");
+        }, 3);
 
         volume_up_button_.OnClick([this]() {
             // 无论在哪种模式下，音量+按钮都控制音量增加
@@ -461,8 +494,42 @@ private:
                 SetIdleAnimationAllowed(enabled);
                 return true;
             });
-        
-        ESP_LOGI(TAG, "已注册机器人动作与表情MCP工具");
+
+        // 服务端 pomodoro_manager 在每次相位切换/暂停/恢复时调用（工具名经服务端
+        // sanitize 后是 self_pomodoro_show）。参数契约对齐 pomodoro_manager._show_args。
+        mcp_server.AddTool("self.pomodoro.show",
+            "Render the pomodoro countdown screen on the OLED. Driven by the server "
+            "on every phase change / pause / resume; the device counts down locally "
+            "at 1Hz from `remaining_s` and freezes at 00:00 until the next push. "
+            "`phase` is one of `focus`, `short_break`, `long_break`, `idle`; "
+            "`idle` dismisses the screen and returns to the normal face.",
+            PropertyList({
+                Property("phase", kPropertyTypeString),
+                Property("paused", kPropertyTypeBoolean, false),
+                Property("remaining_s", kPropertyTypeInteger, 0, 0, 86400),
+                Property("total_s", kPropertyTypeInteger, 0, 0, 86400),
+                Property("round", kPropertyTypeInteger, 0, 0, 99),
+                Property("total_rounds", kPropertyTypeInteger, 4, 1, 99),
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto phase = properties["phase"].value<std::string>();
+                if (phase != "focus" && phase != "short_break" &&
+                    phase != "long_break" && phase != "idle") {
+                    // 经 ReplyError 变成 JSON-RPC error，服务端把它包成通用
+                    // Exception：重试一次后放弃（服务端不重试的 ValueError 分支
+                    // 只接得住它本地的"工具不存在"，接不住这里的 throw）
+                    throw std::runtime_error("Unknown phase: " + phase);
+                }
+                ShowPomodoro(phase,
+                             properties["paused"].value<bool>(),
+                             properties["remaining_s"].value<int>(),
+                             properties["total_s"].value<int>(),
+                             properties["round"].value<int>(),
+                             properties["total_rounds"].value<int>());
+                return true;
+            });
+
+        ESP_LOGI(TAG, "已注册机器人动作、表情与番茄钟MCP工具");
     }
     
     // 状态机想要的随机动画状态，与总开关求与后再落到控制器
@@ -515,6 +582,189 @@ private:
         } else {
             lv_scr_load(chat_screen_);
         }
+    }
+
+    // ------------------------------------------------------------ 番茄钟画面
+    // 计时权威在服务端：相位切换/暂停/恢复时各推一次 self.pomodoro.show，设备只渲染。
+    // 拿到 remaining_s 后本地 1Hz 自减，走到 00:00 停住等下一次推送——WiFi 抖动
+    // 只会让画面短暂不同步，不会让两端轮次各走各的。
+
+    static void PomodoroTimerCb(lv_timer_t* timer) {
+        auto board = static_cast<EmojiBoard*>(lv_timer_get_user_data(timer));
+        board->PomodoroTick();
+    }
+
+    // lv_timer 回调由 LVGL 任务在 lv_timer_handler 持锁期间调用（同 lvgl_gif.cc 的
+    // 先例），直接摸 lv 对象是安全的，不需要再拿 DisplayLockGuard。
+    void PomodoroTick() {
+        if (!pomodoro_active_ || pomo_paused_) {
+            return;
+        }
+        int64_t now_us = esp_timer_get_time();
+        int remaining = 0;
+        if (pomo_deadline_us_ > now_us) {
+            // 向上取整，与服务端 _ceil_seconds 对齐：刚推送时显示 25:00 而不是 24:59
+            remaining = (int)((pomo_deadline_us_ - now_us + 999999) / 1000000);
+        }
+        UpdatePomodoroCountdown(remaining);
+    }
+
+    // 只刷新每秒变化的部分；相位/轮次文本在 ShowPomodoro 里设置。调用方必须持有 LVGL 锁
+    void UpdatePomodoroCountdown(int remaining_s) {
+        char clock_text[16];
+        snprintf(clock_text, sizeof(clock_text), "%02d:%02d",
+                 remaining_s / 60, remaining_s % 60);
+        lv_label_set_text(pomo_clock_label_, clock_text);
+        if (pomo_total_s_ > 0) {
+            lv_bar_set_value(pomo_bar_, pomo_total_s_ - remaining_s, LV_ANIM_OFF);
+        }
+    }
+
+    // 懒创建，同 emoji_screen_ 的做法。调用方必须持有 LVGL 锁
+    void CreatePomodoroScreen() {
+        pomodoro_screen_ = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(pomodoro_screen_, lv_color_black(), 0);
+
+        // 顶行：相位（左）+ 轮次（右）
+        pomo_phase_label_ = lv_label_create(pomodoro_screen_);
+        lv_obj_set_style_text_font(pomo_phase_label_, &font_puhui_14_1, 0);
+        lv_obj_set_style_text_color(pomo_phase_label_, lv_color_white(), 0);
+        lv_obj_align(pomo_phase_label_, LV_ALIGN_TOP_LEFT, 2, 0);
+        lv_label_set_text(pomo_phase_label_, "");
+
+        pomo_round_label_ = lv_label_create(pomodoro_screen_);
+        lv_obj_set_style_text_font(pomo_round_label_, &font_puhui_14_1, 0);
+        lv_obj_set_style_text_color(pomo_round_label_, lv_color_white(), 0);
+        lv_obj_align(pomo_round_label_, LV_ALIGN_TOP_RIGHT, -2, 0);
+        lv_label_set_text(pomo_round_label_, "");
+
+        // 中央大字 MM:SS
+        pomo_clock_label_ = lv_label_create(pomodoro_screen_);
+        lv_obj_set_style_text_font(pomo_clock_label_, &font_puhui_basic_30_4, 0);
+        lv_obj_set_style_text_color(pomo_clock_label_, lv_color_white(), 0);
+        lv_obj_align(pomo_clock_label_, LV_ALIGN_CENTER, 0, 2);
+        lv_label_set_text(pomo_clock_label_, "00:00");
+
+        // 底部进度条：已走过的时间从左往右填满。单色屏上用白边框 + 白色指示条
+        pomo_bar_ = lv_bar_create(pomodoro_screen_);
+        lv_obj_set_size(pomo_bar_, 124, 7);
+        lv_obj_align(pomo_bar_, LV_ALIGN_BOTTOM_MID, 0, -1);
+        lv_obj_set_style_bg_opa(pomo_bar_, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_border_width(pomo_bar_, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(pomo_bar_, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_radius(pomo_bar_, 2, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(pomo_bar_, 1, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(pomo_bar_, lv_color_white(), LV_PART_INDICATOR);
+        lv_obj_set_style_radius(pomo_bar_, 1, LV_PART_INDICATOR);
+
+        // 常驻 1Hz 定时器，回调按 active/paused 自行早退，不做 pause/resume 状态管理
+        pomo_timer_ = lv_timer_create(PomodoroTimerCb, 1000, this);
+    }
+
+    // 服务端推送落地。跑在主事件循环上（McpServer::DoToolCall 的 app.Schedule）
+    void ShowPomodoro(const std::string& phase, bool paused, int remaining_s,
+                      int total_s, int round, int total_rounds) {
+        DisplayLockGuard lock(display_);
+
+        if (phase == "idle") {
+            // 服务端 stop（或重启后的收屏兜底）：回到进番茄钟之前的模式画面
+            pomodoro_active_ = false;
+            if (pomodoro_screen_ != nullptr && lv_scr_act() == pomodoro_screen_) {
+                SwitchScreen(is_emoji_mode_);
+            }
+            return;
+        }
+
+        if (pomodoro_screen_ == nullptr) {
+            CreatePomodoroScreen();
+        }
+
+        pomo_paused_ = paused;
+        pomo_total_s_ = total_s;
+        pomo_deadline_us_ = esp_timer_get_time() + (int64_t)remaining_s * 1000000;
+
+        const char* phase_name = "专注";
+        if (phase == "short_break") {
+            phase_name = "短休";
+        } else if (phase == "long_break") {
+            phase_name = "长休";
+        }
+        if (paused) {
+            lv_label_set_text_fmt(pomo_phase_label_, "%s 已暂停", phase_name);
+        } else {
+            lv_label_set_text(pomo_phase_label_, phase_name);
+        }
+        lv_label_set_text_fmt(pomo_round_label_, "%d/%d", round, total_rounds);
+        if (total_s > 0) {
+            lv_bar_set_range(pomo_bar_, 0, total_s);
+        }
+        UpdatePomodoroCountdown(remaining_s);
+
+        pomodoro_active_ = true;
+
+        // 设备空闲才立即抢屏；对话中让屏，等 SyncPomodoroScreen 在回 idle 后收复
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&
+            lv_scr_act() != pomodoro_screen_) {
+            lv_scr_load(pomodoro_screen_);
+        }
+    }
+
+    // StateMonitorTask 每 100ms 调一次：对话打断让屏，回到 idle 后恢复倒计时画面。
+    // 不挂在下面那个"对话结束"判定块里——那个分支只在状态转换的单个 tick 上比较
+    // 3 秒窗口，而 speaking→idle 时时间戳刚被重置，条件常常永远不成立。
+    void SyncPomodoroScreen(DeviceState state) {
+        if (pomodoro_screen_ == nullptr) {
+            return;  // 从未进过番茄钟，不必每 100ms 白拿一次锁
+        }
+        DisplayLockGuard lock(display_);
+        // active 必须持锁后再判：ShowPomodoro("idle") 可能在预检查与拿锁的间隙把
+        // 会话收掉（服务端 stop 恰好落在让屏窗口时），检查-加载不原子就会把
+        // 已结束的画面重新载入并永久卡屏
+        if (!pomodoro_active_) {
+            pomo_idle_ticks_ = 0;
+            if (lv_scr_act() == pomodoro_screen_) {
+                // stop 落在让屏窗口时 ShowPomodoro 那边收不到屏，这里兜底
+                SwitchScreen(is_emoji_mode_);
+            }
+            return;
+        }
+        if (state == kDeviceStateIdle) {
+            if (lv_scr_act() == pomodoro_screen_) {
+                pomo_idle_ticks_ = 0;
+                return;
+            }
+            // idle 稳定 2 秒再收回画面：给对话收尾的 neutral 表情留出镜头，
+            // 也让长按切出去看脸的用户能看上一眼
+            if (++pomo_idle_ticks_ >= 20) {
+                pomo_idle_ticks_ = 0;
+                lv_scr_load(pomodoro_screen_);
+            }
+        } else {
+            pomo_idle_ticks_ = 0;
+            if (lv_scr_act() == pomodoro_screen_) {
+                // 对话/连接期间让屏给表情与字幕
+                SwitchScreen(is_emoji_mode_);
+            }
+        }
+    }
+
+    // 相位到点的庆祝和事件提醒走 Alert→SetEmotion，不经过番茄钟推送；此时若
+    // 倒计时画面在前台，表情动画画在 emoji_screen_ 上根本看不见。让屏给表情脸，
+    // SyncPomodoroScreen 会在 idle 稳定 2 秒后自动把倒计时收回来。
+    // neutral 除外：WS 重连时 DismissAlert 会推 neutral 兜底，不该打断倒计时。
+    void YieldPomodoroScreenForAlert(const char* emotion) {
+        if (emotion == nullptr || emotion[0] == '\0' ||
+            strcmp(emotion, "neutral") == 0) {
+            return;
+        }
+        DisplayLockGuard lock(display_);
+        if (!pomodoro_active_ || pomodoro_screen_ == nullptr ||
+            lv_scr_act() != pomodoro_screen_) {
+            return;
+        }
+        // 表情动画只存在于 emoji_screen_，对话模式下也得切到脸才看得见
+        SwitchScreen(true);
+        pomo_idle_ticks_ = 0;
     }
 
     // 声明静态任务函数为友元函数，使其可以访问私有成员
@@ -931,9 +1181,12 @@ static void StateMonitorTask(void* arg) {
             }
         }
         
+        // 番茄钟画面的让屏/恢复。每 tick 都要跑，不能只挂在状态转换分支里
+        board->SyncPomodoroScreen(current_state);
+
         // 更新上一次的设备状态
         last_state = current_state;
-        
+
         // 延时100毫秒
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -985,7 +1238,13 @@ void EmojiDisplay::SetEmotion(const char* emotion) {
     if (processing_ai_response_) {
         return;
     }
-    
+
+    // 番茄钟画面在前台时先让屏，接下来的表情动画才看得见
+    // （见 YieldPomodoroScreenForAlert 的注释）
+    if (board_) {
+        board_->YieldPomodoroScreenForAlert(emotion);
+    }
+
     // 将小智AI框架的表情映射到我们的表情动作
     if (board_ && board_->emotion_controller_) {
         std::string emotion_str(emotion);

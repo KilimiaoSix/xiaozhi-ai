@@ -115,6 +115,9 @@ Codex / Claude Code / WorkBuddy          摄像头
 | `self.robot.play_action` | `action` | `nod` `shake` `roll` / `look_*` 瞥一眼后回中 / `hold_*` 转过去保持不动 / `center` |
 | `self.robot.set_emotion` | `emotion` | 21 种表情，会联动舵机 |
 | `self.robot.set_idle_animation` | `enabled` | 随机空闲动画总开关，默认关 |
+| `self.pomodoro.show` | `phase` `paused` `remaining_s` `total_s` `round` `total_rounds` | 番茄钟倒计时画面。`phase` ∈ `focus`/`short_break`/`long_break`/`idle`（`idle` 退出画面回到脸）；设备拿到 `remaining_s` 后本地 1Hz 自减，到 00:00 停住等下一次推送 |
+
+设备侧按键上行复用 `listen`(detect) 文本通道：BOOT 双击发 `[button]boot_double`、三击发 `[button]boot_triple`，按键语义（双击=开始/暂停/继续、三击=取消）定死在服务端 `listenMessageHandler.BUTTON_COMMANDS`。
 
 **服务端侧调用时工具名须用下划线版**（`self_robot_play_action`）——`MCPClient` 按 `sanitize_tool_name` 后的键存查，带点的原始名查不到。
 
