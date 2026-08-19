@@ -15,7 +15,7 @@ monorepo，**没有根 package.json、没有 Makefile、没有 CI**。所有命�
 ```bash
 cd desktop && npm install        # node_modules 不入库，新克隆必做
 cd desktop && npm run dev        # 开发运行
-cd desktop && npm test           # vitest，27 个测试文件
+cd desktop && npm test           # vitest，44 个测试文件
 cd desktop && npm run typecheck
 ```
 
@@ -31,6 +31,9 @@ cd server/main/xiaozhi-server && python -m pytest tests/
 ```
 
 只联调摄像头在岗、不想等 LLM/ASR/TTS 加载：`python presence_server.py`
+
+手势审批与分心检测的视觉模型不入库，新机器各跑一次：
+`python scripts/download_gesture_model.py --verify` 与 `python scripts/download_detection_model.py`
 
 ### firmware/（ESP-IDF）
 

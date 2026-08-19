@@ -223,6 +223,19 @@ class PomodoroManager:
     def active_device_ids(self) -> List[str]:
         return list(self._sessions.keys())
 
+    def is_focus_active(self, device_id: str) -> bool:
+        """该设备是否正处于进行中的专注相位（未暂停）。
+
+        给分心检测的 wants_frame 用：它在推理工作线程里同步调用，不能
+        await status()。这里只做字典读与属性读（GIL 下原子），够用且无锁。
+        """
+        session = self._sessions.get(device_id)
+        return (
+            session is not None
+            and session.phase == PHASE_FOCUS
+            and not session.paused
+        )
+
     # ------------------------------------------------------------ 命令
 
     async def execute(

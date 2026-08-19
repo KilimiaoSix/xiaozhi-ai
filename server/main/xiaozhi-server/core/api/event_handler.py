@@ -111,6 +111,21 @@ class EventHandler(BaseHandler):
                 {"ok": False, "message": f"push failed: {e}", "delivered": False}, 502
             )
 
+        # 流程五：主人离席时经过的事件攒进台账，等他回来一次性汇总。
+        # 是否入待播报队列由 AwayLedger 按离席窗口自行判断，这里无条件调用。
+        try:
+            from core.away_ledger import get_away_ledger
+
+            get_away_ledger(self.config).record(
+                str(data.get("kind") or "generic"),
+                str(text),
+                task_key=str(data.get("task_key") or ""),
+                severity=str(data.get("severity") or "normal"),
+                source=str(data.get("source") or ""),
+            )
+        except Exception as e:
+            self.logger.bind(tag=TAG).warning(f"离席台账记账失败: {e}")
+
         self.logger.bind(tag=TAG).info(f"已推送工作事件到设备 {device_id}: {text}")
         return self._json_response(
             {"ok": True, "device_id": device_id, "delivered": True, "spoke": spoke}

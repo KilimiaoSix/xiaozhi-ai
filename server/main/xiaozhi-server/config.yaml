@@ -127,6 +127,25 @@ module_test:
     - "What's the weather like today?"
     - "请用100字概括量子计算的基本原理和应用前景"
 
+# 主动推送要出声时的等待策略。设备音频通道独占，撞上忙态此前是直接放弃，
+# 工作事件的播报因此经常被吞掉。现在先等一小会儿——房间人声引起的 VAD 抖动
+# 通常一两秒就过去。wait_seconds 必须明显短于调用方的 HTTP 超时（桌面端是 5 秒）。
+# preempt_speaking 只允许打断设备自己的播报；用户正在说话时永远只等不抢。
+push_speak:
+  wait_seconds: 3
+  poll_interval: 0.3
+  preempt_speaking: false
+
+# 对话窗口门：只有用户主动发起过，麦克风拾到的语音才进 LLM。
+# 固件每条播报结束后必然自动开麦，没有这道门，房间里与设备无关的人声会被
+# ASR 送进 LLM，应答又产生新的播报，播完再开麦——自激循环，设备长期处于忙态，
+# 主动推送的语音播报会被忙态吞掉。
+# 唤醒词、手势、按键（listen detect 通道）开门；会话中途说唤醒语也能开门。
+# 默认关闭：升级服务端不该把别人正在用的语音对话闷掉。
+dialogue_gate:
+  enabled: false
+  window_seconds: 60
+
 # 设备唤醒词。wakenet 是针对具体词训练的神经网络，只能在 esp-sr 预训练模型里选，
 # 不是任意字符串。用 scripts/pack_wake_word_assets.py 把模型打成 assets 包放进
 # data/bin/，服务端在设备 MCP 就绪后下发下载地址，设备下次启动生效。
@@ -246,6 +265,88 @@ pomodoro:
   # 每完成几轮专注后进入一次长休
   long_break_interval: 4
 
+# ── 主人声明状态（演示流程四/八）────────────────────────
+# 会议中/稍后回来/请假；跨重启保留（"明天请假"必须活过服务端重启）。
+# 来访者只能听到 public_note 与预计返回时间，会议主题、请假原因不进本模块。
+owner_status:
+  persist_path: data/owner_status.json
+
+# ── 离席事件台账（演示流程五：返岗汇总）──────────────────
+# 主人离席期间的 Agent 结果、留言、告警攒在这里，返岗时按
+# 严重告警 > 等待操作 > 已完成任务 > 留言 > 普通消息 的顺序一次性汇总。
+away_ledger:
+  persist_path: data/away_ledger.json
+  # 当日日志保留天数；待播报队列不受它影响，没播报出去就一直留着
+  log_retention_days: 3
+
+# ── 来访者应答与留言（演示流程四）────────────────────────
+# 主人不在且摄像头看到陌生人时，播报公开状态并询问是否留言。
+# 生效前提：presence_robot.enabled 且 workstations 有映射。
+visitor_flow:
+  # 应答播报成功后开多久的留言窗口，超时后这台设备听到的就不再算留言
+  message_window_s: 90
+  # 同一来访片段内不重复播报的冷却期（presence 心跳 15 秒一条，别设太小）
+  regreet_cooldown_s: 180
+
+# ── 手势审批（演示流程三）────────────────────────────────
+# Claude Code 的 PreToolUse 钩子（tools/cc-approval-hook.sh）把请求发到
+# /xiaozhi/approval/request，机器人播报"谁要做什么"，Mac 摄像头画面流上
+# 识别竖大拇指（连续多帧才算数）；超时或不确定一律默认不批准。
+# 模型不入库，新机器先跑 scripts/download_gesture_model.py --verify。
+approval:
+  # 审批窗口（秒）。到点自动 timeout，视同拒绝——"默认不批准"是硬性要求
+  timeout_s: 25
+  # 播报设备。留空时只有恰好一台设备在线才播报；多台在线不猜，宁可不播
+  device_id: ""
+  restore_after_s: 6
+  speak: true
+  gesture:
+    enabled: true
+    model_path: data/models/gesture_recognizer.task
+    min_interval_s: 0.35  # 摄像头 5fps，约 3fps 识别，其余帧留给人脸识别
+    required_hits: 3      # 连续几帧同一手势才算数
+    min_score: 0.5
+
+# ── 分心检测（演示流程六）────────────────────────────────
+# 只在番茄钟专注相位进行中检测（不做默认监控）；手机持续出现才温和提醒一次，
+# 同一相位内不再提醒。本地检测，不上传、不保存画面。
+# 模型不入库，新机器先跑 scripts/download_detection_model.py。
+distraction:
+  enabled: false
+  trigger_seconds: 8      # 手机连续出现多少秒才提醒；短暂看一眼不算
+  min_score: 0.4          # 判定"这是手机"的最低置信度
+  model_path: data/models/efficientdet_lite0.tflite
+
+# ── 线上告警与诊断（演示流程七）──────────────────────────
+# POST /xiaozhi/incident/webhook 接入告警：P0/P1 立即播报打断，P2/P3 进
+# 离席台账等汇总；语音"启动诊断"触发服务端无头跑 claude -p 只读分析；
+# resolved 后观察一段时间再播恢复，并在 data/incidents/ 落故障时间线。
+# 演示模拟：python scripts/simulate_incident.py --severity P1 --title "接口错误率升高"
+incident:
+  dedup_cooldown_s: 120                 # 同一故障多久内不重复播报
+  observe_seconds: 300                  # resolved 后观察多久才播恢复（演示可压到 45）
+  storage_dir: data/incidents
+  device_id: ""                         # 播报目标设备，留空取 presence_robot.workstations 第一条
+  claude_bin: claude
+  diagnosis_dir: ""                     # 诊断进程的工作目录（只读扫描），留空用当前目录
+  allowed_tools: "Read Grep Glob"       # 只读工具，诊断进程不允许改任何东西
+  timeout_s: 300
+
+# ── 定时提示（需求分析第 5 条）──────────────────────────
+# 到点且工位有人（presence=present）才播；同一天同一条不重复。
+timed_prompts:
+  enabled: false
+  prompts:
+    - time: "10:30"
+      text: "该喝水啦"
+      emotion: happy
+      speak: true
+      days: [1, 2, 3, 4, 5]
+    - time: "15:30"
+      text: "起来走两步，站一会儿"
+      emotion: happy
+      speak: true
+
 # 声纹识别配置
 voiceprint:
   # 声纹接口地址
@@ -351,6 +452,10 @@ Intent:
       #- hass_state
       #- hass_play_music
       - pomodoro                    # 番茄钟语音控制（开始/暂停/继续/跳过/停止/查询）
+      - owner_status                # 主人状态语音控制（去开会/请假/回来了/查状态）
+      - incident                    # 线上告警语音入口（启动诊断 / 故障怎么样了）
+      - morning_brief               # 晨报语音入口（今天最急的事是什么）
+      - day_summary                 # 日终总结语音入口（总结一下今天）
 
 Memory:
   mem0ai:

@@ -83,6 +83,14 @@ Codex / Claude Code / WorkBuddy          摄像头
 | POST | `/xiaozhi/presence/report` | 在岗状态上报 |
 | GET | `/xiaozhi/presence/{workstation_id}` | 查询工位最新状态 |
 | WS | `/xiaozhi/presence/stream` | 桌面端主人注册与持续摄像头识别 |
+| GET/POST | `/xiaozhi/status` | 主人声明状态（会议/请假/稍后回来），语音同源 |
+| GET | `/xiaozhi/away/summary` | 离席待汇总事件（只读，不清账；清账在返岗播报后） |
+| POST | `/xiaozhi/approval/request` | 创建审批请求（cc-approval-hook 调用），机器人播报并开手势窗口 |
+| GET | `/xiaozhi/approval/{approval_id}` | 轮询审批状态；`POST .../decision` 为人工兜底决策 |
+| POST | `/xiaozhi/incident/webhook` | 告警入站：P0/P1 立即播报，P2/P3 进台账；`status:resolved` 触发恢复观察 |
+| GET | `/xiaozhi/incident/latest` | 当前活跃故障与今日列表 |
+| POST | `/xiaozhi/morning-brief/preview` | 飞书晨报采集（`latest`/`health` 见 docs/api） |
+| GET/POST | `/xiaozhi/pomodoro/…` | 番茄钟设备列表/快照/命令 |
 | GET/POST | `/xiaozhi/ota/` | 简易 OTA，下发 WebSocket 地址 |
 | GET/POST | `/mcp/vision/explain` | 视觉分析 |
 
@@ -98,9 +106,15 @@ Codex / Claude Code / WorkBuddy          摄像头
   "silent": false,                    // 抑制提示音
   "action": "nod",                    // 机器人动作，见下表
   "restore_after": 6,                 // N 秒后恢复到设备基态
-  "idle_animation": false             // 运行时开关随机空闲动画
+  "idle_animation": false,            // 运行时开关随机空闲动画
+  "kind": "agent_completed",          // 可选，离席台账事件类型（away_ledger 枚举）
+  "task_key": "codex:abc",            // 可选，同一任务多次状态变化按它折叠
+  "source": "Codex"                   // 可选，返岗汇总里的来源名
 }
 ```
+
+主人离席（摄像头确认）期间收到的事件会同时进离席台账，返岗时按
+「严重告警 > 等待操作 > 已完成 > 留言 > 普通」顺序一次性汇总播报。
 
 ### Server ↔ 机器人 WebSocket（`server.port`，默认 8000）
 
@@ -145,8 +159,14 @@ Codex / Claude Code / WorkBuddy          摄像头
 
 这些是真实缺口，不是待办清单里的空话。动手前先确认是否已被别人补上：
 
-1. **desktop 的事件到不了 Server。** 它算出的 `RobotActionIntent` 只在界面打印，没有任何代码把它发给 Server。"编码 Agent 事件 → 机器人反应"这条主链路中间是断的。
-2. **在岗状态没有消费方。** desktop/presence-agent → Server 已跑通，但 Server 收下后只存进内存 Registry，没有 LLM 工具、推送编排或固件动作读过它。
+1. ~~desktop 的事件到不了 Server~~ **已接通**（`desktop/src/main/agentRobot/`）：意图经
+   `/xiaozhi/event/push` 下发，带节流合并；设备号优先 `DESKPET_DEVICE_ID`，未配置时
+   自动发现（恰好一台在线才启用）。
+2. ~~在岗状态没有消费方~~ **已接通**（`core/presence_arrival.py`）：到岗迎接、离席休眠、
+   主人不在时来访应答与留言、返岗汇总，HTTP 上报与摄像头流两条链路都接了同一编排回调。
+3. **返岗摘要"推到电脑"只有数据源没有桌面 UI。** `GET /xiaozhi/away/summary` 可查，
+   桌面端尚无对应面板；演示里由机器人语音播报承担。
+4. **晨报的定时自动推送未做**（08:45 调度 / 09:00 主动发送），语音问询与 HTTP 预览已可用。
 
 ## 项目约定
 
