@@ -178,18 +178,27 @@ export class IncidentHttpClient {
         ...init,
         signal: AbortSignal.timeout(5000),
       });
-      let payload: JsonRecord;
+      // 错误响应的 body 可能不是 JSON：旧版服务端没有新路由时 aiohttp 回
+      // text/plain 404。必须按状态码优先报「请求失败（404）」——报「不是 JSON」
+      // 会把排查引向解析问题，而真正的线索是服务端版本旧、该重启了。
+      let payload: JsonRecord | null = null;
       try {
         payload = asRecord(await response.json());
       } catch (error) {
-        if (error instanceof IncidentGatewayError) throw error;
-        throw new IncidentGatewayError('invalid-response', 'Server 返回的不是 JSON');
+        if (response.ok) {
+          if (error instanceof IncidentGatewayError) throw error;
+          throw new IncidentGatewayError('invalid-response', 'Server 返回的不是 JSON');
+        }
       }
       if (!response.ok && response.status !== options.tolerateStatus) {
-        const message = typeof payload.message === 'string'
+        const message = payload && typeof payload.message === 'string'
           ? payload.message
           : `Server 请求失败（${response.status}）`;
         throw new IncidentGatewayError('http-error', message, response.status);
+      }
+      if (payload === null) {
+        // 被容忍的状态码（如 diagnose 的 409）body 仍必须是 JSON 契约
+        throw new IncidentGatewayError('invalid-response', 'Server 返回的不是 JSON');
       }
       return payload;
     } catch (error) {

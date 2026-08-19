@@ -138,6 +138,23 @@ describe('IncidentHttpClient.list', () => {
     });
   });
 
+  it('旧版服务端的 text/plain 404 按 http-error 报状态码，而不是 invalid-response', async () => {
+    // 服务端改完必须重启才有新路由；没重启时 aiohttp 对未知路径回 text/plain 404。
+    // 这时报「不是 JSON」会把人引向解析问题，正确的线索是 404（版本旧/该重启了）。
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response('404: Not Found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain' },
+      }),
+    );
+
+    await expect(new IncidentHttpClient(fetcher).list()).rejects.toMatchObject({
+      code: 'http-error',
+      status: 404,
+      message: 'Server 请求失败（404）',
+    });
+  });
+
   it('超时映射为 timeout', async () => {
     const fetcher = vi.fn().mockRejectedValue(
       new DOMException('The operation timed out.', 'TimeoutError'),
