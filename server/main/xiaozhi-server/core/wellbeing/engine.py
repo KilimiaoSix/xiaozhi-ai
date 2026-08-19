@@ -215,7 +215,7 @@ class WellbeingEngine:
             return WellbeingEvent(
                 "commute_safety",
                 "快下班啦，回去路上慢一点，注意安全。",
-                "loving",
+                "winking",
                 "下班平安",
                 "nod",
                 restore_after=8.0,

@@ -103,6 +103,7 @@ def test_commute_reminder_is_workday_only_and_once_per_day():
     saturday = engine.evaluate("weekend", owner(), local(17, 50, day=22))
 
     assert first.kind == "commute_safety"
+    assert first.emotion == "winking"
     assert duplicate is None
     assert saturday is None
 
