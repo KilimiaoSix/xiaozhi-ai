@@ -1,4 +1,8 @@
+# 基线以真实跑通的环境为准（py3.12+ 的 agent venv 与 py3.10 的 server venv
+# 共享 mediapipe/opencv 版本，numpy 因 server 的 torch 2.2.2 而分叉，见 pyproject.toml）。
+# 改动此文件会使 setup.sh 的哈希标记失效并触发重装——pin 之前先确认目标
+# Python 版本有对应轮子，否则 pip 会转源码编译并大概率失败。
 aiohttp==3.13.2
-mediapipe==0.10.35
-numpy==1.26.4
-opencv-contrib-python==4.11.0.86
+mediapipe==1.0.1
+numpy==2.5.2
+opencv-contrib-python==5.0.0.93

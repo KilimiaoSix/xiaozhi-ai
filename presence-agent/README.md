@@ -40,7 +40,7 @@ macOS 上有三个平台差异已经在代码里处理，但环境要求需要�
 
 ## 单独运行
 
-首次运行会创建 `.venv`。它与 Server 摄像头能力使用同一基线：Python 3.10、NumPy 1.26.4、OpenCV contrib 4.11.0.86、MediaPipe 0.10.35，不需要为同一仓库维护多个 Python 版本：
+首次运行会创建 `.venv`，要求 Python 3.12+（NumPy 2.5.2、OpenCV contrib 5.0.0.93、MediaPipe 1.0.1）。Server 有自己的 venv（Python 3.10，因 torch 依赖停在 NumPy 1.x），只共享 mediapipe/opencv 版本并以 `pip install -r requirements-camera.txt` 引入本包代码——两个 venv 是有意分开的，不要互相安装对方的 requirements：
 
 ```powershell
 cd presence-agent

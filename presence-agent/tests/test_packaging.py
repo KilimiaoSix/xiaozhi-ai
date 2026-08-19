@@ -28,11 +28,15 @@ def lines(path):
 
 
 def test_runtime_and_test_dependencies_are_exactly_pinned():
+    # 这些 pin 必须与真实跑通的 venv 一致（agent venv 是 Python 3.12+）。
+    # 曾经这里锁着 numpy==1.26.4/mediapipe==0.10.35 的过时基线，导致 setup.sh
+    # 在 py3.14 venv 上按旧 pin 重装、numpy 转源码编译失败——改 pin 前先在
+    # 目标解释器上确认有轮子。
     assert lines(AGENT_ROOT / "requirements.txt") == {
         "aiohttp==3.13.2",
-        "mediapipe==0.10.35",
-        "numpy==1.26.4",
-        "opencv-contrib-python==4.11.0.86",
+        "mediapipe==1.0.1",
+        "numpy==2.5.2",
+        "opencv-contrib-python==5.0.0.93",
     }
     assert lines(AGENT_ROOT / "requirements-test.txt") == {
         "-r requirements.txt",
@@ -46,7 +50,14 @@ def test_presence_agent_has_installable_package_metadata():
 
     assert 'name = "launchcrush-presence-agent"' in pyproject
     assert 'requires-python = ">=3.10"' in pyproject
+    # numpy 在 pyproject 里按解释器分叉：server venv（py3.10，torch 钉 numpy<2）
+    # 与 agent venv（py3.12+，numpy 2.5.2）共用同一份声明，缺一边都会让
+    # requirements-camera.txt 的安装在对应环境里炸掉。
+    assert "\"numpy>=1.26.4,<2; python_version < '3.12'\"" in pyproject
+    assert "\"numpy==2.5.2; python_version >= '3.12'\"" in pyproject
     for requirement in lines(AGENT_ROOT / "requirements.txt"):
+        if requirement.startswith("numpy"):
+            continue
         assert f'"{requirement}"' in pyproject
 
     camera_requirements = (

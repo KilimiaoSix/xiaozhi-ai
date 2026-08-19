@@ -7,11 +7,16 @@ name = "launchcrush-presence-agent"
 version = "0.1.0"
 description = "Local camera presence and owner face verification runtime"
 requires-python = ">=3.10"
+# numpy 分叉：server venv（Python 3.10）里 torch 2.2.2 要求 numpy<2，
+# agent 自己的 venv（Python 3.12+）用 2.5.2。用环境标记让同一份声明
+# 在两边都解析为已满足，server 的 requirements-camera.txt 因此可以
+# 直接 `-e` 安装而不会把依赖拖下水。
 dependencies = [
   "aiohttp==3.13.2",
-  "mediapipe==0.10.35",
-  "numpy==1.26.4",
-  "opencv-contrib-python==4.11.0.86",
+  "mediapipe==1.0.1",
+  "numpy>=1.26.4,<2; python_version < '3.12'",
+  "numpy==2.5.2; python_version >= '3.12'",
+  "opencv-contrib-python==5.0.0.93",
 ]
 
 [tool.setuptools]

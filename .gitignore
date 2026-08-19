@@ -28,3 +28,6 @@ node_modules/
 # ===== 工位在岗检测运行环境 =====
 presence-agent/.venv/
 presence-agent/.runtime/
+
+# pip editable install（server 的 requirements-camera.txt 引入 presence-agent）的构建产物
+*.egg-info/
