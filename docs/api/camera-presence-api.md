@@ -58,6 +58,7 @@
     "face_count":1,
     "face_detected":true,
     "similarity":0.712346,
+    "horizontal_position":"left",
     "threshold":0.45,
     "matched":true
   },
@@ -65,7 +66,7 @@
 }
 ```
 
-`identity.matched` 由 Server 决定，客户端不得根据相似度重新计算。人脸是否存在由 `face_count > 0` 派生。`similarity` 只在单人脸 `owner` 或 `unknown` 状态提供。
+`identity.matched` 由 Server 决定，客户端不得根据相似度重新计算。人脸是否存在由 `face_count > 0` 派生。`similarity` 和 `horizontal_position` 只在单人脸 `owner` 或 `unknown` 状态提供。`horizontal_position` 只包含 `left` / `center` / `right` 三段位置，不返回人脸边界框或关键点。
 
 注册进度与完成：
 
@@ -129,6 +130,7 @@ Server 每 200 ms 最多接受一个合格样本。累计 20 个样本后剔除 
 | `identity.face_count（新）` | integer | 是 | 非负人脸数；`owner/unknown` 固定 1，`multiple_faces` 至少 2 |
 | `identity.similarity（新）` | number | 条件必填 | `owner/unknown` 必填，范围 -1 到 1 |
 | `identity.camera（新）` | integer | 否 | 仅 `camera_error` 可传，非负摄像头序号 |
+| `identity.horizontal_position（新）` | enum | 否 | 仅 `owner/unknown` 可传：`left` / `center` / `right` |
 
 请求体最大 16 KiB。Body 不接受 `frame`、`image`、`landmarks`、`embedding`、模板或其他未声明字段。
 
@@ -174,7 +176,8 @@ curl -X POST "http://127.0.0.1:8003/xiaozhi/presence/report" \
       "previous_state":"starting",
       "changed":true,
       "face_count":1,
-      "similarity":0.712346
+      "similarity":0.712346,
+      "horizontal_position":"left"
     }
   }'
 ```
@@ -283,15 +286,35 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
       "previous_state": "starting",
       "changed": true,
       "face_count": 1,
-      "similarity": 0.712346
+      "similarity": 0.712346,
+      "horizontal_position": "left"
     }
   }
 }
 ```
 
-## 4 附录
+## 4 Server 关怀编排
 
-### 4.1 错误码
+完整 Server 会每 5 秒消费一次配置工位的最新状态。仅当 `effective_state=present` 且 `identity.state=owner` 时，才可能向绑定机器人下发久坐、下班、加班或暖心提醒；轻量 `presence_server.py` 不启动机器人编排。
+
+默认配置位于 `config.yaml` 的 `wellbeing` 段，私有覆盖写入 `data/.config.yaml`：
+
+```yaml
+wellbeing:
+  enabled: true
+  timezone: Asia/Shanghai
+  bindings:
+    - workstation_id: desktop-local
+      device_id: "dc:da:0c:26:9a:60"
+```
+
+`device_id` 留空时，仅在恰好一台机器人在线时自动绑定。多台在线设备不会猜测目标。兼容 `presence-agent` 使用自定义 `workstation_id` 时必须增加对应绑定。
+
+默认规则为：连续在岗 50 分钟提醒，离开满 5 分钟重置；工作日 17:50 提醒下班安全；21:00 提醒一次早点下班；23:00 到次日 06:00 每 10 分钟强提醒；09:30 到 20:30 每隔随机 45-90 分钟提供一次暖心互动。设备离线时事件丢弃，重连后不补发。
+
+## 5 附录
+
+### 5.1 错误码
 
 | HTTP | `code` | 接入方处理 |
 | --- | --- | --- |
@@ -313,7 +336,7 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
 }
 ```
 
-### 4.2 枚举值
+### 5.2 枚举值
 
 | 枚举 | 产生方 | 含义 |
 | --- | --- | --- |
@@ -337,7 +360,7 @@ curl "http://127.0.0.1:8003/xiaozhi/presence/desk-tfzhang11" \
 
 `reason` 允许值：`initializing`、`pose_confirmed`、`absence_timeout`、`camera_open_failed`、`camera_read_failed`、`camera_recovered`、`identity_changed`、`heartbeat`。
 
-### 4.3 状态机
+### 5.3 状态机
 
 ```text
 starting --连续 3 个正样本--> present
@@ -349,7 +372,7 @@ camera_error --摄像头恢复--> starting
 任意 reported_state --超过 30 秒无报告--> effective_state=stale
 ```
 
-### 4.4 消费建议
+### 5.4 消费建议
 
 - 需要即时状态时按业务节奏查询；建议前台每 3-5 秒一次，后台降低频率或停止轮询。
 - `present` 可允许需要用户在场的温和提醒。

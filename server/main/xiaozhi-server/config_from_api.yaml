@@ -23,5 +23,13 @@ manager-api:
   url: http://127.0.0.1:8002/xiaozhi
   # 你的manager-api的token，就是刚才复制出来的server.secret
   secret: 你的server.secret值
+# 本机摄像头工位与机器人绑定不会从 manager-api 下发，需保留在本文件。
+wellbeing:
+  enabled: true
+  timezone: Asia/Shanghai
+  bindings:
+    # 单机器人部署可留空；多机器人部署必须填写目标 device-id。
+    - workstation_id: desktop-local
+      device_id: ""
 # 默认系统提示词模板文件
 prompt_template: agent-base-prompt.txt

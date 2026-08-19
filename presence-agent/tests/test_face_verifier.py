@@ -1,6 +1,6 @@
 import numpy as np
 
-from presence_agent.face_verifier import FaceState, FaceVerifier
+from presence_agent.face_verifier import FaceDetection, FaceState, FaceVerifier
 
 
 class FakeEngine:
@@ -122,3 +122,31 @@ def test_not_enrolled_and_camera_transitions_are_explicit():
         "changed": True,
         "face_count": 0,
     }
+
+
+def test_owner_position_is_reduced_to_three_safe_horizontal_buckets():
+    frame = np.zeros((360, 600, 3), dtype=np.uint8)
+    rows = [
+        FaceDetection(np.zeros(15), 30, 20, 60, 60, 0.9),
+        FaceDetection(np.zeros(15), 270, 20, 60, 60, 0.9),
+        FaceDetection(np.zeros(15), 510, 20, 60, 60, 0.9),
+    ]
+
+    class PositionEngine(FakeEngine):
+        def embedding(self, frame, detection):
+            return np.array([1.0, 0.0], dtype=np.float32)
+
+    engine = PositionEngine([(face,) for face in rows])
+    verifier = FaceVerifier(
+        engine,
+        np.array([1.0, 0.0], dtype=np.float32),
+        required_hits=1,
+    )
+
+    positions = [
+        verifier.observe(frame, index / 10).horizontal_position
+        for index in range(3)
+    ]
+
+    assert positions == ["left", "center", "right"]
+    assert verifier.identity.to_payload()["horizontal_position"] == "right"

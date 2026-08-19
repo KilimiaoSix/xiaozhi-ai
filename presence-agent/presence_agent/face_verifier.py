@@ -34,6 +34,7 @@ class FaceObservation:
     state: FaceState
     face_count: int
     similarity: float | None = None
+    horizontal_position: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class FaceIdentity:
     face_count: int
     similarity: float | None = None
     camera: int | None = None
+    horizontal_position: str | None = None
 
     def to_payload(self) -> dict:
         payload = {
@@ -56,6 +58,8 @@ class FaceIdentity:
             payload["similarity"] = round(float(self.similarity), 6)
         if self.camera is not None:
             payload["camera"] = self.camera
+        if self.horizontal_position is not None:
+            payload["horizontal_position"] = self.horizontal_position
         return payload
 
 
@@ -204,7 +208,12 @@ class FaceVerifier:
             query = self._engine.embedding(frame, detections[0])
             similarity = cosine_similarity(query, self._owner_embedding)
             state = FaceState.OWNER if similarity >= self._threshold else FaceState.UNKNOWN
-            observation = FaceObservation(state, 1, similarity)
+            observation = FaceObservation(
+                state,
+                1,
+                similarity,
+                self._horizontal_position(frame, detections[0]),
+            )
         self._update(observation, now_seconds)
         return self._identity
 
@@ -248,6 +257,7 @@ class FaceVerifier:
                 face_count=observation.face_count,
                 similarity=observation.similarity,
                 camera=camera if camera is not None else self._identity.camera,
+                horizontal_position=observation.horizontal_position,
             )
             return self._identity
         self._identity = FaceIdentity(
@@ -257,8 +267,22 @@ class FaceVerifier:
             face_count=observation.face_count,
             similarity=observation.similarity,
             camera=camera,
+            horizontal_position=observation.horizontal_position,
         )
         return self._identity
+
+    @staticmethod
+    def _horizontal_position(frame, detection) -> str | None:
+        shape = getattr(frame, "shape", None)
+        width = shape[1] if shape is not None and len(shape) >= 2 else 0
+        if not width or not hasattr(detection, "x") or not hasattr(detection, "width"):
+            return None
+        center = (float(detection.x) + float(detection.width) / 2.0) / float(width)
+        if center < 0.4:
+            return "left"
+        if center > 0.6:
+            return "right"
+        return "center"
 
     def _reset_candidate(self) -> None:
         self._candidate = None

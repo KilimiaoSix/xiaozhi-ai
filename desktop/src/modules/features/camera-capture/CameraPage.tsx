@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Camera, ScanFace, ScanLine, Settings, TriangleAlert } from 'lucide-react';
 
 import { CameraPreview } from './components/CameraPreview';
 import { OwnerEnrollment } from './components/OwnerEnrollment';
@@ -7,11 +8,7 @@ import { useCameraMonitoring } from './context/CameraMonitoringProvider';
 import { cameraDesktopGateway } from './services/cameraDesktopGateway';
 import './camera.css';
 
-interface CameraPageProps {
-  onNavigateHome?: () => void;
-}
-
-export function CameraPage({ onNavigateHome }: CameraPageProps) {
+export function CameraPage() {
   const camera = useCameraMonitoring();
   const [mode, setMode] = useState<'enrollment' | 'monitoring'>(
     camera.enabled ? 'monitoring' : 'enrollment',
@@ -43,39 +40,14 @@ export function CameraPage({ onNavigateHome }: CameraPageProps) {
     else void camera.startMonitoring();
   };
 
-  const navigateHome = (): void => {
-    if (enrollmentActive) void camera.cancelEnrollment();
-    onNavigateHome?.();
-  };
-
-  const serverConnected = camera.connection === 'online';
-  const serverWaiting = camera.connection === 'connecting'
-    || camera.connection === 'reconnecting';
-
   return (
     <div className="camera-shell">
-      <div className="camera-titlebar" aria-hidden="true"><span>小飞</span></div>
-      <aside className="camera-sidebar">
-        <div className="camera-brand">小飞</div>
-        <nav aria-label="主导航">
-          <button type="button" onClick={navigateHome}><i>今</i>今天</button>
-          <button className="is-active" type="button"><i>像</i>摄像头</button>
-          <button type="button"><i>连</i>连接</button>
-          <button type="button"><i>设</i>设置</button>
-        </nav>
-        <div className="camera-sidebar-foot">
-          <i className={!serverConnected && camera.enabled ? 'is-offline' : ''} />
-          {!camera.enabled
-            ? '本地 Server'
-            : serverConnected
-              ? 'Server 已连接'
-              : serverWaiting ? '等待 Server' : 'Server 不可用'}
-        </div>
-      </aside>
-
       <main className="camera-content">
         <header className="camera-page-heading">
-          <div><h1>摄像头</h1><p>{cameraName}</p></div>
+          <div>
+            <span className="camera-heading-icon" aria-hidden="true"><Camera size={20} /></span>
+            <div><h1>摄像头</h1><p>{cameraName}</p></div>
+          </div>
           {camera.devices.length > 1 && (
             <label className="camera-device-select">
               <span>摄像头</span>
@@ -103,7 +75,7 @@ export function CameraPage({ onNavigateHome }: CameraPageProps) {
             title={camera.enabled ? '请先关闭实时监测' : undefined}
             onClick={() => setMode('enrollment')}
           >
-            主人录入
+            <ScanFace size={15} aria-hidden="true" />主人录入
           </button>
           <button
             className={mode === 'monitoring' ? 'is-active' : ''}
@@ -114,7 +86,7 @@ export function CameraPage({ onNavigateHome }: CameraPageProps) {
             title={enrollmentActive ? '请先取消主人录入' : undefined}
             onClick={() => setMode('monitoring')}
           >
-            实时监测
+            <ScanLine size={15} aria-hidden="true" />实时监测
           </button>
         </div>
 
@@ -150,6 +122,7 @@ export function CameraPage({ onNavigateHome }: CameraPageProps) {
 
         {camera.errorMessage && (
           <div className="camera-error-banner" role="alert">
+            <TriangleAlert size={18} aria-hidden="true" />
             <div>
               <strong>当前操作没有完成</strong>
               <span>{camera.errorMessage}</span>
@@ -159,7 +132,7 @@ export function CameraPage({ onNavigateHome }: CameraPageProps) {
                 type="button"
                 onClick={() => void cameraDesktopGateway.openPrivacySettings()}
               >
-                打开系统设置
+                <Settings size={14} aria-hidden="true" />打开系统设置
               </button>
             )}
           </div>

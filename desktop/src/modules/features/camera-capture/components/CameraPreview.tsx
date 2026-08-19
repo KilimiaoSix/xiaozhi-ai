@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { CameraOff } from 'lucide-react';
 
 interface CameraPreviewProps {
   stream: MediaStream | null;
@@ -28,7 +29,7 @@ export function CameraPreview({
       <video ref={videoRef} autoPlay muted playsInline />
       {!stream && (
         <div className="camera-preview-empty">
-          <span className="camera-empty-icon" aria-hidden="true">◉</span>
+          <span className="camera-empty-icon" aria-hidden="true"><CameraOff size={24} /></span>
           <strong>摄像头尚未启用</strong>
           <small>开启监测或主人录入后，画面只发送给本地 Server</small>
         </div>

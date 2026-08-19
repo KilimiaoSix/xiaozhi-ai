@@ -1,4 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowUpRight,
+  Bot,
+  Camera,
+  PlugZap,
+  RefreshCw,
+  Save,
+  Server,
+} from 'lucide-react';
+
+import { AppSidebar } from './components/AppSidebar';
+import type { AppPage } from './components/AppSidebar';
 
 import { featureCatalog, featureRegistry } from '../modules/features';
 import { CameraPage } from '../modules/features/camera-capture';
@@ -123,7 +135,7 @@ const formatFeishuDue = (value?: string, allDay = false): string => {
 
 export function App() {
   const cameraMonitoring = useCameraMonitoring();
-  const [activePage, setActivePage] = useState<'dashboard' | 'camera'>('dashboard');
+  const [activePage, setActivePage] = useState<AppPage>('dashboard');
   const [activeFeature, setActiveFeature] = useState(featureCatalog[0]);
   const [events, setEvents] = useState(initialEvents);
   const [serverUrl, setServerUrl] = useState('http://192.168.1.100:8003');
@@ -260,10 +272,6 @@ export function App() {
     document.querySelector('#agent-monitor')?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const focusPomodoroPanel = (): void => {
-    document.querySelector('#pomodoro-panel')?.scrollIntoView({ behavior: 'smooth' });
-  };
-
   const focusFeishuWorkspace = (): void => {
     document.querySelector('#feishu-workspace')?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -346,38 +354,53 @@ export function App() {
     ].slice(0, 5));
   };
 
-  if (activePage === 'camera') {
-    return <CameraPage onNavigateHome={() => setActivePage('dashboard')} />;
-  }
-
   return (
-    <div className="app-shell">
+    <div className="desktop-shell">
+      <AppSidebar
+        activePage={activePage}
+        agentHookCount={activeAgentHookCount}
+        cameraMonitoring={{
+          enabled: cameraMonitoring.enabled,
+          connection: cameraMonitoring.connection,
+        }}
+        onNavigate={setActivePage}
+      />
+      <div className="desktop-stage">
+      {activePage === 'camera' ? (
+        <CameraPage />
+      ) : activePage === 'focus' ? (
+        <div className="app-shell focus-shell">
+          <header className="topbar">
+            <div className="view-title">
+              <h1>番茄钟</h1>
+              <span>专注与休息节奏</span>
+            </div>
+            <div className="topbar-status">
+              <span className="runtime-label">Electron {runtime.versions.electron}</span>
+            </div>
+          </header>
+          <main className="focus-page">
+            <PomodoroPanel />
+          </main>
+        </div>
+      ) : (
+      <div className="app-shell">
       <header className="topbar">
-        <div className="brand" aria-label="小飞桌面机器人">
-          <span className="brand-mark" aria-hidden="true">XF</span>
-          <div>
-            <strong>小飞</strong>
-            <span>DESKBOT CONSOLE</span>
-          </div>
+        <div className="view-title">
+          <h1>今天</h1>
+          <span>你的工作状态与桌面伙伴</span>
         </div>
         <div className="topbar-status">
-          <button
-            className="topbar-camera-link"
-            type="button"
-            onClick={() => setActivePage('camera')}
-          >
-            摄像头
-          </button>
           {cameraMonitoring.enabled && (
             <button
               className={`status-pill camera-monitoring-pill ${cameraMonitoring.connection === 'online' ? 'is-live' : 'is-idle'}`}
               type="button"
               onClick={() => setActivePage('camera')}
             >
-              <i />{cameraMonitoring.connection === 'online' ? '摄像头监测中' : '摄像头重连中'}
+              <Camera size={14} aria-hidden="true" />
+              {cameraMonitoring.connection === 'online' ? '摄像头监测中' : '摄像头重连中'}
             </button>
           )}
-          <span className="build-label">LAB BUILD 0.1.0</span>
           <span className="runtime-label">Electron {runtime.versions.electron}</span>
           <span className={`status-pill ${activeAgentHookCount > 0 ? 'is-live' : 'is-idle'}`}>
             <i />{activeAgentHookCount > 0 ? 'Agent 监控中' : '系统待连接'}
@@ -388,28 +411,27 @@ export function App() {
       <main>
         <section className="hero-grid">
           <div className="hero-copy">
-            <p className="eyebrow">WORKSTATION PRESENCE / 08:42</p>
-            <h1>今天，小飞<br />在工位上。</h1>
+            <p className="eyebrow"><Bot size={15} aria-hidden="true" /> 桌面伙伴</p>
+            <h2>工伴已在工位上</h2>
             <p className="hero-summary">
-              一个认识你、理解工作上下文，也能替你守住工位的桌面机器人。
-              现在先把每条能力链路留好位置。
+              正在留意 Agent 任务和你的在岗状态。需要操作时会在这里明确提醒，不会擅自代你确认。
             </p>
 
             <div className="neural-link" aria-label="系统连接链路">
               <div className="link-node">
-                <span>01</span>
+                <span className="link-node-icon"><span>1</span></span>
                 <strong>Electron</strong>
                 <small>本机在线</small>
               </div>
               <div className="link-line"><i /></div>
               <div className="link-node">
-                <span>02</span>
+                <span className="link-node-icon"><span>2</span></span>
                 <strong>Server</strong>
                 <small>{savedUrl ? '地址已配置' : '等待配置'}</small>
               </div>
               <div className="link-line is-muted"><i /></div>
               <div className="link-node is-muted">
-                <span>03</span>
+                <span className="link-node-icon"><span>3</span></span>
                 <strong>Deskbot</strong>
                 <small>WebSocket 离线</small>
               </div>
@@ -422,7 +444,7 @@ export function App() {
                 <span className="panel-kicker">CONNECTION</span>
                 <h2>连接工作台</h2>
               </div>
-              <span className="signal-glyph" aria-hidden="true"><i /><i /><i /></span>
+              <span className="panel-icon" aria-hidden="true"><Server size={18} /></span>
             </div>
             <label htmlFor="server-url">Server 地址</label>
             <div className="url-control">
@@ -432,7 +454,7 @@ export function App() {
                 onChange={(event) => setServerUrl(event.target.value)}
                 placeholder="http://192.168.1.100:8003"
               />
-              <button type="button" onClick={saveServerUrl}>保存地址</button>
+              <button type="button" onClick={saveServerUrl}><Save size={15} />保存</button>
             </div>
             <dl className="connection-meta">
               <div><dt>控制链路</dt><dd>Electron → HTTP → Server</dd></div>
@@ -459,6 +481,7 @@ export function App() {
                 disabled={agentBusy !== null}
                 onClick={() => void installAllAgentHooks()}
               >
+                <PlugZap size={15} aria-hidden="true" />
                 {agentBusy === 'all' ? '正在配置…' : '自动发现并接入'}
               </button>
             </div>
@@ -487,6 +510,7 @@ export function App() {
                     disabled={agentBusy !== null || (!installed && detection !== undefined && !detection.available)}
                     onClick={() => void (installed ? uninstallAgentHook(source) : installAgentHook(source))}
                   >
+                    <PlugZap size={14} aria-hidden="true" />
                     {agentBusy === source ? '处理中…' : installed ? '移除 Hook' : '接入 Hook'}
                   </button>
                 </article>
@@ -544,8 +568,6 @@ export function App() {
           )}
         </section>
 
-        <PomodoroPanel />
-
         <section className="feishu-workspace" id="feishu-workspace">
           <div className="section-heading feishu-heading">
             <div>
@@ -557,10 +579,10 @@ export function App() {
                 <i />{feishuStatus?.state === 'ready' ? 'CLI 已连接' : feishuStatus ? '需要配置' : '正在检查'}
               </span>
               <button type="button" disabled={feishuBusy} onClick={() => void checkFeishuConnection()}>
-                检查连接
+                <PlugZap size={14} aria-hidden="true" />检查连接
               </button>
               <button className="primary-action" type="button" disabled={feishuBusy || feishuStatus?.state !== 'ready'} onClick={() => void refreshFeishuBriefing()}>
-                {feishuBusy ? '读取中…' : '刷新飞书数据'}
+                <RefreshCw size={14} aria-hidden="true" />{feishuBusy ? '读取中…' : '刷新数据'}
               </button>
             </div>
           </div>
@@ -666,7 +688,7 @@ export function App() {
                     type="button"
                     onClick={() => {
                       if (feature.id === 'coding-agent-status') focusAgentMonitor();
-                      if (feature.id === 'focus-mode') focusPomodoroPanel();
+                      if (feature.id === 'focus-mode') setActivePage('focus');
                       if (feature.id === 'feishu-briefing') {
                         focusFeishuWorkspace();
                         void refreshFeishuBriefing();
@@ -675,7 +697,7 @@ export function App() {
                     }}
                     aria-pressed={activeFeature.id === feature.id}
                   >
-                    {feature.triggerLabel}<span aria-hidden="true">↗</span>
+                    {feature.triggerLabel}<ArrowUpRight size={14} aria-hidden="true" />
                   </button>
                 </article>
               ))}
@@ -716,6 +738,9 @@ export function App() {
         <span>XIAOFEI SYSTEM / MACOS {runtime.platform.toUpperCase()}</span>
         <span>Agent Hook 已本机接入 / Server 与机器人链路仍为安全占位</span>
       </footer>
+      </div>
+      )}
+      </div>
     </div>
   );
 }

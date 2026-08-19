@@ -37,6 +37,7 @@ from core.presence_routes import add_presence_routes
 from core.pomodoro_routes import add_pomodoro_routes
 from core.timed_prompts import create_timed_prompt_scheduler
 from core.visitor_flow import get_visitor_flow, make_registry_device_resolver
+from core.wellbeing import WellbeingService
 
 TAG = __name__
 
@@ -111,6 +112,16 @@ class SimpleHttpServer:
                 if self.presence_orchestrator
                 else None
             ),
+        )
+        self.wellbeing_service = (
+            WellbeingService(
+                config,
+                self.presence_registry,
+                ws_server.device_registry,
+                logger=self.logger,
+            )
+            if ws_server
+            else None
         )
         self.morning_brief_service = create_morning_brief_service(config)
         self.morning_brief_handler = MorningBriefHandler(
@@ -300,6 +311,15 @@ class SimpleHttpServer:
 
     def create_app(self) -> web.Application:
         app = web.Application()
+        if self.wellbeing_service:
+            async def start_wellbeing(_app):
+                await self.wellbeing_service.start()
+
+            async def stop_wellbeing(_app):
+                await self.wellbeing_service.stop()
+
+            app.on_startup.append(start_wellbeing)
+            app.on_cleanup.append(stop_wellbeing)
         add_presence_routes(
             app,
             self.presence_handler,

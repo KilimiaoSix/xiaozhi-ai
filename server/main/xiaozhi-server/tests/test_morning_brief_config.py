@@ -3,7 +3,9 @@ from types import ModuleType
 
 import pytest
 
-if "yaml" not in sys.modules:
+try:
+    import yaml  # noqa: F401
+except ImportError:
     yaml_stub = ModuleType("yaml")
     yaml_stub.safe_load = lambda stream: {}
     sys.modules["yaml"] = yaml_stub
@@ -116,6 +118,12 @@ async def test_manager_api_mode_preserves_local_morning_brief_config(monkeypatch
             },
             "manager-api": {"url": "https://manager.example", "secret": "x"},
             "morning_brief": {"enabled": True, "self_open_id": "ou_me"},
+            "wellbeing": {
+                "enabled": True,
+                "bindings": [
+                    {"workstation_id": "desktop-local", "device_id": "robot"}
+                ],
+            },
             "prompt_template": "prompt",
         }
     )
@@ -124,3 +132,4 @@ async def test_manager_api_mode_preserves_local_morning_brief_config(monkeypatch
         "enabled": True,
         "self_open_id": "ou_me",
     }
+    assert result["wellbeing"]["bindings"][0]["device_id"] == "robot"

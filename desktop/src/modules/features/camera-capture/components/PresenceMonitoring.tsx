@@ -4,6 +4,7 @@ import type {
   RecognitionConnectionState,
   RecognitionMetrics,
 } from '../types';
+import { ShieldCheck } from 'lucide-react';
 
 interface PresenceMonitoringProps {
   enabled: boolean;
@@ -117,7 +118,7 @@ export function PresenceMonitoring({
       </div>
 
       <p className="camera-privacy-note">
-        <i aria-hidden="true">✓</i>
+        <ShieldCheck size={16} aria-hidden="true" />
         原始监测帧只在内存中流转，Server 不会保存。
       </p>
     </section>

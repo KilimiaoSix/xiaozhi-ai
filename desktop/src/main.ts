@@ -24,9 +24,11 @@ const createWindow = (): void => {
     height: 880,
     minWidth: 1080,
     minHeight: 720,
-    backgroundColor: '#081019',
+    backgroundColor: '#f3f4f6',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 18 },
+    vibrancy: 'sidebar',
+    visualEffectState: 'active',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
