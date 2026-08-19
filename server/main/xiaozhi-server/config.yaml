@@ -49,9 +49,9 @@ server:
 morning_brief:
   enabled: false
   base_url: https://open.feishu.cn
-  # 敏感值优先通过 FEISHU_USER_ACCESS_TOKEN 环境变量或 data/.config.yaml 提供。
+  # 敏感值优先通过进程环境变量或被 Git 忽略的 data/.env 提供。
   user_access_token: ""
-  # 用户 open_id 也可通过 FEISHU_SELF_OPEN_ID 环境变量提供。
+  # 用户 open_id 同样使用 FEISHU_SELF_OPEN_ID；data/.env 不覆盖已有进程变量。
   self_open_id: ""
   # 关闭后不会请求日历接口，覆盖状态记为 DISABLED，不会把整体状态拖成 PARTIAL。
   calendar_enabled: true
@@ -90,6 +90,62 @@ wellbeing:
   warm_interval_max_minutes: 90
   warm_quiet_minutes: 20
   poll_seconds: 5
+
+# 告警值班中继：SAE 告警 → 机器人抬头 + 飞书卡片叫人 → 人回「帮我查」→
+# 默认直接只读查询 SAE 日志；深度模式才调 Claude Code → 结论回帖 + 机器人播报。
+# 机器人应用需开通：im:message:send_as_bot、im:message.reaction:write。
+alert_relay:
+  enabled: false
+  # 值班人：飞书 open_id（ou_ 开头）或群 chat_id（oc_ 开头）；
+  # 也可用 FEISHU_ALERT_RECEIVE_ID 环境变量提供。
+  receive_id: ""
+  # 多久没人回复就升级提醒（秒）
+  reply_timeout_seconds: 600
+  # 窗口内同集群+同 workload+同关键词的重复告警只累加计数，不再打扰机器人
+  dedupe_window_seconds: 300
+  # 超时是否自动开跑诊断。默认关：告警风暴下会并发查询日志，深度模式还会拉起 N 个 Claude Code。
+  auto_diagnose_on_timeout: false
+  sweep_interval_seconds: 60
+  max_records: 200
+  # 集群名 → [projectId, clusterId]，与 diagnose-sae-alert skill 的映射表保持一致
+  cluster_map:
+    bj-jxq-autocar: [117, 3]
+  robot:
+    enabled: true
+    # 目标机器人 MAC；留空则只发飞书。也可用 ALERT_RELAY_DEVICE_ID 环境变量提供。
+    device_id: ""
+  feishu:
+    base_url: https://open.feishu.cn
+    # 密钥优先通过 FEISHU_BOT_APP_ID / FEISHU_BOT_APP_SECRET 环境变量
+    # 或 data/.config.yaml 提供，不要写进本文件（本文件入库）。
+    app_id: ""
+    app_secret: ""
+    # 事件订阅的 Verification Token；开放平台的 Encrypt Key 必须留空（本中继不解密）。
+    verification_token: ""
+    timeout_seconds: 10
+  diagnosis:
+    # 默认快速演示模式：Server 直接查一次告警窗口日志并生成确定性精简结论。
+    # 要恢复完整源码/配置/git 深挖，改为 false，并把 timeout_seconds 调回 900。
+    fast_mode: true
+    # 仅深度模式使用：本机 Claude Code 启动命令，可写成 "claude" 或 ["npx", "claude"]
+    cli_command: ["claude"]
+    # skill 随仓库分发在 .claude/skills/<name>/，别人克隆就有，不依赖个人目录
+    skill: diagnose-sae-alert
+    # 留空则用 CLI 默认模型
+    model: ""
+    # 被诊断服务的源码目录，会以 --add-dir 挂进子进程工作区。
+    # 不填也能跑，但诊断只剩日志一条腿，why.code 给不出 file:line。
+    source_dirs: []
+    # 留空 = 仓库根。必须能看到 .claude/skills，否则子进程找不到 skill。
+    cwd: ""
+    # 拉日志的凭证不在这里配：设环境变量 SAE_AUTHORIZATION='Bearer <jwt>'，
+    # 或写进 ~/.sae/sae-token.env。换机器部署时先看 GET /xiaozhi/alert/health
+    # 的 diagnosis.prerequisites，缺什么会直接列出来。
+    timeout_seconds: 55
+    permission_mode: dontAsk
+    # 仅深度模式使用的只读工具白名单。
+    allowed_tools: ["Read", "Grep", "Glob", "Bash", "Skill", "TodoWrite"]
+    extra_args: []
 
 log:
   # 设置控制台输出的日志格式，时间、日志级别、标签、消息

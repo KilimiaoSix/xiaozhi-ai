@@ -81,6 +81,10 @@ Codex / Claude Code / WorkBuddy          摄像头
 |---|---|---|
 | POST | `/xiaozhi/event/push` | 工作事件推送，最核心的对外入口 |
 | GET | `/xiaozhi/event/devices` | 列出 WebSocket 在线设备，联调必用 |
+| POST | `/xiaozhi/alert/ingest` | SAE 告警接入，触发机器人 + 飞书叫人 |
+| POST | `/xiaozhi/alert/feishu/callback` | 飞书事件与卡片回调，人的回复由此进来 |
+| GET | `/xiaozhi/alert/{alert_id}` | 查单条告警中继状态 |
+| GET | `/xiaozhi/alert/health` | 告警中继依赖自检 |
 | POST | `/xiaozhi/presence/report` | 在岗状态上报 |
 | GET | `/xiaozhi/presence/{workstation_id}` | 查询工位最新状态 |
 | WS | `/xiaozhi/presence/stream` | 桌面端主人注册与持续摄像头识别 |

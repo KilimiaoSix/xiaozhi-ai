@@ -11,6 +11,9 @@ from core.api.event_handler import EventHandler
 from core.api.morning_brief_handler import MorningBriefHandler
 from core.api.presence_handler import PresenceHandler
 from core.api.camera_stream_handler import CameraStreamHandler
+from core.api.alert_relay_handler import AlertRelayHandler
+from core.alert_relay.factory import create_alert_relay_service
+from core.alert_relay_routes import add_alert_relay_routes
 from core.approval_manager import get_approval_manager
 from core.approval_routes import add_approval_routes
 from datetime import date, timedelta
@@ -336,6 +339,19 @@ class SimpleHttpServer:
             else None
         )
 
+        # 告警值班中继：机器人 + 飞书叫人，人点头后调起本机 Claude Code 排查。
+        # 没有 ws_server 就没有 device_registry，硬件那一路会自行降级为不可用。
+        self.alert_relay_service = create_alert_relay_service(
+            config,
+            device_registry=ws_server.device_registry if ws_server else None,
+            logger=self.logger,
+        )
+        self.alert_relay_handler = AlertRelayHandler(
+            config,
+            self.alert_relay_service,
+            logger=self.logger,
+        )
+
     def _get_websocket_url(self, local_ip: str, port: int) -> str:
         """获取websocket地址
 
@@ -376,6 +392,7 @@ class SimpleHttpServer:
         add_approval_routes(app, self.approval_handler)
         if self.incident_handler:
             add_incident_routes(app, self.incident_handler)
+        add_alert_relay_routes(app, self.alert_relay_handler)
 
         if not self.config.get("read_config_from_api", False):
             # 单模块运行时开放 OTA 和固件下载接口。
@@ -442,6 +459,12 @@ class SimpleHttpServer:
                     self.owner_status_reminder.start()
                 if self.timed_prompt_scheduler is not None:
                     self.timed_prompt_scheduler.start()
+
+                # 超时未认领的告警要升级提醒，巡检必须在事件循环起来之后再挂。
+                sweep_interval = float(
+                    self.config.get("alert_relay", {}).get("sweep_interval_seconds", 60)
+                )
+                await self.alert_relay_service.start(sweep_interval)
 
                 # 保持服务运行
                 while True:

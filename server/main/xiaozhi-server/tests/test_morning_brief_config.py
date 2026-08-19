@@ -25,6 +25,11 @@ from config import config_loader
 from core.morning_brief import factory
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(factory, "SERVER_ROOT", tmp_path)
+
+
 def test_factory_treats_null_identity_and_token_as_unconfigured(tmp_path, monkeypatch):
     monkeypatch.delenv("FEISHU_USER_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("FEISHU_SELF_OPEN_ID", raising=False)
@@ -61,6 +66,47 @@ def test_factory_prefers_environment_credentials(tmp_path, monkeypatch):
     assert service.client.user_access_token == "u-env-token"
     assert service.self_open_id == "ou_env"
     assert service.health()["status"] == "READY"
+
+
+def test_factory_loads_credentials_from_local_env_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("FEISHU_USER_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("FEISHU_SELF_OPEN_ID", raising=False)
+    monkeypatch.setattr(factory, "SERVER_ROOT", tmp_path)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / ".env").write_text(
+        "FEISHU_USER_ACCESS_TOKEN='u-file-token'\n"
+        'FEISHU_SELF_OPEN_ID="ou_file"\n',
+        encoding="utf-8",
+    )
+
+    service = factory.create_morning_brief_service(
+        {"morning_brief": {"ledger_path": "data/brief.db"}}
+    )
+
+    assert service.client.user_access_token == "u-file-token"
+    assert service.self_open_id == "ou_file"
+    assert service.health()["status"] == "READY"
+
+
+def test_local_env_file_does_not_override_process_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("FEISHU_USER_ACCESS_TOKEN", "u-process-token")
+    monkeypatch.setenv("FEISHU_SELF_OPEN_ID", "ou_process")
+    monkeypatch.setattr(factory, "SERVER_ROOT", tmp_path)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / ".env").write_text(
+        "FEISHU_USER_ACCESS_TOKEN=u-file-token\n"
+        "FEISHU_SELF_OPEN_ID=ou_file\n",
+        encoding="utf-8",
+    )
+
+    service = factory.create_morning_brief_service(
+        {"morning_brief": {"ledger_path": "data/brief.db"}}
+    )
+
+    assert service.client.user_access_token == "u-process-token"
+    assert service.self_open_id == "ou_process"
 
 
 def test_factory_defaults_calendar_to_enabled(tmp_path, monkeypatch):

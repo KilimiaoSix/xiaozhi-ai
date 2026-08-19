@@ -120,15 +120,61 @@ calendar:calendar:readonly       # 仅日历源需要，拿不到就设 calendar
 
 从开通权限到本机联调的完整步骤、常见错误码和接口字段说明见
 [`docs/api/飞书每日关注晨报接口.md`](docs/api/飞书每日关注晨报接口.md)，
+编码 Agent 为同组织新成员自动配置时见
+[`docs/api/飞书每日关注晨报-Agent初始化手册.md`](docs/api/飞书每日关注晨报-Agent初始化手册.md)，
 设计取舍见 [`docs/技术方案-飞书每日关注晨报.md`](docs/技术方案-飞书每日关注晨报.md)。
 
-用户令牌不要写进 `config.yaml`，通过环境变量或被 Git 忽略的 `data/.config.yaml` 提供。
+用户令牌不要写进 `config.yaml`，写入被 Git 忽略的 `server/main/xiaozhi-server/data/.env`：
+
+```dotenv
+FEISHU_USER_ACCESS_TOKEN=<token>
+FEISHU_SELF_OPEN_ID=<open_id>
+```
+
+同名进程环境变量的优先级更高。
 配好后可用仓库内脚本一次性验证三个接口：
 
 ```bash
 cd server/main/xiaozhi-server
-FEISHU_USER_ACCESS_TOKEN=<token> FEISHU_SELF_OPEN_ID=<open_id> \
-  python run_morning_brief_check.py
+python run_morning_brief_check.py
+```
+
+## 告警值班中继
+
+线上告警进来后，**机器人抬头提醒人 + 飞书发卡片给值班人**；人在飞书回一句「帮我查」，
+Server 就调起**本机的 Claude Code**（复用 `diagnose-sae-alert` skill）做只读根因诊断，
+再把结论回帖成飞书卡片，同时让机器人点头播报一句话结论。
+
+```text
+POST /xiaozhi/alert/ingest             # SAE 告警接入
+POST /xiaozhi/alert/feishu/callback    # 飞书事件与卡片回调（人的回复）
+GET  /xiaozhi/alert/{alert_id}         # 查中继状态
+GET  /xiaozhi/alert/health             # 依赖自检
+```
+
+三条边界：**人不点头就不开跑诊断**（状态机层面禁止）、**全程只读不自动修复**、
+**查不出来就回失败卡片，绝不编根因**。诊断在本机子进程里跑，所以 Server 必须与
+Claude Code 同机部署，且那台机器能连内网 SAE。
+
+机器人应用需开通 `im:message:send_as_bot` 和 `im:message.reaction:write`，
+密钥走 `FEISHU_BOT_APP_ID` / `FEISHU_BOT_APP_SECRET` 环境变量或 `data/.config.yaml`。
+完整配置、状态机、硬件语汇和失败模式见
+[`docs/api/告警值班中继接口.md`](docs/api/告警值班中继接口.md)。
+
+诊断用的 skill 和跨平台日志脚本随仓库分发在
+[`.claude/skills/diagnose-sae-alert/`](.claude/skills/diagnose-sae-alert/)，
+克隆下来就有，不依赖任何个人机器上的配置。换机器只需要三样：装 Claude Code、
+配 `SAE_AUTHORIZATION='Bearer <jwt>'`（或写进 `~/.sae/sae-token.env`）、
+把被诊断服务的源码目录填进 `alert_relay.diagnosis.source_dirs`。缺哪样，
+`GET /xiaozhi/alert/health` 和 `run_alert_relay_check.py` 的第 0 步都会直接列出来，
+真实告警也会**秒级失败**并在卡片上写明，不会空转到超时。
+
+改完代码可以先跑一遍全链路模拟（假飞书 + 假机器人，秒级）：
+
+```bash
+cd server/main/xiaozhi-server
+python run_alert_relay_check.py              # 假 CLI，只验管道
+python run_alert_relay_check.py --real-cli   # 用真的 Claude Code 跑诊断
 ```
 
 ## 运行上位机 server
