@@ -40,7 +40,15 @@ async def resume_vad_detection(conn: "ConnectionHandler"):
     conn.just_woken_up = False
 
 
-async def startToChat(conn: "ConnectionHandler", text):
+async def startToChat(conn: "ConnectionHandler", text, source: str = "asr"):
+    """把一段文本送进对话链路。
+
+    source 区分这段文本从哪来，决定它要不要过对话窗口门：
+      - "detect"：唤醒词 / 手势 / 按键，走 listen detect 通道，是明确的用户主动发起；
+      - "system"：结束语这类内部提示，不是用户语音；
+      - "asr"（默认）：麦克风拾到的，受门管——固件播完必然自动开麦，
+        这条路径会把房间里与设备无关的人声也送进来。
+    """
     # 剧本模式：拍摄时把语音输入与 LLM 断开。
     # 每条 speak=true 播完后固件都会自动开麦（tts.stop 之后进 Listening），
     # 演员这时说的任何话都会被 ASR 拾到并触发真 LLM 应答录进素材。
@@ -48,6 +56,32 @@ async def startToChat(conn: "ConnectionHandler", text):
     if conn.config.get("script_mode", False):
         conn.logger.bind(tag=TAG).info(f"剧本模式已开启，不送 LLM: {text}")
         return
+
+    # 流程四：来访者留言窗口。必须放在对话窗口门之前——访客没唤醒过设备，
+    # gate.allow() 会把这句直接丢掉，留言就永远记不上。窗口没开时返回 None，
+    # 这句照常往下走。
+    from core.visitor_flow import visitor_flow_handle_asr
+
+    visitor_reply = visitor_flow_handle_asr(conn.device_id, text)
+    if visitor_reply is not None:
+        from core.handle.pushHandle import push_work_event
+
+        await push_work_event(
+            conn, text=visitor_reply, emotion="happy", status="留言", speak=True
+        )
+        return
+
+    # 对话窗口门：只有用户主动发起过，麦克风拾到的语音才进 LLM。
+    # 见 core/dialogue_gate.py 的说明——固件每条播报后必然自动开麦，
+    # 没有这道门，房间人声会把设备拖进自激循环。
+    from core.dialogue_gate import DialogueGate
+
+    gate = DialogueGate(conn.config)
+    if gate.enabled and source != "system":
+        if source == "detect":
+            gate.open(conn, "用户主动发起")
+        elif not gate.allow(conn, text):
+            return
 
     # 检查输入是否是JSON格式（包含说话人信息）
     speaker_name = None
@@ -135,7 +169,7 @@ async def no_voice_close_connect(conn: "ConnectionHandler", have_voice):
             prompt = end_prompt.get("prompt")
             if not prompt:
                 prompt = "请你以```时间过得真快```未来头，用富有感情、依依不舍的话来结束这场对话吧。！"
-            await startToChat(conn, prompt)
+            await startToChat(conn, prompt, source="system")
 
 
 async def max_out_size(conn: "ConnectionHandler"):

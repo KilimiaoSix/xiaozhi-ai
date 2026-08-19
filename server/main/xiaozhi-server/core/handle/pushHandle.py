@@ -121,6 +121,77 @@ def device_busy_reason(conn) -> Optional[str]:
     return None
 
 
+# 推送要出声时的等待策略。默认 3 秒：桌面端推送客户端的 HTTP 超时是 5 秒，
+# 服务端等待必须明显短于它，否则调用方先超时，等待就白做了。
+# 想等更久必须同步放宽调用方超时。
+DEFAULT_PUSH_WAIT_SECONDS = 3.0
+DEFAULT_PUSH_POLL_INTERVAL = 0.3
+BUSY_SPEAKING = "设备正在播放语音"
+
+
+def _push_speak_settings(config) -> tuple:
+    section = (config or {}).get("push_speak") or {}
+    if not isinstance(section, dict):
+        section = {}
+
+    def positive(value, fallback):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return parsed if parsed > 0 else fallback
+
+    return (
+        positive(section.get("wait_seconds"), DEFAULT_PUSH_WAIT_SECONDS),
+        positive(section.get("poll_interval"), DEFAULT_PUSH_POLL_INTERVAL),
+        bool(section.get("preempt_speaking", False)),
+    )
+
+
+async def ensure_speakable(conn, busy_probe=None, sleep=None, clock=None, abort=None):
+    """尽力让设备进入可播报状态；返回 None 表示可以播，否则返回未解决的忙因。
+
+    设备的音频通道是独占的，撞上忙态直接放弃会让工作事件的播报经常被吞掉。
+    这里改成先等一小会儿——房间人声引起的 VAD 抖动通常一两秒就过去。
+
+    仍然区别对待两种忙因：
+      - "用户正在说话"：只等不抢。插播会污染这一轮的 ASR 与 client_abort 状态。
+      - "设备正在播放语音"：开启 preempt_speaking 后可以打断它自己的播报，
+        等价于用户打断它说话，代价可控。
+    """
+    import asyncio
+    import time as _time
+
+    probe = busy_probe or device_busy_reason
+    sleep = sleep or asyncio.sleep
+    clock = clock or _time.monotonic
+    if abort is None:
+        from core.handle.abortHandle import handleAbortMessage as abort
+
+    wait_seconds, poll_interval, preempt = _push_speak_settings(
+        getattr(conn, "config", None)
+    )
+
+    busy = probe(conn)
+    if not busy:
+        return None
+
+    deadline = clock() + wait_seconds
+    while busy:
+        if preempt and busy == BUSY_SPEAKING:
+            conn.logger.bind(tag=TAG).info("打断设备当前播报，让位给本次推送")
+            await abort(conn)
+            busy = probe(conn)
+            if not busy:
+                return None
+        if clock() >= deadline:
+            break
+        await sleep(poll_interval)
+        busy = probe(conn)
+
+    return busy
+
+
 async def push_alert_to_device(conn, text: str, emotion: str = DEFAULT_EMOTION,
                                status: str = DEFAULT_STATUS,
                                silent: bool = False) -> None:
@@ -295,7 +366,7 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
     if not speak:
         return False
 
-    busy = device_busy_reason(conn)
+    busy = await ensure_speakable(conn)
     if busy:
         conn.logger.bind(tag=TAG).info(f"{busy}，本次推送降级为仅提示: {text}")
         return False

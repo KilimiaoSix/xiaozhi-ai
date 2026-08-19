@@ -136,7 +136,7 @@ class ListenTextMessageHandler(TextMessageHandler):
                     conn.just_woken_up = True
                     # 复用ASR上报通道，但没有音频数据
                     enqueue_asr_report(conn, prompt, [])
-                    await startToChat(conn, prompt)
+                    await startToChat(conn, prompt, source="detect")
                     return
 
                 # 识别是否是唤醒词
@@ -153,10 +153,10 @@ class ListenTextMessageHandler(TextMessageHandler):
                     conn.just_woken_up = True
                     # 上报纯文字数据（复用ASR上报功能，但不提供音频数据）
                     enqueue_asr_report(conn, "嘿，你好呀", [])
-                    await startToChat(conn, "嘿，你好呀")
+                    await startToChat(conn, "嘿，你好呀", source="detect")
                 else:
                     conn.just_woken_up = True
                     # 上报纯文字数据（复用ASR上报功能，但不提供音频数据）
                     enqueue_asr_report(conn, original_text, [])
                     # 否则需要LLM对文字内容进行答复
-                    await startToChat(conn, original_text)
+                    await startToChat(conn, original_text, source="detect")
