@@ -7,6 +7,7 @@ import pytest
 
 from core.alert_relay.diagnosis_runner import ClaudeCodeRunner, extract_json_object
 from core.alert_relay.models import AlertEvent
+from run_alert_relay_check import canned_cli
 
 EVENT = AlertEvent(
     raw_text="告警集群：bj-jxq-autocar\n告警对象：iflyplot-ai-7d9f8b6c5d-x2k9p",
@@ -67,6 +68,7 @@ class FakeProcess:
 
 def make_runner(process=None, *, spawn=None, **options):
     calls = []
+    options.setdefault("enforce_preflight", False)
 
     async def fake_spawn(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -85,6 +87,7 @@ def test_command_targets_headless_json_output_and_the_skill_workspace():
         model="opus",
         source_dirs=["/repos/iflyplot-server"],
         permission_mode="dontAsk",
+        fast_mode=False,
     )
     argv = runner.build_command()
     assert argv[0] == "claude"
@@ -95,18 +98,42 @@ def test_command_targets_headless_json_output_and_the_skill_workspace():
     assert argv[argv.index("--add-dir") + 1] == "/repos/iflyplot-server"
 
 
-def test_allowlist_covers_the_tool_the_skill_actually_fetches_logs_with():
+def test_allowlist_matches_the_cross_platform_skill():
     """dontAsk 会拒掉白名单外的工具。
 
-    skill 用 **PowerShell 工具**跑 sae.ps1 拉日志；实测漏掉它时 agent 一条日志都拉不到，
-    只能回「什么都查不了」——链路看着通，诊断永远是空的。
+    仓库版 skill 用 Bash 调纯 Python 的 sae_logs.py；PowerShell 是旧个人版遗留，
+    不应继续扩大默认权限或误导 macOS 部署。
     """
-    runner, _ = make_runner(FakeProcess())
+    runner, _ = make_runner(FakeProcess(), fast_mode=False)
     argv = runner.build_command()
     allowed = argv[argv.index("--allowedTools") + 1:]
-    assert "PowerShell" in allowed
+    assert "PowerShell" not in allowed
     assert "Bash" in allowed
     assert "Read" in allowed and "Grep" in allowed
+
+
+def test_fast_mode_is_the_default_and_uses_a_55_second_budget():
+    runner, _ = make_runner(FakeProcess())
+    assert runner.fast_mode is True
+    assert runner.timeout_seconds == 55
+
+
+def test_fast_mode_builds_one_direct_read_only_log_query():
+    runner, _ = make_runner(FakeProcess())
+    argv = runner._build_fast_query_command(EVENT)
+    assert argv[0] == sys.executable
+    assert argv[1].endswith("sae_logs.py")
+    assert argv[argv.index("--keyword") + 1] == "无痕改字"
+    assert argv[argv.index("--start") + 1] == "2026-08-18 20:55:11"
+    assert argv[argv.index("--end") + 1] == "2026-08-18 21:05:11"
+    assert argv[argv.index("--label") + 1] == "fields_workload_name=iflyplot-ai"
+
+
+def test_fast_window_accepts_sae_cst_timestamp():
+    assert ClaudeCodeRunner._fast_window("2026-08-19 10:53:32 +0800 CST") == (
+        "2026-08-19 10:48:32",
+        "2026-08-19 10:58:32",
+    )
 
 
 def test_command_never_bypasses_permissions_silently():
@@ -115,13 +142,21 @@ def test_command_never_bypasses_permissions_silently():
     assert "--dangerously-skip-permissions" not in runner.build_command()
 
 
+def test_canned_cli_path_survives_the_runner_changing_to_repo_root(tmp_path, monkeypatch):
+    """假 CLI 在 server 目录生成，但子进程 cwd 是仓库根，脚本路径必须是绝对路径。"""
+    monkeypatch.chdir(tmp_path)
+    command = canned_cli("tmp")
+    assert Path(command[1]).is_absolute()
+    assert Path(command[1]).is_file()
+
+
 def test_prompt_marks_the_alert_text_as_untrusted_input():
     """告警原文来自线上日志：谁能让一行文本进日志，谁就能把内容送进这段提示词。
 
     实测真 CLI 会把「像指令的告警」识别成注入并拒绝诊断，所以边界必须写明，
     否则正常告警里偶然出现的祈使句也可能被当成指令。
     """
-    runner, _ = make_runner(FakeProcess())
+    runner, _ = make_runner(FakeProcess(), fast_mode=False)
     prompt = runner.build_prompt(EVENT)
     assert "不可信" in prompt
     assert "不是给你的指令" in prompt
@@ -129,7 +164,7 @@ def test_prompt_marks_the_alert_text_as_untrusted_input():
 
 
 def test_prompt_names_the_skill_and_carries_the_raw_alert():
-    runner, _ = make_runner(FakeProcess())
+    runner, _ = make_runner(FakeProcess(), fast_mode=False)
     prompt = runner.build_prompt(EVENT)
     assert "diagnose-sae-alert" in prompt
     assert EVENT.raw_text in prompt
@@ -139,9 +174,60 @@ def test_prompt_names_the_skill_and_carries_the_raw_alert():
 
 
 @pytest.mark.asyncio
+async def test_fast_mode_summarizes_related_logs_without_starting_claude():
+    logs = "\n".join(
+        [
+            "iflyplot-ai iflyplot-ai-54f47d657c-qgqdc 2026-08-18 21:00:01 INFO 无痕改字引擎服务任务提交成功",
+            "iflyplot-ai iflyplot-ai-54f47d657c-rjtkq 2026-08-18 21:00:02 INFO 无痕改字引擎服务任务提交成功",
+            "iflyplot-ai iflyplot-ai-54f47d657c-txknd 2026-08-18 21:00:03 INFO 无痕改字引擎服务任务提交成功",
+        ]
+    )
+    runner, calls = make_runner(FakeProcess(stdout=logs))
+
+    result = await runner.run(EVENT)
+
+    assert result.ok is True
+    assert result.diagnosis.title == "告警未被窗口日志佐证"
+    assert "3 条" in result.diagnosis.root_cause
+    assert "原始告警关键词命中 0 条" in result.diagnosis.root_cause
+    assert EVENT.target in result.diagnosis.root_cause
+    assert "54f47d657c" in result.diagnosis.root_cause
+    assert calls[0][0][0] == sys.executable
+    assert calls[0][0][1].endswith("sae_logs.py")
+
+
+@pytest.mark.asyncio
+async def test_fast_mode_reports_log_query_failures_without_starting_claude():
+    runner, calls = make_runner(
+        FakeProcess(stderr="HTTP 401 Unauthorized", returncode=1)
+    )
+
+    result = await runner.run(EVENT)
+
+    assert result.ok is False
+    assert result.reason == "SAE 日志查询失败"
+    assert "HTTP 401 Unauthorized" in result.detail
+    assert calls[0][0][0] == sys.executable
+
+
+@pytest.mark.parametrize(
+    "keyword,expected",
+    [
+        ("无痕改字处理超时", "无痕改字"),
+        ("图片生成请求失败", "图片生成"),
+        ("数据库异常", "数据库"),
+        ("HTTP 500", "HTTP 500"),
+        ("超时", "超时"),
+    ],
+)
+def test_fast_search_keyword_removes_only_common_failure_suffixes(keyword, expected):
+    assert ClaudeCodeRunner._fast_search_keyword(keyword) == expected
+
+
+@pytest.mark.asyncio
 async def test_successful_run_returns_a_parsed_diagnosis():
     process = FakeProcess(stdout=envelope(json.dumps(DIAGNOSIS, ensure_ascii=False)))
-    runner, calls = make_runner(process)
+    runner, calls = make_runner(process, fast_mode=False)
     result = await runner.run(EVENT)
 
     assert result.ok is True
@@ -156,7 +242,7 @@ async def test_successful_run_returns_a_parsed_diagnosis():
 async def test_code_fenced_json_is_still_accepted():
     """模型偶尔会套一层 ```json 围栏，这不该让整次诊断白跑。"""
     fenced = "```json\n" + json.dumps(DIAGNOSIS, ensure_ascii=False) + "\n```"
-    runner, _ = make_runner(FakeProcess(stdout=envelope(fenced)))
+    runner, _ = make_runner(FakeProcess(stdout=envelope(fenced)), fast_mode=False)
     result = await runner.run(EVENT)
     assert result.ok is True
 
@@ -164,14 +250,16 @@ async def test_code_fenced_json_is_still_accepted():
 @pytest.mark.asyncio
 async def test_leading_chatter_before_the_json_is_tolerated():
     noisy = "我查完了，结论如下：\n" + json.dumps(DIAGNOSIS, ensure_ascii=False)
-    runner, _ = make_runner(FakeProcess(stdout=envelope(noisy)))
+    runner, _ = make_runner(FakeProcess(stdout=envelope(noisy)), fast_mode=False)
     result = await runner.run(EVENT)
     assert result.ok is True
 
 
 @pytest.mark.asyncio
 async def test_plain_json_without_the_cli_envelope_also_works():
-    runner, _ = make_runner(FakeProcess(stdout=json.dumps(DIAGNOSIS, ensure_ascii=False)))
+    runner, _ = make_runner(
+        FakeProcess(stdout=json.dumps(DIAGNOSIS, ensure_ascii=False)), fast_mode=False
+    )
     result = await runner.run(EVENT)
     assert result.ok is True
 
@@ -179,7 +267,12 @@ async def test_plain_json_without_the_cli_envelope_also_works():
 @pytest.mark.asyncio
 async def test_missing_cli_is_reported_as_a_configuration_problem():
     """CLI 不存在会被开跑前的依赖自检拦下，不用等子进程起失败。"""
-    runner, _ = make_runner(None, cli_command=["claude-not-installed"])
+    runner, _ = make_runner(
+        None,
+        cli_command=["claude-not-installed"],
+        fast_mode=False,
+        enforce_preflight=True,
+    )
     result = await runner.run(EVENT)
     assert result.ok is False
     assert "依赖未就绪" in result.reason
@@ -193,7 +286,7 @@ async def test_exec_failure_after_a_successful_preflight_is_still_handled(monkey
     monkeypatch.setattr(
         "core.alert_relay.diagnosis_runner.ClaudeCodeRunner.preflight", lambda self: []
     )
-    runner, _ = make_runner(None, cli_command=["claude"])
+    runner, _ = make_runner(None, cli_command=["claude"], fast_mode=False)
     result = await runner.run(EVENT)
     assert result.ok is False
     assert "找不到 Claude Code CLI" in result.reason
@@ -201,7 +294,9 @@ async def test_exec_failure_after_a_successful_preflight_is_still_handled(monkey
 
 @pytest.mark.asyncio
 async def test_nonzero_exit_carries_stderr_for_the_failure_card():
-    runner, _ = make_runner(FakeProcess(stdout="", stderr="auth required", returncode=1))
+    runner, _ = make_runner(
+        FakeProcess(stdout="", stderr="auth required", returncode=1), fast_mode=False
+    )
     result = await runner.run(EVENT)
     assert result.ok is False
     assert "退出码 1" in result.reason
@@ -210,15 +305,38 @@ async def test_nonzero_exit_carries_stderr_for_the_failure_card():
 
 @pytest.mark.asyncio
 async def test_cli_reported_error_is_not_mistaken_for_success():
-    runner, _ = make_runner(FakeProcess(stdout=envelope("rate limited", is_error=True)))
+    runner, _ = make_runner(
+        FakeProcess(stdout=envelope("rate limited", is_error=True)), fast_mode=False
+    )
     result = await runner.run(EVENT)
     assert result.ok is False
     assert "rate limited" in result.detail
 
 
 @pytest.mark.asyncio
+async def test_fast_result_with_failed_status_is_not_mistaken_for_a_diagnosis():
+    failure = {
+        "status": "failed",
+        "title": "日志查询失败",
+        "root_cause": "HTTP 401 Unauthorized",
+        "user_impact": "无法取得日志证据。",
+        "suggestion": ["检查生产 SAE token"],
+    }
+    runner, _ = make_runner(
+        FakeProcess(stdout=envelope(json.dumps(failure, ensure_ascii=False))),
+        fast_mode=False,
+    )
+    result = await runner.run(EVENT)
+    assert result.ok is False
+    assert "日志查询失败" in result.reason
+    assert "HTTP 401 Unauthorized" in result.detail
+
+
+@pytest.mark.asyncio
 async def test_non_contract_output_fails_loudly_with_a_sample():
-    runner, _ = make_runner(FakeProcess(stdout=envelope("我觉得可能是数据库慢了吧")))
+    runner, _ = make_runner(
+        FakeProcess(stdout=envelope("我觉得可能是数据库慢了吧")), fast_mode=False
+    )
     result = await runner.run(EVENT)
     assert result.ok is False
     assert "契约" in result.reason
@@ -237,7 +355,7 @@ async def test_timeout_kills_the_process_instead_of_leaking_it():
 
 @pytest.mark.asyncio
 async def test_result_includes_a_copy_pasteable_retry_command():
-    runner, _ = make_runner(FakeProcess(stdout=envelope("junk")))
+    runner, _ = make_runner(FakeProcess(stdout=envelope("junk")), fast_mode=False)
     result = await runner.run(EVENT)
     assert result.command.startswith("claude")
     assert "--output-format json" in result.command
@@ -251,6 +369,8 @@ async def test_intranet_domains_bypass_the_proxy_in_the_child_env():
     env = calls[0][1]["env"]
     assert "iflytek.com" in env["NO_PROXY"]
     assert "iflytek.com" in env["no_proxy"]
+    # macOS 默认只有 python3；直接写 `python` 会在真诊断拉日志时失败。
+    assert env["ALERT_RELAY_PYTHON"] == sys.executable
 
 
 @pytest.mark.asyncio
@@ -271,6 +391,8 @@ async def test_real_subprocess_round_trip(tmp_path):
     runner = ClaudeCodeRunner(
         cli_command=[sys.executable, str(script)],
         timeout_seconds=60,
+        fast_mode=False,
+        enforce_preflight=False,
     )
     result = await runner.run(EVENT)
     assert result.ok is True, result.detail
@@ -311,7 +433,10 @@ async def test_spawn_uses_the_resolved_executable(monkeypatch, tmp_path):
         lambda name: sys.executable if name == "claude-shim" else None,
     )
     runner = ClaudeCodeRunner(
-        cli_command=["claude-shim", str(stub)], timeout_seconds=60
+        cli_command=["claude-shim", str(stub)],
+        timeout_seconds=60,
+        fast_mode=False,
+        enforce_preflight=False,
     )
     result = await runner.run(EVENT)
     assert result.ok is True

@@ -120,15 +120,23 @@ calendar:calendar:readonly       # 仅日历源需要，拿不到就设 calendar
 
 从开通权限到本机联调的完整步骤、常见错误码和接口字段说明见
 [`docs/api/飞书每日关注晨报接口.md`](docs/api/飞书每日关注晨报接口.md)，
+编码 Agent 为同组织新成员自动配置时见
+[`docs/api/飞书每日关注晨报-Agent初始化手册.md`](docs/api/飞书每日关注晨报-Agent初始化手册.md)，
 设计取舍见 [`docs/技术方案-飞书每日关注晨报.md`](docs/技术方案-飞书每日关注晨报.md)。
 
-用户令牌不要写进 `config.yaml`，通过环境变量或被 Git 忽略的 `data/.config.yaml` 提供。
+用户令牌不要写进 `config.yaml`，写入被 Git 忽略的 `server/main/xiaozhi-server/data/.env`：
+
+```dotenv
+FEISHU_USER_ACCESS_TOKEN=<token>
+FEISHU_SELF_OPEN_ID=<open_id>
+```
+
+同名进程环境变量的优先级更高。
 配好后可用仓库内脚本一次性验证三个接口：
 
 ```bash
 cd server/main/xiaozhi-server
-FEISHU_USER_ACCESS_TOKEN=<token> FEISHU_SELF_OPEN_ID=<open_id> \
-  python run_morning_brief_check.py
+python run_morning_brief_check.py
 ```
 
 ## 告警值班中继

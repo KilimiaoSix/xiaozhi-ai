@@ -24,11 +24,22 @@ EVENT = AlertEvent(
 )
 
 
-def make_runner(tmp_path, *, with_skill=True, cli="claude", monkeypatch=None, **options):
+def make_runner(
+    tmp_path,
+    *,
+    with_skill=True,
+    with_script=True,
+    cli="claude",
+    monkeypatch=None,
+    **options,
+):
     if with_skill:
         skill_dir = tmp_path / ".claude" / "skills" / "diagnose-sae-alert"
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / "SKILL.md").write_text("# skill", encoding="utf-8")
+        if with_script:
+            (skill_dir / "scripts").mkdir(exist_ok=True)
+            (skill_dir / "scripts" / "sae_logs.py").write_text("# script", encoding="utf-8")
     return ClaudeCodeRunner(cli_command=[cli], cwd=str(tmp_path), **options)
 
 
@@ -74,11 +85,20 @@ def test_everything_present_reports_ready(tmp_path, with_credentials):
 
 
 def test_missing_cli_is_a_blocking_problem(tmp_path, with_credentials):
-    runner = make_runner(tmp_path, cli="claude-not-installed")
+    runner = make_runner(tmp_path, cli="claude-not-installed", fast_mode=False)
     problem = problems_of(runner)["claude_cli"]
     assert problem.ok is False
     assert problem.blocking is True
     assert "claude-not-installed" in problem.detail
+
+
+def test_fast_mode_does_not_require_claude_cli(tmp_path, with_credentials):
+    runner = make_runner(tmp_path, cli="claude-not-installed")
+    problem = problems_of(runner)["claude_cli"]
+    assert problem.ok is True
+    assert problem.blocking is False
+    assert "快速模式" in problem.detail
+    assert runner.ready() is True
 
 
 def test_missing_skill_is_blocking_and_names_where_it_should_live(
@@ -97,6 +117,14 @@ def test_skill_in_the_repo_counts_even_without_a_personal_copy(tmp_path, with_cr
     runner = make_runner(tmp_path)
     assert problems_of(runner)["skill"].ok is True
     assert "skills" in problems_of(runner)["skill"].detail
+
+
+def test_fast_mode_requires_the_bundled_log_script(tmp_path, with_credentials):
+    runner = make_runner(tmp_path, with_script=False)
+    problem = problems_of(runner)["skill"]
+    assert problem.ok is False
+    assert problem.blocking is True
+    assert "sae_logs.py" in problem.detail
 
 
 def test_missing_sae_credentials_is_blocking(tmp_path, monkeypatch):
@@ -140,14 +168,23 @@ def test_empty_credentials_file_does_not_count(tmp_path, monkeypatch):
 
 def test_missing_source_dirs_warns_but_does_not_block(tmp_path, with_credentials):
     """没挂源码诊断会变弱（why.code 给不出 file:line），但日志那条腿还在，不该拦。"""
-    problem = problems_of(make_runner(tmp_path))["source_dirs"]
+    problem = problems_of(make_runner(tmp_path, fast_mode=False))["source_dirs"]
     assert problem.ok is False
     assert problem.blocking is False
-    assert make_runner(tmp_path).ready() is True
+    assert make_runner(tmp_path, fast_mode=False).ready() is True
+
+
+def test_fast_mode_does_not_warn_about_source_dirs(tmp_path, with_credentials):
+    problem = problems_of(make_runner(tmp_path))["source_dirs"]
+    assert problem.ok is True
+    assert problem.blocking is False
+    assert "快速模式" in problem.detail
 
 
 def test_source_dir_that_does_not_exist_is_reported(tmp_path, with_credentials):
-    runner = make_runner(tmp_path, source_dirs=[str(tmp_path / "nope")])
+    runner = make_runner(
+        tmp_path, source_dirs=[str(tmp_path / "nope")], fast_mode=False
+    )
     problem = problems_of(runner)["source_dirs"]
     assert problem.ok is False
     assert "nope" in problem.detail
@@ -193,7 +230,7 @@ async def test_run_proceeds_when_only_non_blocking_items_are_missing(tmp_path, w
     async def spawn(argv, **kwargs):
         return FakeProcess()
 
-    runner = make_runner(tmp_path, spawn=spawn)
+    runner = make_runner(tmp_path, spawn=spawn, fast_mode=False)
     result = await runner.run(EVENT)
     assert result.ok is True
     assert started == [True]
@@ -207,3 +244,33 @@ def test_health_exposes_readiness_for_remote_checking(
     assert health["ready"] is False
     assert any("skill" == item["name"] for item in health["prerequisites"])
     assert any(item["blocking"] and not item["ok"] for item in health["prerequisites"])
+
+
+@pytest.mark.asyncio
+async def test_offline_fake_cli_can_explicitly_skip_external_preflight(tmp_path, monkeypatch):
+    """假 CLI 只验证管道，不能反过来要求真实 SAE 凭证和项目 skill。"""
+    monkeypatch.delenv("SAE_AUTHORIZATION", raising=False)
+    monkeypatch.delenv("SAE_COOKIE", raising=False)
+    started = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            started.append(True)
+            return b'{"title":"t","root_cause":"r"}', b""
+
+    async def spawn(argv, **kwargs):
+        return FakeProcess()
+
+    runner = ClaudeCodeRunner(
+        cli_command=["offline-fake-claude"],
+        cwd=str(tmp_path),
+        spawn=spawn,
+        enforce_preflight=False,
+    )
+
+    result = await runner.run(EVENT)
+
+    assert result.ok is True
+    assert started == [True]

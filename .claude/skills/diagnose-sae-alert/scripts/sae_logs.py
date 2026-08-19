@@ -20,7 +20,7 @@ macOS / Linux / Windows 通用。
 传成预发那种形状会收到 HTTP 400 "cannot unmarshal array into string"。
 
 用法：
-  python sae_logs.py --project-id 117 --cluster-id 3 \
+  "$ALERT_RELAY_PYTHON" sae_logs.py --project-id 117 --cluster-id 3 \
       --start "2026-08-18 21:00:00" --end "2026-08-18 21:06:00" \
       --keyword "无痕改字处理超时" \
       --label fields_namespace=iflyplot --label fields_workload_name=iflyplot-ai

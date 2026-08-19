@@ -49,9 +49,9 @@ server:
 morning_brief:
   enabled: false
   base_url: https://open.feishu.cn
-  # 敏感值优先通过 FEISHU_USER_ACCESS_TOKEN 环境变量或 data/.config.yaml 提供。
+  # 敏感值优先通过进程环境变量或被 Git 忽略的 data/.env 提供。
   user_access_token: ""
-  # 用户 open_id 也可通过 FEISHU_SELF_OPEN_ID 环境变量提供。
+  # 用户 open_id 同样使用 FEISHU_SELF_OPEN_ID；data/.env 不覆盖已有进程变量。
   self_open_id: ""
   # 关闭后不会请求日历接口，覆盖状态记为 DISABLED，不会把整体状态拖成 PARTIAL。
   calendar_enabled: true
@@ -66,7 +66,7 @@ morning_brief:
   resolved_retention_days: 30
 
 # 告警值班中继：SAE 告警 → 机器人抬头 + 飞书卡片叫人 → 人回「帮我查」→
-# 调起本机 Claude Code（diagnose-sae-alert skill）只读排查 → 结论回帖 + 机器人播报。
+# 默认直接只读查询 SAE 日志；深度模式才调 Claude Code → 结论回帖 + 机器人播报。
 # 机器人应用需开通：im:message:send_as_bot、im:message.reaction:write。
 alert_relay:
   enabled: false
@@ -77,7 +77,7 @@ alert_relay:
   reply_timeout_seconds: 600
   # 窗口内同集群+同 workload+同关键词的重复告警只累加计数，不再打扰机器人
   dedupe_window_seconds: 300
-  # 超时是否自动开跑诊断。默认关：告警风暴下会同时拉起 N 个 Claude Code。
+  # 超时是否自动开跑诊断。默认关：告警风暴下会并发查询日志，深度模式还会拉起 N 个 Claude Code。
   auto_diagnose_on_timeout: false
   sweep_interval_seconds: 60
   max_records: 200
@@ -98,7 +98,10 @@ alert_relay:
     verification_token: ""
     timeout_seconds: 10
   diagnosis:
-    # 本机 Claude Code 的启动命令，可写成 "claude" 或 ["npx", "claude"]
+    # 默认快速演示模式：Server 直接查一次告警窗口日志并生成确定性精简结论。
+    # 要恢复完整源码/配置/git 深挖，改为 false，并把 timeout_seconds 调回 900。
+    fast_mode: true
+    # 仅深度模式使用：本机 Claude Code 启动命令，可写成 "claude" 或 ["npx", "claude"]
     cli_command: ["claude"]
     # skill 随仓库分发在 .claude/skills/<name>/，别人克隆就有，不依赖个人目录
     skill: diagnose-sae-alert
@@ -112,10 +115,10 @@ alert_relay:
     # 拉日志的凭证不在这里配：设环境变量 SAE_AUTHORIZATION='Bearer <jwt>'，
     # 或写进 ~/.sae/sae-token.env。换机器部署时先看 GET /xiaozhi/alert/health
     # 的 diagnosis.prerequisites，缺什么会直接列出来。
-    timeout_seconds: 900
+    timeout_seconds: 55
     permission_mode: dontAsk
-    # dontAsk 会拒掉不在白名单里的工具。PowerShell 不能删：skill 靠它跑 sae.ps1 拉日志。
-    allowed_tools: ["Read", "Grep", "Glob", "Bash", "PowerShell", "Skill", "TodoWrite"]
+    # 仅深度模式使用的只读工具白名单。
+    allowed_tools: ["Read", "Grep", "Glob", "Bash", "Skill", "TodoWrite"]
     extra_args: []
 
 log:

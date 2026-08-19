@@ -160,6 +160,8 @@ async def build_stack(aiohttp_client, tmp_path, *, script=None):
         cli_command=[sys.executable, str(script or write_fake_claude(tmp_path, output=SKILL_OUTPUT))],
         source_dirs=[str(tmp_path)],
         timeout_seconds=60,
+        fast_mode=False,
+        enforce_preflight=False,
     )
     service = AlertRelayService(
         robot=robot,

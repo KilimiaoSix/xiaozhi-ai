@@ -47,7 +47,7 @@ description: 输入一条 i讯飞 SAE 告警，agentic 地结合被诊断服务�
 ### 4. 只读拉日志
 
 ```bash
-python .claude/skills/diagnose-sae-alert/scripts/sae_logs.py \
+"$ALERT_RELAY_PYTHON" .claude/skills/diagnose-sae-alert/scripts/sae_logs.py \
   --project-id <pid> --cluster-id <cid> \
   --start "2026-08-18 21:00:00" --end "2026-08-18 21:06:00" \
   --keyword "<告警关键词>" \
@@ -72,8 +72,11 @@ python .claude/skills/diagnose-sae-alert/scripts/sae_logs.py \
 2. `~/.sae/sae-token.env` 里的 `SAE_AUTHORIZATION=`
 3. `~/.sae/auth.env` 里的 `SAE_COOKIE=`（浏览器 cookie，约 1 小时过期）
 
-先自检：`python .claude/skills/diagnose-sae-alert/scripts/sae_logs.py --check-credentials
+先自检：`"$ALERT_RELAY_PYTHON" .claude/skills/diagnose-sae-alert/scripts/sae_logs.py --check-credentials
 --project-id 117 --cluster-id 3`。凭证缺失时**立即如实说明并停止**，不要空转到超时。
+
+`ALERT_RELAY_PYTHON` 由 Server 注入，值是启动 Server 的 Python 绝对路径。不要写死
+`python` 或 `python3`：macOS 默认没有 `python`，Windows 通常又没有 `python3`。
 
 ### 5. 上下文
 

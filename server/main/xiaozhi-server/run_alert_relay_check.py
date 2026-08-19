@@ -2,9 +2,9 @@
 
 两种模式：
 
-- `--simulate`（默认）：起一个假飞书 OpenAPI 和一个假机器人，**但用真的 Claude Code**
-  跑诊断，把「告警 → 叫人 → 人回复 → 排查 → 回帖」整条链路走一遍并打印每一步。
-  不需要真飞书应用、不需要真机器人，适合改完代码先自检。
+- `--simulate`（默认）：起一个假飞书 OpenAPI、假机器人和假诊断 CLI，把
+  「告警 → 叫人 → 人回复 → 排查 → 回帖」整条链路离线走一遍并打印每一步。
+- `--real-cli`：默认直接只读查询一次真实 SAE 日志；再加 `--deep` 才会调 Claude Code。
 - `--live`：用 config.yaml + data/.config.yaml 的真实配置装配，只打 health 和一次
   ingest，用来确认线上环境（飞书机器人、device_id、CLI 路径）是不是真的通。
 
@@ -121,7 +121,8 @@ class FakeRegistry:
 
 def canned_cli(tmp_dir: str) -> list[str]:
     """一个不烧 token 的假 CLI，用于只想验管道的时候。"""
-    path = os.path.join(tmp_dir, "canned_claude.py")
+    os.makedirs(tmp_dir, exist_ok=True)
+    path = os.path.abspath(os.path.join(tmp_dir, "canned_claude.py"))
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(
             "import sys, json\n"
@@ -152,23 +153,34 @@ async def simulate(args) -> int:
         return bool(kwargs.get("speak"))
 
     cli_command = ["claude"] if args.real_cli else canned_cli(args.tmp_dir)
-    print(f"诊断 CLI: {' '.join(cli_command)}" + ("（真 Claude Code）" if args.real_cli else "（假 CLI）"))
+    fast_mode = bool(args.real_cli and not args.deep)
+    if fast_mode:
+        print("诊断方式：快速模式（直接只读查询 SAE，不启动 Claude Code）")
+    elif args.real_cli:
+        print("诊断方式：深度模式（Claude Code + diagnose-sae-alert skill）")
+    else:
+        print(f"诊断方式：离线管道（假 CLI：{' '.join(cli_command)}）")
 
     runner = ClaudeCodeRunner(
         cli_command=cli_command,
         source_dirs=[path for path in args.source_dir or []],
         cwd=args.cwd or default_diagnosis_cwd(),
-        timeout_seconds=float(args.timeout),
+        timeout_seconds=args.timeout,
+        fast_mode=fast_mode,
+        enforce_preflight=args.real_cli,
     )
     # 依赖先报一遍：换台机器最常见的失败就是缺 skill / 缺 SAE 凭证，
     # 而那种失败原本要空转到超时才暴露。
     step(0, "诊断依赖自检")
-    for item in runner.preflight():
-        mark = "✅" if item.ok else ("❌" if item.blocking else "⚠️ ")
-        print(f"    {mark} {item.name}: {item.detail}")
-    if args.real_cli and not runner.ready():
-        print("\n依赖没齐，真实诊断跑不了。按上面的提示补齐后再试。")
-        return 2
+    if args.real_cli:
+        for item in runner.preflight():
+            mark = "✅" if item.ok else ("❌" if item.blocking else "⚠️ ")
+            print(f"    {mark} {item.name}: {item.detail}")
+        if not runner.ready():
+            print("\n依赖没齐，真实诊断跑不了。按上面的提示补齐后再试。")
+            return 2
+    else:
+        print("    离线假 CLI：不访问真实 SAE，跳过外部依赖检查")
 
     service = AlertRelayService(
         robot=RobotNotifier(FakeRegistry(), "dc:da:0c:26:9a:60", push=record_push),
@@ -234,7 +246,11 @@ async def simulate(args) -> int:
         ) as response:
             print(f"    HTTP {response.status} | toast={(await response.json())['toast']}")
 
-        step(4, f"调起本机 Claude Code 排查（最长 {args.timeout}s，只读）")
+        if fast_mode:
+            diagnosis_step = f"直接查询 SAE 日志并汇总结论（最长 {runner.timeout_seconds}s，只读）"
+        else:
+            diagnosis_step = f"调起诊断 CLI 排查（最长 {runner.timeout_seconds}s，只读）"
+        step(4, diagnosis_step)
         await service.wait_for_idle()
         detail = service.get(alert_id)
         print(f"    状态={detail['state']}")
@@ -280,12 +296,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="告警值班中继联调")
     parser.add_argument("--live", action="store_true", help="用真实配置跑，而不是模拟")
     parser.add_argument("--real-cli", action="store_true",
-                        help="模拟模式下用真的 Claude Code（会烧 token 并访问 SAE，只读）")
+                        help="模拟模式下访问真实 SAE；配合 --deep 时才使用 Claude Code")
     parser.add_argument("--alert-file", help="从文件读告警原文")
     parser.add_argument("--source-dir", action="append",
                         help="被诊断服务的源码目录，可多次指定")
     parser.add_argument("--cwd", help="诊断子进程的工作目录，默认仓库根（那里有随仓库分发的 skill）")
-    parser.add_argument("--timeout", type=float, default=600, help="诊断超时秒数")
+    parser.add_argument("--timeout", type=float, help="诊断超时秒数；默认快速 55、深度 900")
+    parser.add_argument("--deep", action="store_true",
+                        help="启用完整 skill 深挖；默认使用 60 秒内返回的快速模式")
     parser.add_argument("--tmp-dir", default="tmp", help="假 CLI 脚本落盘目录")
     args = parser.parse_args()
     os.makedirs(args.tmp_dir, exist_ok=True)

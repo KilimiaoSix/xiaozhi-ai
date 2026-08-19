@@ -188,7 +188,10 @@ def build_diagnosis_card(record: RelayRecord, diagnosis: Diagnosis) -> dict[str,
 
     elements.append(_divider())
     elements.append(
-        _note("来源：grep 代码 + 只读拉取 SAE 日志，未改任何线上对象；建议需人工执行。")
+        _note(
+            "来源：只读诊断；快速模式仅查 SAE 日志，深度模式才 grep 代码。"
+            "未改任何线上对象；建议需人工执行。"
+        )
     )
 
     return {

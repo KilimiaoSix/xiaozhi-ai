@@ -87,6 +87,21 @@ def test_defaults_are_conservative():
     assert health["auto_diagnose_on_timeout"] is False
     assert health["diagnosis"]["cli_command"] == ["claude"]
     assert health["diagnosis"]["skill"] == "diagnose-sae-alert"
+    assert health["diagnosis"]["fast_mode"] is True
+    assert health["diagnosis"]["timeout_seconds"] == 55
+
+
+def test_deep_mode_can_be_enabled_explicitly():
+    service = create_alert_relay_service(
+        {
+            "alert_relay": {
+                "enabled": True,
+                "diagnosis": {"fast_mode": False, "timeout_seconds": 900},
+            }
+        }
+    )
+    assert service._runner.fast_mode is False
+    assert service._runner.timeout_seconds == 900
 
 
 @pytest.mark.asyncio

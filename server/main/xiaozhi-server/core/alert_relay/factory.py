@@ -82,6 +82,8 @@ def create_alert_relay_service(
     feishu = _section(config, "alert_relay", "feishu")
     robot_config = _section(config, "alert_relay", "robot")
     diagnosis = _section(config, "alert_relay", "diagnosis")
+    fast_mode = bool(diagnosis.get("fast_mode", True))
+    timeout_value = diagnosis.get("timeout_seconds")
 
     bot = FeishuBot(
         base_url=str(feishu.get("base_url") or DEFAULT_BASE_URL),
@@ -108,7 +110,8 @@ def create_alert_relay_service(
         allowed_tools=_string_list(diagnosis.get("allowed_tools"))
         or list(DEFAULT_ALLOWED_TOOLS),
         extra_args=_string_list(diagnosis.get("extra_args")),
-        timeout_seconds=float(diagnosis.get("timeout_seconds", 900)),
+        timeout_seconds=float(timeout_value) if timeout_value is not None else None,
+        fast_mode=fast_mode,
         logger=logger,
     )
 

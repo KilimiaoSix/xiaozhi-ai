@@ -148,6 +148,8 @@ def test_diagnosis_card_states_it_is_read_only():
     """来源声明是 skill 输出标准的第 8 条，卡片上必须看得见。"""
     dumped = texts_of(build_diagnosis_card(make_record(), full_diagnosis()))
     assert "只读" in dumped
+    assert "快速模式仅查 SAE 日志" in dumped
+    assert "深度模式才 grep 代码" in dumped
 
 
 def test_failure_card_tells_the_operator_how_to_retry_by_hand():
