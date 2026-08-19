@@ -153,6 +153,37 @@ def test_the_no_todo_sentence_uses_the_same_configured_wording():
     assert announcement.emotion == "laughing"
 
 
+def test_items_that_read_the_same_are_said_once():
+    # 真实数据里出现过两条同文案的「授权操作通知」，念两遍像坏了
+    report = make_report(
+        top_three=[
+            ranked("m1", "回滚线上发布"),
+            ranked("m2", "授权操作通知"),
+            ranked("m3", "授权操作通知"),
+        ]
+    )
+
+    announcement = build_announcement(report)
+
+    assert announcement.text.count("授权操作通知") == 1
+    assert "今天 2 件待办" in announcement.text
+
+
+def test_deduplication_compares_what_will_actually_be_said():
+    # 截断后才同形的两条，念出来一模一样，同样只说一次
+    report = make_report(
+        top_three=[
+            ranked("m1", "授权操作通知：生产环境发布"),
+            ranked("m2", "授权操作通知：测试环境发布"),
+        ]
+    )
+
+    announcement = build_announcement(report, item_chars=6)
+
+    assert announcement.text.count("授权操作通知…") == 1
+    assert "今天 1 件待办" in announcement.text
+
+
 def test_empty_greeting_drops_the_prefix():
     # 到岗迎接已经说过「早上好」时，晨报不必再问一次好
     report = make_report(top_three=[ranked("m1", "回滚线上发布")])

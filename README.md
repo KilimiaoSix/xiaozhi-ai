@@ -141,6 +141,14 @@ cd server/main/xiaozhi-server
 python run_morning_brief_check.py
 ```
 
+机器人真的会不会念，对着在跑的 Server 用另一个脚本验（它会模拟「主人第一次坐下」，
+并把机器人应该念的那句打印出来对照）：
+
+```bash
+cd server/main/xiaozhi-server
+python run_morning_brief_announce_check.py
+```
+
 ## 告警值班中继
 
 线上告警进来后，**机器人抬头提醒人 + 飞书发卡片给值班人**；人在飞书回一句「帮我查」，
