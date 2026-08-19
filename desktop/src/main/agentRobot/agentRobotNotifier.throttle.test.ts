@@ -81,9 +81,22 @@ describe('AgentRobotNotifier 的节流与合并', () => {
     await notifier.whenIdle();
 
     expect(sent).toHaveLength(1);
-    expect(sent[0].text).toContain('3');
+    expect(sent[0].text).toBe('Claude Code 的 3 个任务完成了');
     expect(sent[0].emotion).toBe('happy');
     expect(sent[0].speak).toBe(true);
+  });
+
+  it('不同 Agent 的完成任务合并后仍会说清来源', async () => {
+    const { sent, notifier } = makeHarness();
+
+    await notifier.notify(
+      [intent('task_completed', 'a'), intent('task_completed', 'b')],
+      [task('a', { source: 'codex' }), task('b', { source: 'workbuddy' })],
+    );
+    await notifier.whenIdle();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toBe('Codex 和 WorkBuddy 的 2 个任务完成了');
   });
 
   it('不同终态各自成条，不会被错误地合并到一起', async () => {

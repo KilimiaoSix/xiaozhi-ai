@@ -3,7 +3,7 @@ import type { AgentHookDetection, AgentHookInstallResult } from '../modules/feat
 import type { AgentHooksSnapshot } from '../modules/features/coding-agent-status/agent-hooks/runtime';
 import type {
   FeishuBriefingSnapshot,
-  FeishuCliStatus,
+  FeishuConnectionStatus,
 } from '../modules/features/feishu-briefing/contracts';
 import type {
   CameraPermissionStatus,
@@ -23,6 +23,7 @@ import type {
   IncidentIpcResult,
   IncidentListResult,
 } from '../modules/features/incident-assistant/types';
+import type { WellbeingTestKind } from '../modules/features/wellbeing/contracts';
 
 export interface RuntimeInfo {
   platform: NodeJS.Platform;
@@ -59,7 +60,7 @@ export interface IncidentDesktopApi {
 }
 
 export interface FeishuDesktopApi {
-  getStatus: () => Promise<FeishuCliStatus>;
+  getStatus: () => Promise<FeishuConnectionStatus>;
   getBriefing: () => Promise<FeishuBriefingSnapshot>;
 }
 
@@ -77,6 +78,10 @@ export interface CameraDesktopApi {
   recognition: CameraRecognitionDesktopApi;
 }
 
+export interface WellbeingDesktopApi {
+  sendTest: (kind: WellbeingTestKind) => Promise<{ deviceId: string }>;
+}
+
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
@@ -84,4 +89,5 @@ export interface XiaofeiDesktopApi {
   feishu: FeishuDesktopApi;
   pomodoro: PomodoroDesktopApi;
   incident: IncidentDesktopApi;
+  wellbeing: WellbeingDesktopApi;
 }

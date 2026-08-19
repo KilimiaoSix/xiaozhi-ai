@@ -236,6 +236,7 @@ class WellbeingEngine:
                 "relaxed",
                 "休息一下",
                 "look_up" if stand else "nod",
+                speak=True,
                 restore_after=10.0,
             )
 

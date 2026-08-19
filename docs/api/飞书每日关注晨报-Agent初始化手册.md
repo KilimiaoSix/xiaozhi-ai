@@ -188,7 +188,7 @@ GET https://open.feishu.cn/open-apis/authen/v1/user_info
 Authorization: Bearer <仅保存在进程内>
 ```
 
-如果使用 `lark-cli auth login`，必须先确认 lark-cli 配置的就是本节指定应用，并确认能安全取得供本服务使用的用户令牌。仅登录 lark-cli 自己的凭证存储并不会自动配置晨报的 `.env`。
+本项目不从桌面端或其他 CLI 凭证库读取令牌。授权完成后，只将供 Server 使用的用户令牌写入下节的 `.env`。
 
 ### 5.5 写入本地凭证
 

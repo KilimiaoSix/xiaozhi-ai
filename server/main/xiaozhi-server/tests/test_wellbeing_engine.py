@@ -64,6 +64,7 @@ def test_long_work_alternates_stand_and_water_with_cooldown():
     first = engine.evaluate("desk", owner(), local(9, 50))
     assert first.kind == "long_work"
     assert "站起来" in first.text
+    assert first.speak is True
     assert engine.evaluate("desk", owner(), local(10, 39)) is None
     second = engine.evaluate("desk", owner(), local(10, 40))
     assert second.kind == "long_work"

@@ -1,3 +1,7 @@
+/** @vitest-environment jsdom */
+
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -24,6 +28,9 @@ describe('PresenceMonitoring', () => {
         }}
         metrics={metrics}
         onToggle={vi.fn()}
+        onTest={vi.fn()}
+        testingKind={null}
+        testMessage=""
       />,
     );
 
@@ -47,6 +54,9 @@ describe('PresenceMonitoring', () => {
         }}
         metrics={{ ...metrics, lastResultAt: '' }}
         onToggle={vi.fn()}
+        onTest={vi.fn()}
+        testingKind={null}
+        testMessage=""
       />,
     );
 
@@ -55,5 +65,50 @@ describe('PresenceMonitoring', () => {
     expect(markup).toContain('多张人脸');
     expect(markup).toContain('未匹配');
     expect(markup).not.toContain('%');
+  });
+
+  it('offers all care tests and sends the selected kind', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onTest = vi.fn(async () => undefined);
+
+    await act(async () => root.render(
+      <PresenceMonitoring
+        enabled={false}
+        connection="idle"
+        presence={{ state: 'starting', changed: false }}
+        identity={{
+          state: 'starting', faceCount: 0, faceDetected: false, matched: false,
+        }}
+        metrics={metrics}
+        onToggle={vi.fn()}
+        onTest={onTest}
+        testingKind={null}
+        testMessage=""
+      />,
+    ));
+
+    const labels = [...container.querySelectorAll('.camera-test-action button')]
+      .map((candidate) => candidate.textContent?.trim());
+    expect(labels).toEqual([
+      '测试久坐提醒',
+      '测试通勤安全',
+      '测试 21 点提醒',
+      '测试深夜强提醒',
+      '测试暖心加油',
+    ]);
+    const button = [...container.querySelectorAll('button')]
+      .find((candidate) => candidate.textContent?.includes('测试通勤安全'));
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Button not found: 测试通勤安全');
+    }
+    await act(async () => button.click());
+
+    expect(onTest).toHaveBeenCalledWith('commute_safety');
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
   });
 });

@@ -12,7 +12,7 @@ Electron 桌面端 ── HTTP / 摄像头 WebSocket ──> Server ── WebSo
 - 桌面端不直接连接机器人。
 - 桌面端通过 HTTP 发送工作事件，通过带背压的 WebSocket 持续发送摄像头 JPEG。
 - Server 对同一帧执行人体在场和主人核验，再通过 WebSocket 与机器人通信。
-- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook，也可通过飞书 CLI 读取当前用户的今日日程与未完成任务。
+- 桌面端已支持本机 Codex、Claude Code 和腾讯 WorkBuddy 的任务 Hook；飞书任务与日程统一由 Server 通过用户身份 OpenAPI 读取。
 
 ## 目录
 
@@ -81,22 +81,34 @@ Codex 页面内的 Computer Use 应用授权不会触发 Hook。macOS 版小飞�
 
 桌面端离线期间产生的 inbox 事件会在下次启动时恢复，但不会补播已经过期的机器人动作。当前桌面端只生成 `quiet_companion`、`task_completed`、`task_failed`、`needs_user` 预设动作意图；通过 Server HTTP 发送到 ESP32-S3 的真实链路将在后续接入。
 
-## 飞书 CLI 工作台
+## 飞书任务与会议工作台
 
-桌面端在 Electron 主进程中调用本机 `lark-cli`，渲染层只能通过只读 IPC 检查连接和刷新数据，不会执行创建、更新、完成或删除操作。当前工作台读取：
+桌面端通过 Server 的只读 HTTP 接口刷新数据；Server 使用飞书用户身份 OpenAPI，桌面机器不需要安装或配置 `lark-cli`。当前工作台读取：
 
-- 当前飞书用户身份与 CLI 版本；
+- Server 侧飞书用户凭据配置状态；
 - 当前用户主日历中的今日日程；
 - 分配给当前用户的未完成任务、所属任务清单、截止时间和任务链接。
 
-首次使用前需在终端完成飞书 CLI 配置和用户授权：
+Server 复用晨报的用户令牌配置。将令牌和当前用户 open_id 写入被 Git 忽略的
+`server/main/xiaozhi-server/data/.env`：
 
-```bash
-lark-cli config init
-lark-cli auth login --scope "task:task:read calendar:calendar:readonly"
+```dotenv
+FEISHU_USER_ACCESS_TOKEN=<user_access_token>
+FEISHU_SELF_OPEN_ID=<current_user_open_id>
 ```
 
-启动桌面端后，可在“飞书任务与会议”区域检查连接并刷新。日历或任务其中一项缺少权限时，另一项仍会正常展示，界面会列出缺失 scope 和最小权限授权命令。应用只读取结构化任务与日程字段，不保存 access token，也不采集完整飞书对话或文档内容。
+应用和用户授权需要包含：
+
+```text
+calendar:calendar:readonly
+task:task:read
+task:tasklist:read            # 仅用于显示任务所属清单名；缺少时任务仍会展示
+```
+
+启动桌面端后，可在“飞书任务与会议”区域检查连接并刷新。日历、任务或清单名称
+其中一路缺权时，已成功的数据仍会展示。Desktop 不接触飞书 access token，只持有
+可选的 Server `auth_key`；完整接口见
+[`docs/api/飞书任务与会议接口.md`](docs/api/飞书任务与会议接口.md)。
 
 ## 飞书每日关注晨报
 

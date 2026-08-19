@@ -24,7 +24,7 @@ import type {
 import type { AgentHooksSnapshot } from '../modules/features/coding-agent-status/agent-hooks/runtime';
 import type {
   FeishuBriefingSnapshot,
-  FeishuCliStatus,
+  FeishuConnectionStatus,
 } from '../modules/features/feishu-briefing/contracts';
 import { featureRuntimeContext, serverGateway } from '../modules/runtime';
 import type { FeatureDefinition } from '../shared/features';
@@ -144,7 +144,7 @@ export function App() {
   const [agentSnapshot, setAgentSnapshot] = useState(emptyAgentSnapshot);
   const [agentBusy, setAgentBusy] = useState<AgentSource | 'all' | null>(null);
   const [agentError, setAgentError] = useState('');
-  const [feishuStatus, setFeishuStatus] = useState<FeishuCliStatus | null>(null);
+  const [feishuStatus, setFeishuStatus] = useState<FeishuConnectionStatus | null>(null);
   const [feishuBriefing, setFeishuBriefing] = useState<FeishuBriefingSnapshot | null>(null);
   const [feishuBusy, setFeishuBusy] = useState(false);
   const [feishuError, setFeishuError] = useState('');
@@ -194,7 +194,7 @@ export function App() {
       })
       .catch((error: unknown) => {
         if (active) {
-          setFeishuError(error instanceof Error ? error.message : '无法连接飞书 CLI。');
+          setFeishuError(error instanceof Error ? error.message : '无法连接飞书服务。');
         }
       });
     return () => { active = false; };
@@ -285,7 +285,7 @@ export function App() {
       setFeishuStatus(status);
       if (status.state !== 'ready') setFeishuBriefing(null);
     } catch (error) {
-      setFeishuError(error instanceof Error ? error.message : '无法检查飞书 CLI。');
+      setFeishuError(error instanceof Error ? error.message : '无法检查飞书服务。');
     } finally {
       setFeishuBusy(false);
     }
@@ -587,12 +587,12 @@ export function App() {
         <section className="feishu-workspace" id="feishu-workspace">
           <div className="section-heading feishu-heading">
             <div>
-              <span className="section-index">FEISHU CLI / USER IDENTITY</span>
+              <span className="section-index">FEISHU OPENAPI / SERVER</span>
               <h2>飞书任务与会议</h2>
             </div>
             <div className="feishu-actions">
               <span className={`feishu-state state-${feishuStatus?.state ?? 'checking'}`}>
-                <i />{feishuStatus?.state === 'ready' ? 'CLI 已连接' : feishuStatus ? '需要配置' : '正在检查'}
+                <i />{feishuStatus?.state === 'ready' ? 'Server 已连接' : feishuStatus ? '需要配置' : '正在检查'}
               </span>
               <button type="button" disabled={feishuBusy} onClick={() => void checkFeishuConnection()}>
                 <PlugZap size={14} aria-hidden="true" />检查连接
@@ -607,11 +607,11 @@ export function App() {
             <div className="feishu-identity">
               <div>
                 <span>当前用户</span>
-                <strong>{feishuStatus.userName ?? '尚未识别'}</strong>
+                <strong>{feishuStatus.openId ?? '尚未配置'}</strong>
               </div>
               <div>
-                <span>CLI 版本</span>
-                <strong>{feishuStatus.cliVersion ?? '未检测到'}</strong>
+                <span>数据来源</span>
+                <strong>Server OpenAPI</strong>
               </div>
               <p>{feishuStatus.message}</p>
             </div>
@@ -622,7 +622,7 @@ export function App() {
             <div className="feishu-alert">
               <strong>需要补充只读权限</strong>
               <p>{feishuStatus.missingScopes.join('、')}</p>
-              <code>lark-cli auth login --scope &quot;{feishuStatus.missingScopes.join(' ')}&quot;</code>
+              <code>请在飞书开发者后台开通权限，并更新 Server 用户授权</code>
             </div>
           ) : null}
           {feishuBriefing?.warnings.map((warning) => (

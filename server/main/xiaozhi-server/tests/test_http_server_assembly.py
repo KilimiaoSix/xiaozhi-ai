@@ -118,6 +118,20 @@ def test_camera_observers_registered(assembled):
     assert "distraction" in names
 
 
+def test_feishu_workspace_service_and_routes_are_assembled(assembled):
+    server, _ = assembled
+
+    assert server.feishu_workspace_handler._service is server.feishu_workspace_service
+    routes = {
+        (route.method, route.resource.canonical)
+        for route in server.create_app().router.routes()
+    }
+    assert routes >= {
+        ("GET", "/xiaozhi/feishu/status"),
+        ("GET", "/xiaozhi/feishu/briefing"),
+    }
+
+
 def test_day_summary_providers_registered(assembled):
     """三个数据源槽位不接上,「总结一下今天」永远只会说兜底话术。"""
     _, _ = assembled

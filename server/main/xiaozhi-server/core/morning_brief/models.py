@@ -235,6 +235,7 @@ def normalize_calendar_event(
         source_url=_first_text(
             raw.get("source_url"),
             raw.get("event_url"),
+            raw.get("app_link"),
             vchat.get("meeting_url"),
             "https://applink.feishu.cn/client/calendar/open",
         ),

@@ -26,16 +26,20 @@ const task = (over: Partial<AgentTaskSnapshot> = {}): AgentTaskSnapshot => ({
 });
 
 describe('mapIntentToPush', () => {
-  it('任务完成时抬头点头并开口播报', () => {
-    const push = mapIntentToPush(DEVICE, intent('task_completed'), task());
+  it.each([
+    ['codex', 'Codex 的任务完成了'],
+    ['claude-code', 'Claude Code 的任务完成了'],
+    ['workbuddy', 'WorkBuddy 的任务完成了'],
+  ] as const)('%s 任务完成时播报明确的 Agent 来源', (source, expectedText) => {
+    const push = mapIntentToPush(DEVICE, intent('task_completed'), task({ source }));
 
     expect(push).toMatchObject({
       device_id: DEVICE,
+      text: expectedText,
       emotion: 'happy',
       action: 'nod',
       speak: true,
     });
-    expect(push.text).toContain('补接口参数校验');
     // 终态播完自动收场，不长期占着屏幕
     expect(push.restore_after).toBeGreaterThan(0);
   });
@@ -115,7 +119,7 @@ describe('mapIntentToPush', () => {
     expect(push.text.length).toBeLessThan(80);
   });
 
-  it('文案只用标题，不编造改动文件数或测试数', () => {
+  it('文案不编造改动文件数或测试数', () => {
     const push = mapIntentToPush(DEVICE, intent('task_completed'), task());
 
     expect(push.text).not.toMatch(/\d+\s*个文件|\d+\s*项测试/);
