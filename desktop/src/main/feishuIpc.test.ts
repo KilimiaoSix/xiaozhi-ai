@@ -14,7 +14,11 @@ describe('registerFeishuIpc', () => {
       ipcMain,
       client: {
         getStatus: async () => ({
-          state: 'ready', message: '已连接', scopes: [], missingScopes: [],
+          state: 'ready',
+          message: '已连接',
+          source: 'server_openapi',
+          requiredScopes: [],
+          missingScopes: [],
         }),
         getBriefing: async () => { throw new Error('日历未授权'); },
       },
@@ -34,4 +38,3 @@ describe('registerFeishuIpc', () => {
     expect(removed.sort()).toEqual([...handlers.keys()].sort());
   });
 });
-

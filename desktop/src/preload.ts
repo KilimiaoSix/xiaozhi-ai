@@ -7,7 +7,7 @@ import type { AgentHookDetection, AgentHookInstallResult } from './modules/featu
 import type { AgentHooksSnapshot } from './modules/features/coding-agent-status/agent-hooks/runtime';
 import type {
   FeishuBriefingSnapshot,
-  FeishuCliStatus,
+  FeishuConnectionStatus,
 } from './modules/features/feishu-briefing/contracts';
 import type {
   PomodoroCommandInput,
@@ -18,6 +18,8 @@ import type {
 import type { XiaofeiDesktopApi } from './shared/contracts';
 import { CAMERA_STREAM_CHANNELS } from './main/camera/cameraStreamIpc';
 import { POMODORO_CHANNELS } from './main/pomodoro/registerPomodoroIpc';
+import { WELLBEING_CHANNELS } from './main/wellbeing/wellbeingIpc';
+import type { WellbeingTestKind } from './modules/features/wellbeing/contracts';
 
 const invoke = async <T>(channel: string, ...args: unknown[]): Promise<T> => {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>;
@@ -80,7 +82,7 @@ const desktopApi: XiaofeiDesktopApi = {
     },
   },
   feishu: {
-    getStatus: () => invoke<FeishuCliStatus>(FEISHU_CHANNELS.status),
+    getStatus: () => invoke<FeishuConnectionStatus>(FEISHU_CHANNELS.status),
     getBriefing: () => invoke<FeishuBriefingSnapshot>(FEISHU_CHANNELS.briefing),
   },
   pomodoro: {
@@ -90,6 +92,10 @@ const desktopApi: XiaofeiDesktopApi = {
       invokeEnvelope<PomodoroStatus>(POMODORO_CHANNELS.getStatus, deviceId),
     sendCommand: (input: PomodoroCommandInput) =>
       invokeEnvelope<PomodoroStatus>(POMODORO_CHANNELS.sendCommand, input),
+  },
+  wellbeing: {
+    sendTest: (kind: WellbeingTestKind) =>
+      invoke<{ deviceId: string }>(WELLBEING_CHANNELS.testEvent, kind),
   },
 };
 

@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, systemPreferences } from 'electron'
 import path from 'node:path';
 
 import type { AgentHooksRuntime } from './modules/features/coding-agent-status/agent-hooks/runtime';
-import { LarkCliClient } from './modules/features/feishu-briefing/larkCli';
+import { FeishuHttpClient } from './modules/features/feishu-briefing/feishuHttpClient';
 import { registerAgentHooksIpc } from './main/agentHooksIpc';
 import { registerCameraIpc } from './main/camera/registerCameraIpc';
 import { registerMonitoringWindowGuard } from './main/camera/monitoringWindowGuard';
@@ -10,11 +10,14 @@ import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
 import { registerFeishuIpc } from './main/feishuIpc';
 import { PomodoroHttpClient } from './main/pomodoro/pomodoroHttpClient';
 import { registerPomodoroIpc } from './main/pomodoro/registerPomodoroIpc';
+import { registerWellbeingIpc } from './main/wellbeing/wellbeingIpc';
+import { WellbeingTestService } from './main/wellbeing/wellbeingTestService';
 
 let agentHooksRuntime: AgentHooksRuntime | undefined;
 let cleanupAgentHooksIpc: (() => void) | undefined;
 let cleanupFeishuIpc: (() => void) | undefined;
 let cleanupPomodoroIpc: (() => void) | undefined;
+let cleanupWellbeingIpc: (() => void) | undefined;
 let cameraIpc: ReturnType<typeof registerCameraIpc> | undefined;
 let isQuitting = false;
 
@@ -83,7 +86,11 @@ app.whenReady().then(() => {
   });
   cleanupFeishuIpc = registerFeishuIpc({
     ipcMain,
-    client: new LarkCliClient(),
+    client: new FeishuHttpClient(
+      fetch,
+      process.env.DESKPET_SERVER ?? 'http://127.0.0.1:8003',
+      process.env.DESKPET_SERVER_AUTH_TOKEN ?? '',
+    ),
   });
   void agentHooksRuntime.start().catch((error: unknown) => {
     console.error('Agent Hook 监控启动失败', error);
@@ -92,6 +99,10 @@ app.whenReady().then(() => {
   cleanupPomodoroIpc = registerPomodoroIpc({
     ipcMain,
     client: new PomodoroHttpClient(),
+  });
+  cleanupWellbeingIpc = registerWellbeingIpc({
+    ipcMain,
+    service: new WellbeingTestService(),
   });
   createWindow();
 
@@ -112,6 +123,8 @@ app.on('before-quit', () => {
   cleanupFeishuIpc = undefined;
   cleanupPomodoroIpc?.();
   cleanupPomodoroIpc = undefined;
+  cleanupWellbeingIpc?.();
+  cleanupWellbeingIpc = undefined;
   void agentHooksRuntime?.stop();
 });
 

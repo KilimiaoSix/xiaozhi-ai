@@ -1,17 +1,14 @@
 export type FeishuConnectionState =
   | 'ready'
-  | 'cli_missing'
-  | 'not_configured'
-  | 'needs_auth'
+  | 'configuration_required'
   | 'error';
 
-export interface FeishuCliStatus {
+export interface FeishuConnectionStatus {
   state: FeishuConnectionState;
   message: string;
-  cliVersion?: string;
-  userName?: string;
   openId?: string;
-  scopes: string[];
+  source: 'server_openapi';
+  requiredScopes: string[];
   missingScopes: string[];
 }
 
@@ -34,11 +31,10 @@ export interface FeishuTask {
 }
 
 export interface FeishuBriefingSnapshot {
-  status: FeishuCliStatus;
+  status: FeishuConnectionStatus;
   date: string;
   meetings: FeishuMeeting[];
   tasks: FeishuTask[];
   warnings: string[];
   fetchedAt: string;
 }
-

@@ -32,8 +32,16 @@ const monitoring = vi.hoisted(() => ({
   selectDevice: vi.fn(async () => undefined),
 }));
 
+const wellbeing = vi.hoisted(() => ({
+  sendTest: vi.fn(async () => ({ deviceId: 'robot-1' })),
+}));
+
 vi.mock('./context/CameraMonitoringProvider', () => ({
   useCameraMonitoring: () => monitoring,
+}));
+
+vi.mock('./services/wellbeingDesktopGateway', () => ({
+  wellbeingDesktopGateway: wellbeing,
 }));
 
 vi.mock('./components/CameraPreview', () => ({
@@ -59,6 +67,7 @@ describe('CameraPage persistent monitoring controls', () => {
     monitoring.stopMonitoring.mockClear();
     monitoring.startEnrollment.mockClear();
     monitoring.cancelEnrollment.mockClear();
+    wellbeing.sendTest.mockClear();
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     container = document.createElement('div');
     document.body.append(container);
@@ -89,5 +98,23 @@ describe('CameraPage persistent monitoring controls', () => {
     root = createRoot(container);
 
     expect(monitoring.stopMonitoring).not.toHaveBeenCalled();
+  });
+
+  it('sends the selected care test from the monitoring panel', async () => {
+    await act(async () => root.render(<CameraPage />));
+    await act(async () => findButton(container, '实时监测').click());
+    await act(async () => findButton(container, '测试久坐提醒').click());
+
+    expect(wellbeing.sendTest).toHaveBeenCalledWith('long_work');
+    expect(container.textContent).toContain('测试提醒已发送');
+  });
+
+  it('shows delivery failures next to the test button', async () => {
+    wellbeing.sendTest.mockRejectedValueOnce(new Error('没有在线机器人'));
+    await act(async () => root.render(<CameraPage />));
+    await act(async () => findButton(container, '实时监测').click());
+    await act(async () => findButton(container, '测试久坐提醒').click());
+
+    expect(container.textContent).toContain('没有在线机器人');
   });
 });

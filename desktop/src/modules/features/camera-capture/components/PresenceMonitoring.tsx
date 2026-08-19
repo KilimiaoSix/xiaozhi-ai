@@ -4,7 +4,8 @@ import type {
   RecognitionConnectionState,
   RecognitionMetrics,
 } from '../types';
-import { ShieldCheck } from 'lucide-react';
+import type { WellbeingTestKind } from '../../wellbeing/contracts';
+import { FlaskConical, ShieldCheck } from 'lucide-react';
 
 interface PresenceMonitoringProps {
   enabled: boolean;
@@ -13,7 +14,18 @@ interface PresenceMonitoringProps {
   identity: FaceRecognitionState;
   metrics: RecognitionMetrics;
   onToggle: () => void;
+  onTest: (kind: WellbeingTestKind) => void;
+  testingKind: WellbeingTestKind | null;
+  testMessage: string;
 }
+
+const testActions: Array<{ kind: WellbeingTestKind; label: string }> = [
+  { kind: 'long_work', label: '测试久坐提醒' },
+  { kind: 'commute_safety', label: '测试通勤安全' },
+  { kind: 'overtime', label: '测试 21 点提醒' },
+  { kind: 'frantic_overtime', label: '测试深夜强提醒' },
+  { kind: 'warm_encouragement', label: '测试暖心加油' },
+];
 
 const connectionLabels: Record<RecognitionConnectionState, string> = {
   idle: '已停止',
@@ -56,6 +68,9 @@ export function PresenceMonitoring({
   identity,
   metrics,
   onToggle,
+  onTest,
+  testingKind,
+  testMessage,
 }: PresenceMonitoringProps) {
   return (
     <section className="camera-control-card" aria-label="实时监测">
@@ -115,6 +130,24 @@ export function PresenceMonitoring({
         <div><span>客户端丢弃</span><strong>{metrics.clientDropped}</strong></div>
         <div><span>Server 丢弃</span><strong>{metrics.serverDropped}</strong></div>
         <div><span>最近结果</span><strong>{resultTime(metrics.lastResultAt)}</strong></div>
+      </div>
+
+      <div className="camera-test-action">
+        <div className="camera-test-buttons">
+          {testActions.map(({ kind, label }) => (
+            <button
+              key={kind}
+              type="button"
+              disabled={testingKind !== null}
+              aria-busy={testingKind === kind}
+              onClick={() => onTest(kind)}
+            >
+              <FlaskConical size={14} aria-hidden="true" />
+              {testingKind === kind ? '发送中…' : label}
+            </button>
+          ))}
+        </div>
+        <span role="status">{testMessage}</span>
       </div>
 
       <p className="camera-privacy-note">

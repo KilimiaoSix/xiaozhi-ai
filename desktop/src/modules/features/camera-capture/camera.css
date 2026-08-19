@@ -496,6 +496,46 @@
   color: #a55d00;
 }
 
+.camera-test-action {
+  display: grid;
+  min-height: 30px;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.camera-test-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.camera-test-action button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel-raised);
+  font-size: 10px;
+}
+
+.camera-test-action button:hover:not(:disabled) {
+  border-color: #7a7a80;
+  background: #fff;
+}
+
+.camera-test-action button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.camera-test-action span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .camera-privacy-note {
   display: flex;
   align-items: center;

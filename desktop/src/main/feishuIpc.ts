@@ -1,4 +1,4 @@
-import type { LarkCliClient } from '../modules/features/feishu-briefing/larkCli';
+import type { FeishuHttpClient } from '../modules/features/feishu-briefing/feishuHttpClient';
 
 export const FEISHU_CHANNELS = {
   status: 'feishu:status',
@@ -15,7 +15,7 @@ export interface FeishuIpcMainLike {
 
 interface RegisterFeishuIpcOptions {
   ipcMain: FeishuIpcMainLike;
-  client: Pick<LarkCliClient, 'getStatus' | 'getBriefing'>;
+  client: Pick<FeishuHttpClient, 'getStatus' | 'getBriefing'>;
 }
 
 type IpcResult<T> =
@@ -28,7 +28,7 @@ const safe = async <T>(operation: () => Promise<T>): Promise<IpcResult<T>> => {
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : '飞书 CLI 操作失败',
+      error: error instanceof Error ? error.message : '飞书服务操作失败',
     };
   }
 };
@@ -44,4 +44,3 @@ export const registerFeishuIpc = (options: RegisterFeishuIpcOptions): (() => voi
     options.ipcMain.removeHandler(FEISHU_CHANNELS.briefing);
   };
 };
-

@@ -6,6 +6,8 @@ import { OwnerEnrollment } from './components/OwnerEnrollment';
 import { PresenceMonitoring } from './components/PresenceMonitoring';
 import { useCameraMonitoring } from './context/CameraMonitoringProvider';
 import { cameraDesktopGateway } from './services/cameraDesktopGateway';
+import { wellbeingDesktopGateway } from './services/wellbeingDesktopGateway';
+import type { WellbeingTestKind } from '../wellbeing/contracts';
 import './camera.css';
 
 export function CameraPage() {
@@ -14,6 +16,9 @@ export function CameraPage() {
     camera.enabled ? 'monitoring' : 'enrollment',
   );
   const [displayName, setDisplayName] = useState('主人');
+  const [testingWellbeingKind, setTestingWellbeingKind] =
+    useState<WellbeingTestKind | null>(null);
+  const [wellbeingTestMessage, setWellbeingTestMessage] = useState('');
   const enrollmentActiveRef = useRef(false);
 
   const enrollmentActive = camera.enrollment.status === 'starting'
@@ -38,6 +43,22 @@ export function CameraPage() {
   const toggleMonitoring = (): void => {
     if (camera.enabled) void camera.stopMonitoring();
     else void camera.startMonitoring();
+  };
+
+  const testWellbeing = async (kind: WellbeingTestKind): Promise<void> => {
+    if (testingWellbeingKind !== null) return;
+    setTestingWellbeingKind(kind);
+    setWellbeingTestMessage('');
+    try {
+      await wellbeingDesktopGateway.sendTest(kind);
+      setWellbeingTestMessage('测试提醒已发送');
+    } catch (error) {
+      setWellbeingTestMessage(
+        error instanceof Error ? error.message : '测试提醒发送失败',
+      );
+    } finally {
+      setTestingWellbeingKind(null);
+    }
   };
 
   return (
@@ -117,6 +138,9 @@ export function CameraPage() {
             identity={camera.identity}
             metrics={camera.metrics}
             onToggle={toggleMonitoring}
+            onTest={(kind) => void testWellbeing(kind)}
+            testingKind={testingWellbeingKind}
+            testMessage={wellbeingTestMessage}
           />
         )}
 
