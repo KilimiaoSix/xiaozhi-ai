@@ -46,6 +46,8 @@ server:
 # 应用需开通：search:message、im:message:readonly、
 # im:message.p2p_msg:get_as_user、im:message.group_msg:get_as_user，
 # 启用日历源时另需 calendar:calendar:readonly。
+# 桌面“飞书任务与会议”还使用 task:task:read；显示清单名可选
+# task:tasklist:read。它复用本段用户令牌，但不受 enabled 开关影响。
 morning_brief:
   enabled: false
   base_url: https://open.feishu.cn

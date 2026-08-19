@@ -253,6 +253,95 @@ async def test_calendar_uses_primary_calendar_and_instance_view(aiohttp_client):
 
 
 @pytest.mark.asyncio
+async def test_tasks_consumes_every_page_and_only_requests_open_my_tasks(
+    aiohttp_client,
+):
+    requests = []
+
+    async def tasks(request):
+        requests.append(dict(request.query))
+        if request.query.get("page_token") == "page-2":
+            return web.json_response(
+                {
+                    "code": 0,
+                    "data": {
+                        "items": [{"guid": "task-2", "summary": "第二项"}],
+                        "has_more": False,
+                    },
+                }
+            )
+        return web.json_response(
+            {
+                "code": 0,
+                "data": {
+                    "items": [{"guid": "task-1", "summary": "第一项"}],
+                    "has_more": True,
+                    "page_token": "page-2",
+                },
+            }
+        )
+
+    client, _ = await make_feishu_client(
+        aiohttp_client,
+        [web.get("/open-apis/task/v2/tasks", tasks)],
+    )
+
+    result = await client.list_tasks(completed=False)
+
+    assert result.complete is True
+    assert result.pages == 2
+    assert [item["guid"] for item in result.items] == ["task-1", "task-2"]
+    assert requests == [
+        {
+            "page_size": "100",
+            "completed": "false",
+            "type": "my_tasks",
+            "user_id_type": "open_id",
+        },
+        {
+            "page_size": "100",
+            "completed": "false",
+            "type": "my_tasks",
+            "user_id_type": "open_id",
+            "page_token": "page-2",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tasklist_detail_returns_named_tasklist(
+    aiohttp_client,
+):
+    calls = []
+
+    async def tasklist(request):
+        calls.append((request.path, dict(request.query)))
+        return web.json_response(
+            {
+                "code": 0,
+                "data": {
+                    "tasklist": {
+                        "guid": request.match_info["tasklist_guid"],
+                        "name": "桌面精灵",
+                    }
+                },
+            }
+        )
+
+    client, _ = await make_feishu_client(
+        aiohttp_client,
+        [web.get("/open-apis/task/v2/tasklists/{tasklist_guid}", tasklist)],
+    )
+
+    result = await client.get_tasklist("list-a")
+
+    assert result == {"guid": "list-a", "name": "桌面精灵"}
+    assert calls == [
+        ("/open-apis/task/v2/tasklists/list-a", {"user_id_type": "open_id"})
+    ]
+
+
+@pytest.mark.asyncio
 async def test_api_error_is_diagnostic_without_leaking_token(aiohttp_client):
     async def search(request):
         return web.json_response(

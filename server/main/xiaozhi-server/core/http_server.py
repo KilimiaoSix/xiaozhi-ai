@@ -9,6 +9,7 @@ from core.api.owner_status_handler import OwnerStatusHandler
 from core.api.vision_handler import VisionHandler
 from core.api.event_handler import EventHandler
 from core.api.morning_brief_handler import MorningBriefHandler
+from core.api.feishu_workspace_handler import FeishuWorkspaceHandler
 from core.api.presence_handler import PresenceHandler
 from core.api.camera_stream_handler import CameraStreamHandler
 from core.api.alert_relay_handler import AlertRelayHandler
@@ -37,6 +38,8 @@ from core.incident_routes import add_incident_routes
 from core.morning_brief.announcer import create_morning_brief_announcer
 from core.morning_brief.factory import create_morning_brief_service
 from core.morning_brief_routes import add_morning_brief_routes
+from core.feishu_workspace.factory import create_feishu_workspace_service
+from core.feishu_workspace_routes import add_feishu_workspace_routes
 from core.api.pomodoro_handler import PomodoroHandler
 from core.owner_status import STATUS_LEAVE, get_owner_status_store
 from core.owner_status_reminder import OwnerStatusReminder
@@ -139,6 +142,12 @@ class SimpleHttpServer:
         self.morning_brief_handler = MorningBriefHandler(
             config,
             self.morning_brief_service,
+            logger=self.logger,
+        )
+        self.feishu_workspace_service = create_feishu_workspace_service(config)
+        self.feishu_workspace_handler = FeishuWorkspaceHandler(
+            config,
+            self.feishu_workspace_service,
             logger=self.logger,
         )
         # 早上第一次认出主人时主动播晨报，同样要按 device_id 找活跃连接
@@ -409,6 +418,7 @@ class SimpleHttpServer:
             self.camera_stream_handler,
         )
         add_morning_brief_routes(app, self.morning_brief_handler)
+        add_feishu_workspace_routes(app, self.feishu_workspace_handler)
         add_owner_status_routes(app, self.owner_status_handler)
         add_away_routes(app, self.away_summary_handler)
         add_approval_routes(app, self.approval_handler)

@@ -22,6 +22,8 @@ MESSAGE_SCOPES = (
     "im:message.group_msg:get_as_user",
 )
 CALENDAR_SCOPES = ("calendar:calendar:readonly",)
+TASK_SCOPES = ("task:task:read",)
+TASKLIST_SCOPES = ("task:tasklist:read",)
 REQUIRED_SCOPES = MESSAGE_SCOPES + CALENDAR_SCOPES
 
 
@@ -304,3 +306,54 @@ class FeishuClient:
             },
         )
         return CollectionResult(tuple(self._page_items(data)), 1, True)
+
+    async def list_tasks(self, *, completed: bool = False) -> CollectionResult:
+        """列取当前用户负责的任务，按 OpenAPI page_token 拉完。"""
+        page_token = ""
+        pages = 0
+        items: list[dict[str, Any]] = []
+        has_more = False
+
+        while pages < self.max_pages:
+            params = {
+                "page_size": 100,
+                "completed": str(bool(completed)).lower(),
+                "type": "my_tasks",
+                "user_id_type": "open_id",
+            }
+            if page_token:
+                params["page_token"] = page_token
+            data = await self._request_json(
+                "GET", "/open-apis/task/v2/tasks", params=params
+            )
+            pages += 1
+            items.extend(self._page_items(data))
+            has_more = bool(data.get("has_more"))
+            page_token = str(data.get("page_token") or "")
+            if not has_more:
+                return CollectionResult(tuple(items), pages, True)
+            if not page_token:
+                return CollectionResult(
+                    tuple(items),
+                    pages,
+                    False,
+                    error="pagination reported more data without a page token",
+                )
+
+        return CollectionResult(
+            tuple(items),
+            pages,
+            False,
+            next_page_token=page_token if has_more else "",
+            error="page limit reached before pagination completed",
+        )
+
+    async def get_tasklist(self, tasklist_guid: str) -> dict[str, Any]:
+        encoded_guid = quote(str(tasklist_guid), safe="")
+        data = await self._request_json(
+            "GET",
+            f"/open-apis/task/v2/tasklists/{encoded_guid}",
+            params={"user_id_type": "open_id"},
+        )
+        tasklist = data.get("tasklist")
+        return tasklist if isinstance(tasklist, dict) else {}

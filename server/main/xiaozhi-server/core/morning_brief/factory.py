@@ -40,7 +40,7 @@ def _read_local_env(path: Path) -> dict[str, str]:
     return values
 
 
-def create_morning_brief_service(config: dict) -> MorningBriefService:
+def load_feishu_user_settings(config: dict) -> tuple[dict, str, str]:
     brief_config = config.get("morning_brief", {})
     local_env = _read_local_env(SERVER_ROOT / "data/.env")
     token = os.environ.get("FEISHU_USER_ACCESS_TOKEN") or local_env.get(
@@ -53,13 +53,12 @@ def create_morning_brief_service(config: dict) -> MorningBriefService:
     ) or str(
         brief_config.get("self_open_id") or ""
     )
-    ledger_path = Path(
-        str(brief_config.get("ledger_path", "data/morning_brief.sqlite3"))
-    )
-    if not ledger_path.is_absolute():
-        ledger_path = SERVER_ROOT / ledger_path
+    return brief_config, token, self_open_id
 
-    client = FeishuClient(
+
+def create_feishu_client(config: dict) -> FeishuClient:
+    brief_config, token, _ = load_feishu_user_settings(config)
+    return FeishuClient(
         base_url=str(brief_config.get("base_url", DEFAULT_BASE_URL)),
         user_access_token=token,
         page_size=int(brief_config.get("page_size", 50)),
@@ -67,6 +66,17 @@ def create_morning_brief_service(config: dict) -> MorningBriefService:
         timeout_seconds=float(brief_config.get("timeout_seconds", 15)),
         calendar_enabled=bool(brief_config.get("calendar_enabled", True)),
     )
+
+
+def create_morning_brief_service(config: dict) -> MorningBriefService:
+    brief_config, _, self_open_id = load_feishu_user_settings(config)
+    ledger_path = Path(
+        str(brief_config.get("ledger_path", "data/morning_brief.sqlite3"))
+    )
+    if not ledger_path.is_absolute():
+        ledger_path = SERVER_ROOT / ledger_path
+
+    client = create_feishu_client(config)
     ledger = AttentionLedger(
         ledger_path,
         excerpt_chars=int(brief_config.get("excerpt_chars", 240)),
