@@ -67,7 +67,7 @@ describe('WellbeingTestService', () => {
     const [, init] = fetcher.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toMatchObject({
       text: '快下班啦，回去路上慢一点，注意安全。',
-      emotion: 'loving',
+      emotion: 'winking',
       status: '测试·下班平安',
       speak: true,
       silent: false,
