@@ -49,7 +49,23 @@ describe('mapIntentToPush', () => {
 
     expect(push.emotion).toBe('sad');
     expect(push.speak).toBe(true);
-    expect(push.text).toContain('pytest');
+    expect(push.text).toContain('补接口参数校验');
+  });
+
+  it('失败详情不进播报：机器人不该把报错原文念出来', () => {
+    // 真机上出现过念「Exit code 1 Traceback (m…」的情况。
+    // AGENTS.md 硬件边界写明富信息一律落到电脑屏幕，报错属于桌面端卡片。
+    const push = mapIntentToPush(
+      DEVICE,
+      intent('task_failed'),
+      task({
+        status: 'failed',
+        error: 'Exit code 1 Traceback (most recent call last):\n  File "x.py"',
+      }),
+    );
+
+    expect(push.text).not.toMatch(/Traceback|Exit code|File "/);
+    expect(push.text).toBe('补接口参数校验 失败了');
   });
 
   it('等待用户介入时歪头提醒，且不自动复位画面', () => {

@@ -91,10 +91,13 @@ export const mapIntentToPush = (
       };
 
     case 'task_failed': {
-      const reason = clip(task?.error, MAX_DETAIL);
+      // 只报「哪个任务失败了」，不念报错原文。
+      // 真机上出现过朗读「Exit code 1 Traceback (most recent call last):…」的情况——
+      // 截断后的堆栈既听不懂也很吵。AGENTS.md 硬件边界写明富信息一律落到电脑屏幕，
+      // 报错详情在桌面端的关注卡片里，那才是它该待的地方。
       return {
         device_id: deviceId,
-        text: reason ? `${title} 失败了：${reason}` : `${title} 失败了`,
+        text: `${title} 失败了`,
         emotion: 'sad',
         status: '任务失败',
         speak: true,
