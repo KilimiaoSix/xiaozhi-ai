@@ -322,6 +322,7 @@ class SimpleHttpServer:
                 trigger_seconds=float(distraction_section.get("trigger_seconds", 8.0)),
                 min_score=float(distraction_section.get("min_score", 0.4)),
                 logger=self.logger,
+                debug=bool(distraction_section.get("debug", False)),
             )
             frame_observer_hub.register("distraction", self.distraction_observer)
 

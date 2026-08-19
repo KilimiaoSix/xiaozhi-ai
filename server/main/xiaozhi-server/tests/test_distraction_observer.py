@@ -451,3 +451,81 @@ def test_build_reminder_text_under_one_minute():
 
 def test_build_reminder_text_zero_remaining():
     assert build_reminder_text(0) == "最后一分钟了，这个番茄钟就完成了。我们坚持一下？"
+
+
+# ------------------------------------------------------------ debug 诊断开关
+#
+# 真机上"手机举了半天没反应"有两种完全不同的成因，日志里必须能分开：
+#   1. 检测器压根没看到手机（画面太小/太暗/角度问题）
+#   2. 看到了但分数够不上 min_score
+# 默认关闭：正常跑 2 帧/秒，每帧一条日志会把 server.log 淹掉。
+
+def _debug_observer(detector, active_lookup, clock, *, debug, min_score=0.4):
+    return DistractionObserver(
+        active_lookup=active_lookup,
+        on_distraction=lambda _w: None,
+        detector_factory=lambda: detector,
+        min_interval_s=1.0,
+        trigger_seconds=5.0,
+        release_seconds=3.0,
+        min_score=min_score,
+        clock=clock,
+        debug=debug,
+    )
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def info(self, message, *args, **kwargs):
+        self.lines.append(str(message))
+
+    def warning(self, message, *args, **kwargs):
+        self.lines.append(str(message))
+
+    def exception(self, message, *args, **kwargs):
+        self.lines.append(str(message))
+
+
+def _run_one_frame(observer, logger, clock):
+    observer._logger = logger
+    observer.wants_frame("desktop-local", clock())
+    observer.on_frame("desktop-local", FAKE_JPEG, clock())
+
+
+def test_debug_off_stays_silent():
+    clock = ManualClock()
+    active = ActiveLookup()
+    active.set("desktop-local", True)
+    detector = FakeDetector()
+    detector.present = True
+    detector.score = 0.2  # 够不上阈值
+    logger = _RecordingLogger()
+    _run_one_frame(_debug_observer(detector, active, clock, debug=False), logger, clock)
+    assert logger.lines == []
+
+
+def test_debug_reports_below_threshold_score():
+    clock = ManualClock()
+    active = ActiveLookup()
+    active.set("desktop-local", True)
+    detector = FakeDetector()
+    detector.present = True
+    detector.score = 0.21
+    logger = _RecordingLogger()
+    _run_one_frame(_debug_observer(detector, active, clock, debug=True), logger, clock)
+    joined = "\n".join(logger.lines)
+    assert "0.21" in joined
+    assert "未达阈值" in joined
+
+
+def test_debug_reports_nothing_seen():
+    clock = ManualClock()
+    active = ActiveLookup()
+    active.set("desktop-local", True)
+    detector = FakeDetector()
+    detector.present = False
+    logger = _RecordingLogger()
+    _run_one_frame(_debug_observer(detector, active, clock, debug=True), logger, clock)
+    assert any("没看到手机" in line for line in logger.lines)

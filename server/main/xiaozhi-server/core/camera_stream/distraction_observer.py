@@ -141,6 +141,7 @@ class DistractionObserver:
         min_score: float = DEFAULT_MIN_SCORE,
         clock: Optional[Callable[[], float]] = None,
         logger=None,
+        debug: bool = False,
     ) -> None:
         self._active_lookup = active_lookup
         self._on_distraction = on_distraction
@@ -150,6 +151,10 @@ class DistractionObserver:
         self._min_score = float(min_score)
         self._clock = clock or time.monotonic
         self._logger = logger or logging.getLogger(__name__)
+        # 诊断开关：真机上「手机举了半天没反应」有两种成因——检测器压根没看到，
+        # 或者看到了但分数够不上 min_score。日志里分不开就只能靠猜。默认关闭，
+        # 因为开着是 2 帧/秒一条，会把 server.log 淹掉。
+        self._debug = bool(debug)
 
         self._states: dict[str, _WorkstationState] = {}
         self._locks: dict[str, threading.Lock] = {}
@@ -237,14 +242,39 @@ class DistractionObserver:
             self._logger.warning("分心检测：推理失败，跳过本帧", exc_info=True)
             return False
 
+        best_target = 0.0
+        seen: list[tuple[str, float]] = []
         for detection in getattr(result, "detections", []):
             for category in getattr(detection, "categories", []):
-                if (
-                    getattr(category, "category_name", None) == TARGET_CATEGORY
-                    and getattr(category, "score", 0.0) >= self._min_score
-                ):
-                    return True
-        return False
+                name = getattr(category, "category_name", None)
+                score = float(getattr(category, "score", 0.0) or 0.0)
+                seen.append((str(name), score))
+                if name == TARGET_CATEGORY and score > best_target:
+                    best_target = score
+
+        hit = best_target >= self._min_score
+        if self._debug:
+            self._log_detection(hit, best_target, seen)
+        return hit
+
+    def _log_detection(
+        self, hit: bool, best_target: float, seen: list
+    ) -> None:
+        """debug 开关下的每帧诊断。只记类别名与分数，从不记录任何帧内容。"""
+        if best_target > 0.0:
+            self._logger.info(
+                f"分心检测[debug]：看到手机 score={best_target:.2f}，"
+                f"阈值 {self._min_score:.2f}，"
+                f"{'计入累计' if hit else '未达阈值，本帧不计入'}"
+            )
+            return
+        top = ", ".join(
+            f"{name}={score:.2f}"
+            for name, score in sorted(seen, key=lambda item: -item[1])[:3]
+        )
+        self._logger.info(
+            f"分心检测[debug]：本帧没看到手机，画面里最强的目标：{top or '无'}"
+        )
 
     def _advance_state(
         self,
@@ -257,6 +287,12 @@ class DistractionObserver:
         if phone_present:
             state.accumulated_s += dt
             state.last_seen_present_at = current
+            if self._debug:
+                self._logger.info(
+                    f"分心检测[debug]：工位 {workstation_id} 累计 "
+                    f"{state.accumulated_s:.1f}s / 阈值 {self._trigger_seconds:.1f}s"
+                    f"（本次 +{dt:.1f}s，已提醒过={state.fired}）"
+                )
             if not state.fired and state.accumulated_s >= self._trigger_seconds:
                 state.fired = True
                 self._logger.info(
