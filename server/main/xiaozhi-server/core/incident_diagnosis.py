@@ -129,6 +129,10 @@ class DiagnosisRunner:
         self._claude_bin = str(section.get("claude_bin") or DEFAULT_CLAUDE_BIN)
         self._diagnosis_dir = str(section.get("diagnosis_dir") or os.getcwd())
         self._allowed_tools = _allowed_tools_arg(section.get("allowed_tools"))
+        # 诊断子进程默认吃 claude CLI 的全局默认模型。2026-08-19 演示中途撞上
+        # 「You've reached your Fable 5 limit」(HTTP 429)，整条诊断哑掉——主力模型
+        # 的额度不该把故障诊断一起拖死。留空则不传 --model，行为与接入前一致。
+        self._claude_model = str(section.get("claude_model") or "").strip()
         try:
             timeout = float(section.get("timeout_s", DEFAULT_TIMEOUT_S))
         except (TypeError, ValueError):
@@ -172,7 +176,7 @@ class DiagnosisRunner:
         )
 
     def build_argv(self, prompt: str) -> list:
-        return [
+        argv = [
             self._claude_bin,
             "-p",
             prompt,
@@ -181,6 +185,9 @@ class DiagnosisRunner:
             "--allowedTools",
             self._allowed_tools,
         ]
+        if self._claude_model:
+            argv += ["--model", self._claude_model]
+        return argv
 
     # ------------------------------------------------------------ 内部
 

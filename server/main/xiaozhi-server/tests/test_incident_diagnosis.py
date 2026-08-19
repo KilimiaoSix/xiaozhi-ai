@@ -312,3 +312,32 @@ async def test_constructor_callback_is_used_when_run_has_none():
     await runner.run(INCIDENT)
 
     assert seen == ["demo-api-abc12345"]
+
+
+# ---------------------------------------------------------------- 模型选择
+#
+# 诊断子进程默认吃 claude CLI 的全局默认模型。真机 2026-08-19 演示中途撞上
+# 「You've reached your Fable 5 limit」（HTTP 429，退出码 1，stderr 为空），
+# 整条诊断哑掉。给它一个独立的模型配置，诊断就不再被主力模型的额度拖死。
+
+
+async def test_no_model_flag_by_default():
+    """不配就不传 --model，保持吃 CLI 全局默认，行为与接入前一致。"""
+    spawn = SpawnRecorder(FakeProcess(cli_json("结论。")))
+    await build_runner(spawn).run(INCIDENT)
+    assert "--model" not in spawn.argv
+
+
+async def test_model_flag_passed_when_configured():
+    spawn = SpawnRecorder(FakeProcess(cli_json("结论。")))
+    await build_runner(spawn, claude_model="claude-opus-5").run(INCIDENT)
+    argv = spawn.argv
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "claude-opus-5"
+
+
+async def test_blank_model_is_ignored():
+    """配成空串/空白按没配处理，别把空参数塞给 CLI。"""
+    spawn = SpawnRecorder(FakeProcess(cli_json("结论。")))
+    await build_runner(spawn, claude_model="   ").run(INCIDENT)
+    assert "--model" not in spawn.argv
