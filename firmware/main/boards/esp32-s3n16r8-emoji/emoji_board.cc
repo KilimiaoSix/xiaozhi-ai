@@ -728,21 +728,28 @@ private:
             }
             return;
         }
-        if (state == kDeviceStateIdle) {
+        // listening 与 idle 同等对待：auto-listen 模式下环境人声会让设备长期停在
+        // listening（说完一轮也直接回 listening，不经过 idle），而 listening 的对话屏
+        // 只有一张待机脸、没有任何信息——按旧策略它会把倒计时顶掉且收回条件
+        // （仅认 idle）永远凑不齐，专注中的用户看到的就是"倒计时时隐时现"。
+        // speaking/connecting 等仍让屏：播报字幕和连接状态是用户需要看见的。
+        if (state == kDeviceStateIdle || state == kDeviceStateListening) {
             if (lv_scr_act() == pomodoro_screen_) {
                 pomo_idle_ticks_ = 0;
                 return;
             }
-            // idle 稳定 2 秒再收回画面：给对话收尾的 neutral 表情留出镜头，
+            // 稳定 2 秒再收回画面：给对话收尾的 neutral 表情留出镜头，
             // 也让长按切出去看脸的用户能看上一眼
             if (++pomo_idle_ticks_ >= 20) {
                 pomo_idle_ticks_ = 0;
+                ESP_LOGI(TAG, "番茄钟画面收回 (state=%d)", (int)state);
                 lv_scr_load(pomodoro_screen_);
             }
         } else {
             pomo_idle_ticks_ = 0;
             if (lv_scr_act() == pomodoro_screen_) {
-                // 对话/连接期间让屏给表情与字幕
+                // 播报/连接期间让屏给表情与字幕
+                ESP_LOGI(TAG, "番茄钟让屏 (state=%d)", (int)state);
                 SwitchScreen(is_emoji_mode_);
             }
         }
