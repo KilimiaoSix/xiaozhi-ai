@@ -29,6 +29,17 @@ const TTL_BY_ACTION: Record<RobotActionIntent['action'], number> = {
 const firstLine = (value: string): string =>
   value.split(/\r?\n/, 1)[0]?.trim() || '未命名任务';
 
+const titleFromPrompt = (source: AgentEvent['source'], prompt: string): string => {
+  if (source !== 'codex') return firstLine(prompt);
+
+  const lines = prompt.split(/\r?\n/);
+  const requestMarker = lines.findIndex((line) => line.trim() === '## My request:');
+  if (requestMarker < 0) return firstLine(prompt);
+
+  return lines.slice(requestMarker + 1).find((line) => line.trim())?.trim()
+    || firstLine(prompt);
+};
+
 const responseError = (value: unknown): string | undefined => {
   if (!value || typeof value !== 'object') return undefined;
   const record = value as Record<string, unknown>;
@@ -86,7 +97,9 @@ export class AgentTaskTracker {
       source: event.source,
       sessionId: event.sessionId,
       status: nextStatus,
-      title: prompt ? firstLine(prompt) : (existing?.title ?? `${event.source} 任务`),
+      title: prompt
+        ? titleFromPrompt(event.source, prompt)
+        : (existing?.title ?? `${event.source} 任务`),
       ...(prompt ? { prompt } : {}),
       ...(event.cwd ?? existing?.cwd ? { cwd: event.cwd ?? existing?.cwd } : {}),
       startedAt: existing?.startedAt ?? event.occurredAt,

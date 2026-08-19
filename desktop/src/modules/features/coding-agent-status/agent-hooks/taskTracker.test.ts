@@ -21,6 +21,30 @@ const createTracker = () =>
   new AgentTaskTracker(() => new Date('2026-08-18T08:05:00.000Z'));
 
 describe('AgentTaskTracker', () => {
+  it('Codex 标题读取 My request 后的真实请求', () => {
+    const tracker = createTracker();
+
+    tracker.apply(event('UserPromptSubmit', {
+      source: 'codex',
+      prompt: [
+        '# Context from my IDE setup:',
+        '',
+        '## Open tabs:',
+        '- taskTracker.ts',
+        '',
+        '## My request:',
+        '',
+        '修正 Codex 标题提取',
+        '并补充回归测试',
+      ].join('\n'),
+    }));
+
+    expect(tracker.primary()).toMatchObject({
+      source: 'codex',
+      title: '修正 Codex 标题提取',
+    });
+  });
+
   it('把任务从运行推进到等待用户再推进到完成', () => {
     const tracker = createTracker();
 
