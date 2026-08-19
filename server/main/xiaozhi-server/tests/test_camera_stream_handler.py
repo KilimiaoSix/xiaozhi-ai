@@ -141,6 +141,7 @@ async def test_monitoring_stream_returns_result_and_updates_registry(aiohttp_cli
                     "face_count": 1,
                     "face_detected": True,
                     "similarity": 0.731245,
+                    "horizontal_position": "right",
                     "threshold": 0.45,
                     "matched": True,
                 },
@@ -170,6 +171,7 @@ async def test_monitoring_stream_returns_result_and_updates_registry(aiohttp_cli
     assert result["processed_at"] == "2026-08-18T12:00:00.000Z"
     assert result["identity"]["face_detected"] is True
     assert result["identity"]["similarity"] == 0.731245
+    assert result["identity"]["horizontal_position"] == "right"
     assert result["identity"]["matched"] is True
     assert result["metrics"]["processed_frames"] == 1
     assert result["metrics"]["server_dropped"] == 0
@@ -183,6 +185,7 @@ async def test_monitoring_stream_returns_result_and_updates_registry(aiohttp_cli
         "changed": True,
         "face_count": 1,
         "similarity": 0.731245,
+        "horizontal_position": "right",
     }
     UUID(stored["event_id"])
     await ws.close()

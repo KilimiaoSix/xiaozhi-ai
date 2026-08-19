@@ -91,6 +91,8 @@ async def get_config_from_api_async(config):
     }
     # 晨报包含本机 OAuth 和最小化存储配置，不由远端智控台覆盖。
     config_data["morning_brief"] = config.get("morning_brief", {})
+    # 关怀编排包含本机工位与实体设备绑定，不由远端智控台覆盖。
+    config_data["wellbeing"] = config.get("wellbeing", {})
     auth_enabled = config_data.get("server", {}).get("auth", {}).get("enabled", False)
     # server的配置以本地为准
     if config.get("server"):

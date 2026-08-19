@@ -178,6 +178,21 @@ npm run dev
 
 主人注册连续接受 20 个合格人脸样本，以其中 18 个样本生成模板。原始帧只在内存中流转，不写入磁盘。该识别没有活体检测，只能用于低风险提醒和个性化反馈。
 
+### 本人在岗关怀
+
+完整 Server 会消费本人在岗状态并直接编排机器人：连续在岗 50 分钟时轮换提醒站立和喝水，工作日下班前提醒路上安全，21 点提醒早点下班，23 点到次日 6 点每 10 分钟强提醒一次；白天还会以 45-90 分钟随机间隔给出暖心表情。暖心互动会使用摄像头输出的左/中/右三段位置选择 `look_left`、`look_right` 或 `nod`，不保存人脸框。
+
+只有 `effective_state=present` 且 `identity.state=owner` 才触发。设备离线时不会积压，重连后也不补播。单机器人在线且 `device_id` 留空时可自动绑定；多机器人部署请在 `server/main/xiaozhi-server/data/.config.yaml` 显式配置：
+
+```yaml
+wellbeing:
+  bindings:
+    - workstation_id: desktop-local
+      device_id: "dc:da:0c:26:9a:60"
+```
+
+时间、工作日、久坐阈值、强提醒间隔和暖心间隔均可在同一配置段覆盖，字段说明见 [`docs/api/camera-presence-api.md`](docs/api/camera-presence-api.md)。
+
 ### 独立 presence-agent（兼容工具）
 
 没有桌面端的 Windows 部署仍可从仓库根目录启动独立兼容工具：
