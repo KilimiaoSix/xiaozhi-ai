@@ -94,6 +94,18 @@ describe('CameraMonitoringProvider', () => {
       value: vi.fn(async () => undefined),
     });
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    // 本仓库的 jsdom 没有可用的 localStorage 实现;装一个每用例独立的内存版,
+    // 否则监测意图会在用例间残留,后续用例挂载即自动开启监测
+    const storage = new Map<string, string>();
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => void storage.set(key, String(value)),
+        removeItem: (key: string) => void storage.delete(key),
+        clear: () => storage.clear(),
+      },
+    });
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
@@ -261,4 +273,42 @@ describe('CameraMonitoringProvider', () => {
     expect(recognition.stop).toHaveBeenCalledOnce();
     expect(streams[0].track.stop).toHaveBeenCalledOnce();
   });
+
+  describe('监测意图持久化', () => {
+    it('startMonitoring 落盘意图,stopMonitoring 清除', async () => {
+      await render();
+      await act(async () => current!.startMonitoring());
+      expect(window.localStorage.getItem('xiaofei.camera.monitoring-intent')).toBe('on');
+
+      await act(async () => current!.stopMonitoring());
+      expect(window.localStorage.getItem('xiaofei.camera.monitoring-intent')).toBe('off');
+    });
+
+    it('上次意图为 on 时挂载自动恢复监测', async () => {
+      window.localStorage.setItem('xiaofei.camera.monitoring-intent', 'on');
+      await render();
+
+      expect(recognition.start).toHaveBeenCalledWith({
+        mode: 'monitoring',
+        workstationId: 'desktop-local',
+      });
+      expect(current!.enabled).toBe(true);
+    });
+
+    it('无意图记录时挂载保持关闭(首次使用不擅自开摄像头)', async () => {
+      await render();
+
+      expect(recognition.start).not.toHaveBeenCalled();
+      expect(current!.enabled).toBe(false);
+    });
+
+    it('意图为 off 时挂载不恢复', async () => {
+      window.localStorage.setItem('xiaofei.camera.monitoring-intent', 'off');
+      await render();
+
+      expect(recognition.start).not.toHaveBeenCalled();
+      expect(current!.enabled).toBe(false);
+    });
+  });
+
 });

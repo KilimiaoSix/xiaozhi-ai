@@ -58,6 +58,17 @@ const createWindow = (): void => {
 };
 
 app.whenReady().then(() => {
+  // macOS 不会因为渲染进程调 getUserMedia 就弹摄像头授权框——必须主进程
+  // 显式请求。漏掉这步的症状极具迷惑性:getUserMedia 正常返回 live 轨道,
+  // 但永远没有一帧画面(预览全黑、readyState 停在 0),没有任何报错。
+  if (process.platform === 'darwin') {
+    const cameraAccess = systemPreferences.getMediaAccessStatus('camera');
+    if (cameraAccess !== 'granted') {
+      void systemPreferences.askForMediaAccess('camera').then((granted) => {
+        console.warn(`摄像头授权请求结果: ${granted ? '已授权' : '被拒绝'}`);
+      });
+    }
+  }
   agentHooksRuntime = createAgentHooksRuntime({
     homeDir: app.getPath('home'),
     userDataPath: app.getPath('userData'),

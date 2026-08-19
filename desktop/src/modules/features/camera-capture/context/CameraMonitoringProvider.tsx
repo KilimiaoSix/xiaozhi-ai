@@ -21,6 +21,28 @@ import type {
 
 const WORKSTATION_ID = 'desktop-local';
 
+// 监测开关承载的是「持续意图」：切页、最小化、Server 断线都不放弃监测,
+// 唯独应用重启会把它归零——服务端或应用任何一次重启都让摄像头链路静默断掉,
+// 迎接/手势审批/分心检测三个功能一起哑掉,而用户以为它还开着。
+// 意图落 localStorage,挂载时自动恢复;首次使用无记录,保持默认关闭。
+const MONITORING_INTENT_KEY = 'xiaofei.camera.monitoring-intent';
+
+const readMonitoringIntent = (): boolean => {
+  try {
+    return window.localStorage.getItem(MONITORING_INTENT_KEY) === 'on';
+  } catch {
+    return false;
+  }
+};
+
+const writeMonitoringIntent = (on: boolean): void => {
+  try {
+    window.localStorage.setItem(MONITORING_INTENT_KEY, on ? 'on' : 'off');
+  } catch {
+    // localStorage 不可用只影响下次启动的恢复,不影响本次会话
+  }
+};
+
 const initialPresence: PresenceRecognitionState = {
   state: 'starting',
   changed: false,
@@ -185,6 +207,8 @@ export function CameraMonitoringProvider({ children }: PropsWithChildren) {
     if (!stream || !video || desiredModeRef.current === null) return;
     const producer = new VideoFrameProducer({
       video,
+      // 轨道直采:窗口最小化/被遮挡时 <video> 解码被挂起,元素路径会静默断流
+      track: stream.getVideoTracks()[0],
       sendFrame: (jpeg) => window.xiaofei.camera.recognition.sendFrame(jpeg),
       onSnapshot: (snapshot) => setMetrics((current) => ({
         ...current,
@@ -321,12 +345,22 @@ export function CameraMonitoringProvider({ children }: PropsWithChildren) {
     streamRef.current = null;
   }, []);
 
+  // 启动自动恢复:上次退出前监测开着,本次挂载后直接续上。
+  // startMonitoring 内部自带错误处理(设 errorMessage + 定时重试),
+  // 这里不需要也不应该再包一层重试。
+  const startMonitoringRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    if (!readMonitoringIntent()) return;
+    void startMonitoringRef.current?.();
+  }, []);
+
   const startMonitoring = useCallback(async () => {
     if (desiredModeRef.current === 'enrollment') {
       throw new Error('请先取消主人录入');
     }
     if (desiredModeRef.current === 'monitoring') return;
     desiredModeRef.current = 'monitoring';
+    writeMonitoringIntent(true);
     setEnabled(true);
     setConnection('connecting');
     setPresence(initialPresence);
@@ -344,9 +378,14 @@ export function CameraMonitoringProvider({ children }: PropsWithChildren) {
       scheduleCameraRecovery();
     }
   }, [scheduleCameraRecovery, startCamera]);
+  // 渲染期赋值,保证挂载 effect 执行时拿到的是本次渲染的 startMonitoring
+  startMonitoringRef.current = startMonitoring;
 
   const stopMonitoring = useCallback(async () => {
     if (desiredModeRef.current !== 'monitoring') return;
+    // 只有走到这里的手动关闭才清意图;应用退出的清理路径不经过本函数,
+    // 因此「开着监测退出应用」重启后会自动恢复——这正是想要的语义
+    writeMonitoringIntent(false);
     setEnabled(false);
     await stopSession();
     setPresence(initialPresence);
