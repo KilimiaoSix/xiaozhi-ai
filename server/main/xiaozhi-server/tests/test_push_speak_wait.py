@@ -129,3 +129,70 @@ async def test_default_wait_stays_under_the_client_http_timeout():
     from core.handle.pushHandle import DEFAULT_PUSH_WAIT_SECONDS
 
     assert DEFAULT_PUSH_WAIT_SECONDS <= 3.0
+
+
+class _GateConn:
+    """push_work_event 走完 alert+speak 所需的最小连接桩。"""
+
+    class _WS:
+        async def send(self, _msg):
+            pass
+
+    class _Dlg:
+        def put(self, _msg):
+            pass
+
+    class _Log:
+        def bind(self, **_kw):
+            return self
+
+        def info(self, *_a, **_k):
+            pass
+
+        def warning(self, *_a, **_k):
+            pass
+
+    def __init__(self):
+        self.config = {}
+        self.websocket = self._WS()
+        self.dialogue = self._Dlg()
+        self.logger = self._Log()
+        self.session_id = "s"
+        self.device_id = "dc:da:0c:26:9a:60"
+        self.tts = object()          # ensure_speakable 只查非 None
+        self.client_is_speaking = False
+        self.client_have_voice = False
+
+
+def make_conn():
+    return _GateConn()
+
+
+@pytest.mark.asyncio
+async def test_successful_speak_opens_dialogue_window(monkeypatch):
+    """机器人主动开口后要打开对话窗口——告警后的"启动诊断"这类顺口应答
+    曾被对话窗口门整句丢弃,用户只能先念唤醒词才能对话,不像人话。"""
+    conn = make_conn()
+    conn.config["dialogue_gate"] = {"enabled": True, "window_seconds": 60}
+
+    async def fake_speak(c, text):
+        return True
+
+    monkeypatch.setattr("core.handle.pushHandle.speak_on_device", fake_speak)
+    from core.handle.pushHandle import push_work_event
+
+    spoke = await push_work_event(conn, text="线上告警:错误率升高", speak=True)
+
+    assert spoke is True
+    assert getattr(conn, "_dialogue_window_until", 0) > 0
+
+
+@pytest.mark.asyncio
+async def test_silent_push_does_not_open_dialogue_window(monkeypatch):
+    conn = make_conn()
+    conn.config["dialogue_gate"] = {"enabled": True, "window_seconds": 60}
+    from core.handle.pushHandle import push_work_event
+
+    await push_work_event(conn, text="静默提示", speak=False, silent=True)
+
+    assert getattr(conn, "_dialogue_window_until", None) is None

@@ -62,7 +62,21 @@ async def startToChat(conn: "ConnectionHandler", text, source: str = "asr"):
     # 这句照常往下走。
     from core.visitor_flow import visitor_flow_handle_asr
 
-    visitor_reply = visitor_flow_handle_asr(conn.device_id, text)
+    # ASR 可能给的是 {"content": "...", "language": ...} 信封（说话人格式的
+    # 解析在本函数更靠后的位置才做），留言必须取信封里的纯文本——
+    # 真机上出现过把整段 JSON 当留言存进台账、返岗时照本宣科念出来的情况。
+    visitor_text = text
+    try:
+        if text.strip().startswith("{") and text.strip().endswith("}"):
+            envelope = json.loads(text)
+            if isinstance(envelope, dict) and isinstance(
+                envelope.get("content"), str
+            ):
+                visitor_text = envelope["content"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    visitor_reply = visitor_flow_handle_asr(conn.device_id, visitor_text)
     if visitor_reply is not None:
         from core.handle.pushHandle import push_work_event
 

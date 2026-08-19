@@ -134,3 +134,55 @@ async def test_script_mode_still_wins_over_the_gate():
     await startToChat(conn, "嘿，你好呀", source="detect")
 
     assert conn.bind_checked is False
+
+
+@pytest.mark.asyncio
+async def test_visitor_message_extracts_asr_envelope_content(monkeypatch):
+    """留言必须存 ASR 信封里的纯文本。
+
+    真机上出现过把整段 {"content": ...} JSON 当留言存进台账、
+    返岗时照本宣科念出来的情况——信封解析在 startToChat 靠后的位置,
+    访客拦截在最前面,必须自己拆一次。
+    """
+    received = []
+
+    def fake_handle(device_id, text):
+        received.append(text)
+        return "记下了，他回来我就提醒。"
+
+    monkeypatch.setattr(
+        "core.visitor_flow.visitor_flow_handle_asr", fake_handle
+    )
+    pushed = []
+
+    async def fake_push(conn, **kwargs):
+        pushed.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "core.handle.pushHandle.push_work_event", fake_push
+    )
+    conn = FakeConn(gated_config())
+
+    await startToChat(
+        conn, '{"content": "日志方案发飞书了", "language": "zh", "emotion": "😶"}'
+    )
+
+    assert received == ["日志方案发飞书了"]
+    assert pushed and pushed[0]["text"] == "记下了，他回来我就提醒。"
+    # 已被留言流程消费，不再进对话门/绑定分支
+    assert conn.bind_checked is False
+
+
+@pytest.mark.asyncio
+async def test_visitor_message_plain_text_passes_through_unchanged(monkeypatch):
+    received = []
+    monkeypatch.setattr(
+        "core.visitor_flow.visitor_flow_handle_asr",
+        lambda device_id, text: received.append(text),
+    )
+    conn = FakeConn(gated_config())
+
+    await startToChat(conn, "不用了")
+
+    assert received == ["不用了"]
