@@ -277,6 +277,7 @@ async def test_sustained_absence_sleeps_once(env):
 
 @pytest.mark.asyncio
 async def test_returning_after_sustained_absence_greets_again(env):
+    """离开足够久(超过迎接冷却)再回来,才重新问候。"""
     orchestrator, clock, push_event, push_alert, _conn = env
 
     await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
@@ -285,11 +286,43 @@ async def test_returning_after_sustained_absence_greets_again(env):
     await orchestrator.on_report(
         make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
     )
-    clock.advance(5)
+    # 冷却 180s 从上次问候起算:再多等一会儿,总离开时长越过冷却
+    clock.advance(95)
     await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
 
     assert len(push_event.calls) == 2
     assert len(push_alert.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_short_cycle_return_stays_quiet(env):
+    """姿态抖动型循环:宽限期虚过+快速回归,冷却期内不再出声。
+
+    真机上坐得近会丢关键点,present/absent 秒级抖动曾造成几分钟内
+    连续迎接十几次的复读机。冷却期内只静默重挂标记。
+    """
+    orchestrator, clock, push_event, push_alert, _conn = env
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    clock.advance(2)
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+
+    # 冷却期内只静默重挂标记:不再出声,但休眠标记要复位——
+    # 下一轮确认离席仍然要能推休眠
+    assert len(push_event.calls) == 1
+    assert len(push_alert.calls) == 1
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    assert len(push_alert.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -618,7 +651,19 @@ async def test_owner_return_is_summarised_only_once():
     await orchestrator.on_report(
         make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
     )
+    # 冷却期内返岗:汇总已清空,不再有任何播报;越过冷却后才重新问候
     clock.advance(5)
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    assert push_event.texts == [
+        "早上好，今天也一起把事情搞定吧。你离开的三十五分钟里，有一条留言。",
+    ]
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    clock.advance(95)
     await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
 
     assert push_event.texts == [

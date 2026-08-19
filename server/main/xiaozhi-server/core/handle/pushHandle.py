@@ -372,8 +372,20 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
         return False
 
     try:
-        return await speak_on_device(conn, text)
+        spoke = await speak_on_device(conn, text)
     except Exception as e:
         conn.client_is_speaking = False
         conn.logger.bind(tag=TAG).warning(f"推送事件语音播报失败，已降级为仅提示: {e}")
         return False
+
+    if spoke:
+        # 机器人主动开口后设备会自动开麦,用户顺口的应答(告警后的"启动诊断"、
+        # 迎接后的吩咐)必须能进对话窗口门——门默认只认用户主动唤醒,
+        # 这里补上"机器人发起对话"的另一半,真机上告警应答曾被门整句丢弃。
+        try:
+            from core.dialogue_gate import DialogueGate
+
+            DialogueGate(conn.config).open(conn, reason="robot_spoke_first")
+        except Exception as e:
+            conn.logger.bind(tag=TAG).warning(f"播报后开对话窗口失败: {e}")
+    return spoke

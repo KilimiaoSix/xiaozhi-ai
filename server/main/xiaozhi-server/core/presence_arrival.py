@@ -37,6 +37,11 @@ VISITOR_IDENTITY_STATES = frozenset({"unknown", "multiple_faces"})
 
 DEFAULT_IDENTITY_WAIT_SECONDS = 5.0
 DEFAULT_ABSENT_GRACE_SECONDS = 90.0
+# 迎接冷却:两次问候之间的最小间隔。姿态检测在用户坐得近/角度偏时会丢关键点,
+# present/absent 秒级抖动 + 宽限期一过就复位迎接标记,真机上出现过几分钟内
+# 连续迎接十几次的"复读机"。冷却期内被复位也不再出声;返岗汇总不受冷却影响,
+# 有待播报事项时仍然送达(只是不再重复"早上好")。
+DEFAULT_GREETING_COOLDOWN_SECONDS = 180.0
 DEFAULT_GREETING_OWNER = "早上好，今天也一起把事情搞定吧。"
 DEFAULT_GREETING_GENERIC = "你好，我在这儿。"
 DEFAULT_GREETING_EMOTION = "happy"
@@ -74,6 +79,8 @@ class _WorkstationState:
     asleep: bool = False
     present_since: Optional[float] = None
     absent_since: Optional[float] = None
+    # 最近一次成功问候的时刻(clock 轴);迎接冷却的锚点
+    last_greeted_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,7 @@ class _Settings:
     workstations: dict
     identity_wait_seconds: float
     absent_grace_seconds: float
+    greeting_cooldown_seconds: float
     sleep_on_absent: bool
     greeting_owner: str
     greeting_generic: str
@@ -123,6 +131,10 @@ def _read_settings(config: dict) -> Optional[_Settings]:
         ),
         absent_grace_seconds=_positive_float(
             section.get("absent_grace_seconds"), DEFAULT_ABSENT_GRACE_SECONDS
+        ),
+        greeting_cooldown_seconds=_positive_float(
+            section.get("greeting_cooldown_seconds"),
+            DEFAULT_GREETING_COOLDOWN_SECONDS,
         ),
         sleep_on_absent=bool(section.get("sleep_on_absent", True)),
         greeting_owner=str(section.get("greeting_owner") or DEFAULT_GREETING_OWNER),
@@ -246,7 +258,21 @@ class PresenceArrivalOrchestrator:
         is_owner = identity_state == "owner"
         # 流程五：返岗汇总接在迎接语后面，一条推送说完，不拆成两次播报
         summary = self._compose_away_summary() if is_owner else None
-        if summary:
+
+        # 迎接冷却:姿态抖动会让宽限期虚过、迎接标记被复位,没有冷却就会
+        # 循环打招呼。冷却期内:无汇总 → 静默重挂标记;有汇总 → 只播汇总。
+        in_cooldown = (
+            state.last_greeted_at is not None
+            and (now - state.last_greeted_at)
+            < self._settings.greeting_cooldown_seconds
+        )
+        if in_cooldown:
+            if summary is None:
+                state.greeted = True
+                state.asleep = False
+                return
+            greeting = summary
+        elif summary:
             greeting = _join_sentences(greeting, summary)
 
         conn = self._resolve_conn(device_id)
@@ -273,6 +299,7 @@ class PresenceArrivalOrchestrator:
             # 回滚标记，让下一条上报还能再试一次，否则一次抖动就永久丢掉这次迎接
             state.greeted = False
             raise
+        state.last_greeted_at = now
         if is_owner:
             # 只有推送成功之后才清账：先清后推的话，一次断线就把同事的留言吞了
             self._settle_return(reported=bool(summary))
