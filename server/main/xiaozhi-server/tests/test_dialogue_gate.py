@@ -6,7 +6,7 @@
 主动推送的播报全被忙态吞掉。本模块就是那道准入门。
 """
 
-from core.dialogue_gate import DialogueGate
+from core.dialogue_gate import DialogueGate, window_open
 
 
 class FakeMessage:
@@ -301,3 +301,20 @@ def test_no_wake_words_configured_still_gates_on_explicit_open():
     assert gate.allow(conn, "无关人声") is False
     gate.open(conn, "按键")
     assert gate.allow(conn, "按键之后说的话") is True
+
+
+def test_window_open_follows_gate_lifecycle():
+    """window_open 是给休眠链路看的只读探针：开门为真，超时回假。"""
+    clock = Clock()
+    gate = DialogueGate({"dialogue_gate": {"enabled": True, "window_seconds": 60}}, clock=clock)
+    conn = FakeConn({})
+
+    assert window_open(conn, clock=clock) is False
+    gate.open(conn, "唤醒词")
+    assert window_open(conn, clock=clock) is True
+    clock.advance(61)
+    assert window_open(conn, clock=clock) is False
+
+
+def test_window_open_ignores_conn_without_window_attr():
+    assert window_open(object()) is False

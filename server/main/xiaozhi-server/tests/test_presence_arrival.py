@@ -1115,3 +1115,130 @@ def test_factory_builds_orchestrator_when_configured():
 
 def test_factory_returns_none_when_section_absent():
     assert create_presence_arrival_orchestrator({}, FakeRegistry(object())) is None
+
+
+# ------------------------------------------- 语音对话活跃时推迟离席判定
+
+class VoiceProbe:
+    """可切换结果的语音活跃探针，记录每次调用参数。"""
+
+    def __init__(self, active=False) -> None:
+        self.active = active
+        self.calls = []
+
+    def __call__(self, conn, within_seconds):
+        self.calls.append((conn, within_seconds))
+        return self.active
+
+
+def build_voice(*, probe, ledger=None, conn=None, registry=None, **config_overrides):
+    conn = object() if conn is None else conn
+    clock = FakeClock()
+    push_event = Recorder()
+    push_alert = Recorder()
+    base_state = BaseStateRecorder()
+    orchestrator = PresenceArrivalOrchestrator(
+        make_config(absent_grace_seconds=45, **config_overrides),
+        registry or FakeRegistry(conn),
+        push_event=push_event,
+        push_alert=push_alert,
+        set_base_state=base_state,
+        clock=clock,
+        away_ledger=ledger,
+        voice_active_probe=probe,
+    )
+    return orchestrator, clock, push_event, push_alert, base_state
+
+
+@pytest.mark.asyncio
+async def test_voice_active_defers_absent_confirmation():
+    """真机 8-19 实录：低头凑近机器人说话会丢姿态，摄像头连报 absent，
+    45 秒宽限期内喊了三次唤醒词照样被判「持续无人」——休眠画面顶掉聆听画面，
+    离席台账还把人在场的时段记成「离席期间」。语音活跃必须推迟整套判定。"""
+    conn = object()
+    ledger = FakeAwayLedger()
+    probe = VoiceProbe(active=True)
+    orchestrator, clock, push_event, push_alert, base_state = build_voice(
+        probe=probe, ledger=ledger, conn=conn, voice_active_seconds=25
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(45)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    assert push_alert.calls == []  # 没推休眠画面
+    assert ledger.marked_away == 0  # 没开离席窗口
+    assert "休眠" not in base_state.statuses  # 基态没切休眠
+    assert probe.calls == [(conn, 25.0)]  # 探针拿到的是配置的回看窗口
+
+
+@pytest.mark.asyncio
+async def test_absence_confirmed_after_voice_quiets_down():
+    """语音停了不立刻睡：从推迟点重新走满一个宽限期才确认离席。"""
+    ledger = FakeAwayLedger()
+    probe = VoiceProbe(active=True)
+    orchestrator, clock, _push_event, push_alert, _base_state = build_voice(
+        probe=probe, ledger=ledger
+    )
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(45)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    assert push_alert.calls == []  # 语音活跃，推迟并重置计时
+
+    probe.active = False
+    clock.advance(30)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    assert push_alert.calls == []  # 重置后的宽限期还没走满
+
+    clock.advance(15)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    assert len(push_alert.calls) == 1  # 走满宽限期，休眠照常
+    assert ledger.marked_away == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_device_skips_voice_probe():
+    """设备不在线就没有语音证据可看，判定走原路（基态照记，推送自然跳过）。"""
+    ledger = FakeAwayLedger()
+    probe = VoiceProbe(active=True)
+    orchestrator, clock, _push_event, push_alert, base_state = build_voice(
+        probe=probe, ledger=ledger, registry=FakeRegistry(None)
+    )
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(45)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    assert probe.calls == []  # 没有连接就不问语音
+    assert ledger.marked_away == 1  # 离席判定照旧
+    assert "休眠" in base_state.statuses  # 基态照样切休眠
+    assert push_alert.calls == []  # 离线本来就推不了
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_falls_back_to_camera_only():
+    """探针坏了不能让设备永远睡不着：按无语音处理，判定走原路。"""
+    def boom(conn, within_seconds):
+        raise RuntimeError("conn attr missing")
+
+    orchestrator, clock, _push_event, push_alert, _base_state = build_voice(probe=boom)
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(45)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    assert len(push_alert.calls) == 1

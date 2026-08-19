@@ -48,6 +48,18 @@ _WINDOW_ATTR = "_dialogue_window_until"
 _FOLLOWUP_ATTR = "_dialogue_followup_until"
 
 
+def window_open(conn, clock: Optional[Callable[[], float]] = None) -> bool:
+    """对话窗口当前是否开着（唤醒后等提问 / 连续对话滑动期内）。
+
+    给休眠链路等旁观者用的只读探针：窗口属性的名字与时间轴（monotonic）
+    是本模块的内部约定，外部别直接摸属性。
+    """
+    deadline = getattr(conn, _WINDOW_ATTR, None)
+    if deadline is None:
+        return False
+    return (clock or time.monotonic)() < deadline
+
+
 def _effective_text(text: str) -> str:
     """ASR 可能给 {"content": "...", "speaker": ...} 信封，匹配要用纯文本。
 

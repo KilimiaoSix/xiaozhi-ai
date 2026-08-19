@@ -61,7 +61,9 @@ class EventHandler(BaseHandler):
         """推送一条工作事件到指定设备。
 
         Body: {"device_id": 必填, "text": 必填, "emotion": 可选, "status": 可选,
-               "speak": 可选, "restore_after": 可选（秒，到点把画面恢复到设备基态）}
+               "speak": 可选, "restore_after": 可选（秒，到点把画面恢复到设备基态）,
+               "open_dialogue": 可选（默认 false。播报后是否留对话窗口等用户应答；
+               本接口大多承接自动化事件流水，默认不开窗，想对话的推送显式传 true）}
         """
         if not self._authorized(request):
             return self._json_response({"ok": False, "message": "unauthorized"}, 401)
@@ -105,6 +107,7 @@ class EventHandler(BaseHandler):
                 idle_animation=(bool(data["idle_animation"])
                                 if "idle_animation" in data else None),
                 silent=bool(data.get("silent", False)),
+                open_dialogue=bool(data.get("open_dialogue", False)),
             )
 
         try:

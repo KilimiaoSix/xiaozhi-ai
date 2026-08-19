@@ -37,6 +37,12 @@ VISITOR_IDENTITY_STATES = frozenset({"unknown", "multiple_faces"})
 
 DEFAULT_IDENTITY_WAIT_SECONDS = 5.0
 DEFAULT_ABSENT_GRACE_SECONDS = 90.0
+# 语音对话活跃的回看窗口:宽限期满时,设备上正在播报/正在拾音/最近这么多秒内
+# 说过话/对话窗口开着,都算「人还在」,推迟离席确认并重置计时。低头凑近机器人
+# 说话时姿态关键点会丢(is_present 要求肩膀可见),摄像头的 absent 在这种场景
+# 不可信;真机 8-19 实录:45 秒宽限期内喊了三次唤醒词照样被判「持续无人」,
+# 休眠画面把聆听画面顶掉,用户误以为麦克风被关了。
+DEFAULT_VOICE_ACTIVE_SECONDS = 60.0
 # 迎接冷却:两次问候之间的最小间隔。姿态检测在用户坐得近/角度偏时会丢关键点,
 # present/absent 秒级抖动 + 宽限期一过就复位迎接标记,真机上出现过几分钟内
 # 连续迎接十几次的"复读机"。冷却期内被复位也不再出声;返岗汇总不受冷却影响,
@@ -69,6 +75,12 @@ def _default_set_base_state(device_id: str, status: str, message: str, emotion: 
     set_base_state(device_id, status, message, emotion)
 
 
+def _default_voice_active_probe(conn, within_seconds: float) -> bool:
+    from core.handle.pushHandle import voice_session_active
+
+    return voice_session_active(conn, within_seconds)
+
+
 def _join_sentences(first: str, second: str) -> str:
     """迎接语 + 返岗汇总拼成一条播报，缺句号就补一个，避免两句黏成一坨。"""
     first = first.rstrip()
@@ -94,6 +106,7 @@ class _Settings:
     workstations: dict
     identity_wait_seconds: float
     absent_grace_seconds: float
+    voice_active_seconds: float
     greeting_cooldown_seconds: float
     sleep_on_absent: bool
     greeting_owner: str
@@ -138,6 +151,9 @@ def _read_settings(config: dict) -> Optional[_Settings]:
         absent_grace_seconds=_positive_float(
             section.get("absent_grace_seconds"), DEFAULT_ABSENT_GRACE_SECONDS
         ),
+        voice_active_seconds=_positive_float(
+            section.get("voice_active_seconds"), DEFAULT_VOICE_ACTIVE_SECONDS
+        ),
         greeting_cooldown_seconds=_positive_float(
             section.get("greeting_cooldown_seconds"),
             DEFAULT_GREETING_COOLDOWN_SECONDS,
@@ -174,6 +190,7 @@ class PresenceArrivalOrchestrator:
         push_event: Optional[Callable] = None,
         push_alert: Optional[Callable] = None,
         set_base_state: Optional[Callable] = None,
+        voice_active_probe: Optional[Callable] = None,
         clock: Optional[Callable[[], float]] = None,
         logger=None,
         settings: Optional[_Settings] = None,
@@ -188,6 +205,7 @@ class PresenceArrivalOrchestrator:
         self._push_event = push_event or _default_push_event
         self._push_alert = push_alert or _default_push_alert
         self._set_base_state = set_base_state or _default_set_base_state
+        self._voice_active_probe = voice_active_probe or _default_voice_active_probe
         self._clock = clock or time.monotonic
         self._logger = logger or logging.getLogger(__name__)
         self._states: dict[str, _WorkstationState] = {}
@@ -420,6 +438,18 @@ class PresenceArrivalOrchestrator:
             # 宽限期内：可能只是弯腰捡东西，别急着睡，也别复位到岗标记
             return
 
+        # 摄像头说没人，但设备上的语音对话还活跃：低头凑近机器人说话时姿态
+        # 关键点会丢，这种 absent 不可信。把语音活动当在场证据、重置离席计时，
+        # 否则休眠画面会顶掉聆听画面（用户误以为麦克风被关了），台账还会把
+        # 人在场的时段记成「离席期间」、回归时再错误地重新迎接一遍。
+        conn = self._resolve_conn(device_id)
+        if conn is not None and self._voice_is_active(conn):
+            state.absent_since = now
+            self._logger.info(
+                f"设备 {device_id} 语音对话仍活跃，摄像头离席判定已推迟"
+            )
+            return
+
         # 确认是真的离开了，复位到岗周期，下次回来重新迎接
         state.greeted = False
         # 流程五：从这一刻起的事件才算「离席期间发生的」，回来要汇总
@@ -459,6 +489,16 @@ class PresenceArrivalOrchestrator:
             state.asleep = False
             raise
         self._logger.info(f"工位持续无人，设备 {device_id} 已进入休眠")
+
+    def _voice_is_active(self, conn) -> bool:
+        try:
+            return bool(
+                self._voice_active_probe(conn, self._settings.voice_active_seconds)
+            )
+        except Exception as e:
+            # 探针坏了不能让设备永远睡不着，按无语音处理
+            self._logger.warning(f"语音活跃探测失败，按无语音处理: {e}")
+            return False
 
     def _resolve_conn(self, device_id: str):
         if self._device_registry is None:

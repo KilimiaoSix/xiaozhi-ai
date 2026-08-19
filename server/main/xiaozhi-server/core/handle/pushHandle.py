@@ -121,6 +121,33 @@ def device_busy_reason(conn) -> Optional[str]:
     return None
 
 
+def voice_session_active(conn, within_seconds: float, clock=None) -> bool:
+    """设备上的语音对话是否活跃：正在播报、正在拾到人声、最近 within_seconds
+    秒内说过话，或对话窗口开着（唤醒词刚喊过、还在等问题）。
+
+    presence 休眠链路用它判断「摄像头说没人，但语音说明人还在」。刻意不看
+    last_activity_time——那个时间戳被设备 30 秒一条的 ping 心跳刷新，
+    安静挂机也永远“活跃”。clock 返回秒（time.time 口径），与
+    vad_last_voice_time 的毫秒对齐后比较。
+    """
+    import time as _time
+
+    if getattr(conn, "client_is_speaking", False):
+        return True
+    if getattr(conn, "client_have_voice", False):
+        return True
+
+    last_voice_ms = getattr(conn, "vad_last_voice_time", 0.0) or 0.0
+    if last_voice_ms > 0:
+        now_ms = (clock or _time.time)() * 1000
+        if now_ms - last_voice_ms < within_seconds * 1000:
+            return True
+
+    from core.dialogue_gate import window_open
+
+    return window_open(conn)
+
+
 # 推送要出声时的等待策略。默认 3 秒：桌面端推送客户端的 HTTP 超时是 5 秒，
 # 服务端等待必须明显短于它，否则调用方先超时，等待就白做了。
 # 想等更久必须同步放宽调用方超时。
@@ -336,10 +363,14 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
                           restore_after: Optional[float] = None,
                           action: Optional[str] = None,
                           idle_animation: Optional[bool] = None,
-                          silent: bool = False) -> bool:
+                          silent: bool = False,
+                          open_dialogue: bool = True) -> bool:
     """推送一条工作事件，返回是否完成了语音播报。
 
     restore_after 传正数时，该秒数之后把画面恢复到设备基态；不传则保持覆盖式行为。
+    open_dialogue 决定播报后要不要开对话窗口（等用户顺口应答）：告警、迎接这类
+    对话型推送要开；通知型推送（coding agent 事件流水）必须关，否则高频推送
+    会把 60 秒窗口顶成常开，环境人声随便进 LLM，单次对话名存实亡。
     """
     await push_alert_to_device(conn, text, emotion, status, silent=silent)
 
@@ -378,7 +409,7 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
         conn.logger.bind(tag=TAG).warning(f"推送事件语音播报失败，已降级为仅提示: {e}")
         return False
 
-    if spoke:
+    if spoke and open_dialogue:
         # 机器人主动开口后设备会自动开麦,用户顺口的应答(告警后的"启动诊断"、
         # 迎接后的吩咐)必须能进对话窗口门——门默认只认用户主动唤醒,
         # 这里补上"机器人发起对话"的另一半,真机上告警应答曾被门整句丢弃。

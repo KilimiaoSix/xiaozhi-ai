@@ -116,6 +116,8 @@ Codex / Claude Code / WorkBuddy          摄像头
   "emotion": "happy",                 // 21 种表情之一，默认 neutral
   "status": "任务完成",                // 状态栏文字
   "speak": false,                     // 是否 TTS 播报；设备忙时自动降级为纯提示
+  "open_dialogue": false,             // 播报后是否留对话窗口等用户应答；默认 false，
+                                      // 事件流水别开，否则高频推送等于门常开
   "silent": false,                    // 抑制提示音
   "action": "nod",                    // 机器人动作，见下表
   "restore_after": 6,                 // N 秒后恢复到设备基态

@@ -34,9 +34,24 @@ async def handleAudioMessage(conn: "ConnectionHandler", pcm_frame):
     await conn.asr.receive_audio(conn, pcm_frame, have_voice)
 
 
+def wakeup_resume_vad_seconds(config) -> float:
+    """唤醒应答后 VAD 静默期的时长；缺配或非法值回退上游原值 2 秒。
+
+    本板（无 AEC）播报期间麦克风不采音，这段静默只需盖住应答的混响尾音。
+    上游的 2 秒会把「请讲」之后用户立刻说的第一句整段吞掉——单次对话下
+    表现为「唤醒后提问没反应，像是麦克风关了」。
+    """
+    raw = (config or {}).get("wakeup_resume_vad_seconds", 2.0)
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return 2.0
+    return parsed if parsed >= 0 else 2.0
+
+
 async def resume_vad_detection(conn: "ConnectionHandler"):
-    # 等待2秒后恢复VAD检测
-    await asyncio.sleep(2)
+    # 静默期过后恢复VAD检测
+    await asyncio.sleep(wakeup_resume_vad_seconds(conn.config))
     conn.just_woken_up = False
 
 
