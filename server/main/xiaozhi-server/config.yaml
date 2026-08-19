@@ -65,6 +65,32 @@ morning_brief:
   excerpt_retention_days: 7
   resolved_retention_days: 30
 
+# 基于摄像头本人核验的关怀提醒。只有 identity.state=owner 时触发；设备离线不补发。
+wellbeing:
+  enabled: true
+  timezone: Asia/Shanghai
+  bindings:
+    # device_id 留空时仅在恰好一台机器人在线时自动绑定。
+    - workstation_id: desktop-local
+      device_id: ""
+  workdays: [1, 2, 3, 4, 5]
+  workday_end: "18:00"
+  commute_advance_minutes: 10
+  long_work_minutes: 50
+  break_reset_minutes: 5
+  long_work_cooldown_minutes: 50
+  overtime_start: "21:00"
+  overtime_window_minutes: 30
+  frantic_start: "23:00"
+  frantic_end: "06:00"
+  frantic_interval_minutes: 10
+  warm_start: "09:30"
+  warm_end: "20:30"
+  warm_interval_min_minutes: 45
+  warm_interval_max_minutes: 90
+  warm_quiet_minutes: 20
+  poll_seconds: 5
+
 log:
   # 设置控制台输出的日志格式，时间、日志级别、标签、消息
   log_format: "<green>{time:YYMMDD HH:mm:ss}</green>[{version}_{selected_module}][<light-blue>{extra[tag]}</light-blue>]-<level>{level}</level>-<light-green>{message}</light-green>"

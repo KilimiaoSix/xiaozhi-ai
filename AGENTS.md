@@ -48,13 +48,14 @@ Codex / Claude Code / WorkBuddy          摄像头
 
 ### server/ — 主要大脑
 
-系统里唯一同时面向外部事件源和机器人硬件的组件。四件事：
+系统里唯一同时面向外部事件源和机器人硬件的组件。六件事：
 
 1. **完整的语音对话智能体。** 进程启动时按 `selected_module` 实例化 VAD / ASR / LLM / Intent / Memory 五类 provider 并在所有连接间共享（`core/websocket_server.py`）。每条设备连接持有一个 `ConnectionHandler`，其 `chat()`（`core/connection.py`）是流式主循环：查记忆 → 拼上下文 → 带 functions 调 LLM → 边流式解析边灌 TTS 队列 → 并发执行工具调用 → 结果写回历史后最多递归 5 层。
 2. **ESP32-S3 的唯一通信对端。** `ws://host:8000/xiaozhi/v1/`，自定义 JSON 协议 + 裸 Opus 二进制帧。
 3. **外部工作事件入口。** `POST /xiaozhi/event/push` 按 `device_id` 从 `DeviceRegistry` 查到活跃连接后直接下发。这条路径**不经过 LLM**，只把文本写进对话历史供后续追问；"该不该打扰、配什么表情动作"由调用方决定。
 4. **在岗状态汇聚。** 接收 `POST /xiaozhi/presence/report` 并在内存维护每工位最新状态，超 30 秒无上报派生为 `stale`。
 5. **桌面摄像头识别。** `GET /xiaozhi/presence/stream` 升级为 WebSocket，接收桌面 JPEG 流，在同一解码帧上运行 MediaPipe Pose 与 YuNet/SFace，并把稳定状态写入同一个 PresenceRegistry。
+6. **本人在岗关怀编排。** 后台规则每 5 秒消费配置工位的 PresenceRegistry 状态，仅对 `present + owner` 触发久坐、下班、加班和随机暖心提醒；暖心动作可使用人脸框量化后的 `left/center/right` 三段位置。规则不经过 LLM，设备离线不积压，重连不补发。
 
 ### desktop/ — 事件采集与看板
 
@@ -146,7 +147,6 @@ Codex / Claude Code / WorkBuddy          摄像头
 这些是真实缺口，不是待办清单里的空话。动手前先确认是否已被别人补上：
 
 1. **desktop 的事件到不了 Server。** 它算出的 `RobotActionIntent` 只在界面打印，没有任何代码把它发给 Server。"编码 Agent 事件 → 机器人反应"这条主链路中间是断的。
-2. **在岗状态没有消费方。** desktop/presence-agent → Server 已跑通，但 Server 收下后只存进内存 Registry，没有 LLM 工具、推送编排或固件动作读过它。
 
 ## 项目约定
 

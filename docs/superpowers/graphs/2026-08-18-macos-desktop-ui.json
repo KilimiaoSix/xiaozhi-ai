@@ -1,0 +1,543 @@
+{
+  "schema_version": 1,
+  "id": "macos-desktop-ui",
+  "title": "工伴 macOS 桌面界面重构",
+  "spec": "../specs/2026-08-18-macos-desktop-ui-design.md",
+  "plan": "../plans/2026-08-18-macos-desktop-ui.md",
+  "entry": "shell",
+  "required_gates": [
+    "verify"
+  ],
+  "nodes": [
+    {
+      "id": "shell",
+      "title": "实现共享 App Shell",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "approved-spec-and-plan",
+        "baseline-screenshot"
+      ],
+      "outputs": [
+        "sidebar-test",
+        "shared-shell",
+        "icon-dependency"
+      ],
+      "pass_condition": "共享侧栏 focused RED/GREEN 测试通过且页面切换接入 App",
+      "handler_skill": "superpowers:test-driven-development",
+      "required": true
+    },
+    {
+      "id": "surfaces",
+      "title": "统一全部桌面界面",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "shared-shell",
+        "visual-token-spec"
+      ],
+      "outputs": [
+        "dashboard-ui",
+        "camera-ui",
+        "state-styles"
+      ],
+      "pass_condition": "今天与摄像头全部现有状态使用同一 macOS 视觉系统且 focused tests 通过",
+      "handler_skill": "frontend-design",
+      "required": true
+    },
+    {
+      "id": "verify",
+      "title": "验证功能、构建与视觉",
+      "type": "gate",
+      "owner": "main-agent",
+      "inputs": [
+        "dashboard-ui",
+        "camera-ui"
+      ],
+      "outputs": [
+        "test-output",
+        "typecheck-output",
+        "package-output",
+        "electron-visual-evidence"
+      ],
+      "pass_condition": "全量测试、类型检查、Electron 打包和两个页面真实窗口检查全部通过",
+      "handler_skill": "superpowers:verification-before-completion",
+      "required": true
+    },
+    {
+      "id": "rework",
+      "title": "修复验证失败",
+      "type": "action",
+      "owner": "main-agent",
+      "inputs": [
+        "failure-evidence"
+      ],
+      "outputs": [
+        "minimal-correction"
+      ],
+      "pass_condition": "失败根因已定位并可重新运行验证",
+      "handler_skill": "superpowers:systematic-debugging",
+      "required": false
+    },
+    {
+      "id": "approval",
+      "title": "批准重大范围变化",
+      "type": "approval",
+      "owner": "user",
+      "inputs": [
+        "updated-spec-plan-graph"
+      ],
+      "outputs": [
+        "approval-evidence"
+      ],
+      "pass_condition": "用户批准修改后的范围",
+      "required": false
+    },
+    {
+      "id": "success",
+      "title": "完成界面重构",
+      "type": "terminal",
+      "owner": "main-agent",
+      "inputs": [
+        "required-gates"
+      ],
+      "outputs": [
+        "uncommitted-review-ready-diff"
+      ],
+      "pass_condition": "所需验证门通过且无 Git commit",
+      "outcome": "success",
+      "required": true
+    },
+    {
+      "id": "stopped",
+      "title": "停止并报告阻塞",
+      "type": "terminal",
+      "owner": "main-agent",
+      "inputs": [
+        "blocker-or-retry-exhaustion"
+      ],
+      "outputs": [
+        "blocked-report"
+      ],
+      "pass_condition": "阻塞及现有证据已报告",
+      "outcome": "stopped",
+      "required": false
+    }
+  ],
+  "edges": [
+    {
+      "from": "shell",
+      "to": "surfaces",
+      "event": "pass"
+    },
+    {
+      "from": "shell",
+      "to": "rework",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "shell",
+      "to": "approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "shell",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "surfaces",
+      "to": "verify",
+      "event": "pass"
+    },
+    {
+      "from": "surfaces",
+      "to": "rework",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "surfaces",
+      "to": "approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "surfaces",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "verify",
+      "to": "success",
+      "event": "pass"
+    },
+    {
+      "from": "verify",
+      "to": "rework",
+      "event": "fail",
+      "max_traversals": 2
+    },
+    {
+      "from": "verify",
+      "to": "approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "verify",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "rework",
+      "to": "verify",
+      "event": "pass",
+      "max_traversals": 2
+    },
+    {
+      "from": "rework",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "rework",
+      "to": "approval",
+      "event": "scope_change"
+    },
+    {
+      "from": "rework",
+      "to": "stopped",
+      "event": "blocked"
+    },
+    {
+      "from": "approval",
+      "to": "shell",
+      "event": "pass",
+      "max_traversals": 1
+    },
+    {
+      "from": "approval",
+      "to": "stopped",
+      "event": "fail"
+    },
+    {
+      "from": "approval",
+      "to": "stopped",
+      "event": "blocked"
+    }
+  ],
+  "runtime": {
+    "definition_hash": "b8747d446f08a8ffdf0b6bbfa7cd1a67c7c46e1f76611d6a022fb66920bceddb",
+    "initialization_evidence": "用户明确要求自行选择最优方案并持续实现到完成，不中途询问，且不提交",
+    "statuses": {
+      "shell": "passed",
+      "surfaces": "passed",
+      "verify": "passed",
+      "rework": "blocked",
+      "approval": "blocked",
+      "success": "passed",
+      "stopped": "blocked"
+    },
+    "edge_traversals": {
+      "0:shell:pass:surfaces": 1,
+      "4:surfaces:pass:verify": 1,
+      "8:verify:pass:success": 1
+    },
+    "history": [
+      {
+        "seq": 1,
+        "timestamp": "2026-08-18T14:16:41.390453+00:00",
+        "node": "shell",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "shell": "ready",
+          "surfaces": "pending",
+          "verify": "pending",
+          "rework": "pending",
+          "approval": "pending",
+          "success": "pending",
+          "stopped": "pending"
+        },
+        "statuses_after": {
+          "shell": "running",
+          "surfaces": "pending",
+          "verify": "pending",
+          "rework": "pending",
+          "approval": "pending",
+          "success": "pending",
+          "stopped": "pending"
+        },
+        "edge_traversals_before": {},
+        "edge_traversals_after": {},
+        "prev_hash": "",
+        "hash": "eae6fc04e4ffe2da5bea8ed207ce4d15c127a4d3388c6ad9b3c4361ed6b5648a"
+      },
+      {
+        "seq": 2,
+        "timestamp": "2026-08-18T14:18:19.605862+00:00",
+        "node": "shell",
+        "event": "pass",
+        "evidence": "AppSidebar RED failed on missing component; GREEN: 1/1 test passed; npm run typecheck exited 0; App now renders both pages inside shared shell",
+        "output": "desktop/src/renderer/components/AppSidebar.tsx",
+        "activated": [
+          "surfaces"
+        ],
+        "statuses_before": {
+          "shell": "running",
+          "surfaces": "pending",
+          "verify": "pending",
+          "rework": "pending",
+          "approval": "pending",
+          "success": "pending",
+          "stopped": "pending"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "ready",
+          "verify": "pending",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {},
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1
+        },
+        "prev_hash": "eae6fc04e4ffe2da5bea8ed207ce4d15c127a4d3388c6ad9b3c4361ed6b5648a",
+        "hash": "7d2f65062b2c70b73af1ee651996fd91c1b3f6d2dbeea86018618c787bcaf788"
+      },
+      {
+        "seq": 3,
+        "timestamp": "2026-08-18T14:18:20.013359+00:00",
+        "node": "surfaces",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "shell": "passed",
+          "surfaces": "ready",
+          "verify": "pending",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "running",
+          "verify": "pending",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:shell:pass:surfaces": 1
+        },
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1
+        },
+        "prev_hash": "7d2f65062b2c70b73af1ee651996fd91c1b3f6d2dbeea86018618c787bcaf788",
+        "hash": "dbe90872c50ee1c886ea01bf368010a4fa225b5377265897555452cc73fd1e36"
+      },
+      {
+        "seq": 4,
+        "timestamp": "2026-08-18T14:26:28.723623+00:00",
+        "node": "surfaces",
+        "event": "pass",
+        "evidence": "focused UI tests: 5 files/9 tests passed; typecheck exit 0; Electron screenshots verified dashboard top/bottom, camera enrollment and monitoring states; navigation, segmented control, scrolling, and local save interaction worked",
+        "output": "desktop renderer macOS visual system",
+        "activated": [
+          "verify"
+        ],
+        "statuses_before": {
+          "shell": "passed",
+          "surfaces": "running",
+          "verify": "pending",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "ready",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:shell:pass:surfaces": 1
+        },
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1
+        },
+        "prev_hash": "dbe90872c50ee1c886ea01bf368010a4fa225b5377265897555452cc73fd1e36",
+        "hash": "ecdea349176ac3067f6a1197238e65ae8dfaacf73d75798f9ddd552bf2bb291b"
+      },
+      {
+        "seq": 5,
+        "timestamp": "2026-08-18T14:26:29.139389+00:00",
+        "node": "verify",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "ready",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "running",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1
+        },
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1
+        },
+        "prev_hash": "ecdea349176ac3067f6a1197238e65ae8dfaacf73d75798f9ddd552bf2bb291b",
+        "hash": "d29173f934519fb488af057b29ed12090219efed32cdaa4e6094e8795814079d"
+      },
+      {
+        "seq": 6,
+        "timestamp": "2026-08-18T14:27:15.900997+00:00",
+        "node": "verify",
+        "event": "pass",
+        "evidence": "npm test: 36 files/120 tests passed; npm run typecheck: exit 0; npm run package: arm64 darwin package succeeded; git diff --check: exit 0; Electron visual QA covered both pages, tabs, scrolling, and local save interaction",
+        "output": "fresh verification evidence",
+        "activated": [
+          "success"
+        ],
+        "statuses_before": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "running",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "pending",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "passed",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "ready",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1
+        },
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1,
+          "8:verify:pass:success": 1
+        },
+        "prev_hash": "d29173f934519fb488af057b29ed12090219efed32cdaa4e6094e8795814079d",
+        "hash": "2b168b09eb655396b61ed71aea43db6daccd170b74efe28a17a80d8c3ce22976"
+      },
+      {
+        "seq": 7,
+        "timestamp": "2026-08-18T14:27:16.306352+00:00",
+        "node": "success",
+        "event": "start",
+        "evidence": "",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "passed",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "ready",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "passed",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "running",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1,
+          "8:verify:pass:success": 1
+        },
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1,
+          "8:verify:pass:success": 1
+        },
+        "prev_hash": "2b168b09eb655396b61ed71aea43db6daccd170b74efe28a17a80d8c3ce22976",
+        "hash": "d4709cbb169c9edc2a84a7289ef6141ec83796c61fa74bc6dc42f13513f96fdb"
+      },
+      {
+        "seq": 8,
+        "timestamp": "2026-08-18T14:27:16.574835+00:00",
+        "node": "success",
+        "event": "pass",
+        "evidence": "all required gates passed; review-ready diff remains uncommitted",
+        "output": "",
+        "activated": [],
+        "statuses_before": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "passed",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "running",
+          "stopped": "blocked"
+        },
+        "statuses_after": {
+          "shell": "passed",
+          "surfaces": "passed",
+          "verify": "passed",
+          "rework": "blocked",
+          "approval": "blocked",
+          "success": "passed",
+          "stopped": "blocked"
+        },
+        "edge_traversals_before": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1,
+          "8:verify:pass:success": 1
+        },
+        "edge_traversals_after": {
+          "0:shell:pass:surfaces": 1,
+          "4:surfaces:pass:verify": 1,
+          "8:verify:pass:success": 1
+        },
+        "prev_hash": "d4709cbb169c9edc2a84a7289ef6141ec83796c61fa74bc6dc42f13513f96fdb",
+        "hash": "a55d015ee130dca44c4131c51e3463463b81aac4f9d5832335dc77b3b203687b"
+      }
+    ]
+  }
+}

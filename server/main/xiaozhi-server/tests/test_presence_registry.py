@@ -86,6 +86,37 @@ def test_optional_identity_round_trips_and_legacy_payload_remains_valid(payload)
     assert registry.get("desk-test")["identity"]["state"] == "owner"
 
 
+def test_owner_horizontal_position_round_trips_without_face_geometry(payload):
+    payload["identity"] = {
+        "state": "owner",
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 1,
+        "similarity": 0.8,
+        "horizontal_position": "left",
+    }
+    registry = PresenceRegistry()
+
+    registry.accept(parse(payload))
+
+    assert registry.get("desk-test")["identity"]["horizontal_position"] == "left"
+
+
+@pytest.mark.parametrize("position", ["up", 1, True])
+def test_rejects_invalid_owner_horizontal_position(payload, position):
+    payload["identity"] = {
+        "state": "owner",
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 1,
+        "similarity": 0.8,
+        "horizontal_position": position,
+    }
+
+    with pytest.raises(PresenceValidationError, match="horizontal_position"):
+        parse(payload)
+
+
 def test_accepts_identity_only_transition_reason(payload):
     payload.update(
         state="present",

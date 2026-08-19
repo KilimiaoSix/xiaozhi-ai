@@ -68,7 +68,9 @@ IDENTITY_STATES = frozenset(
 IDENTITY_REQUIRED_FIELDS = frozenset(
     {"state", "previous_state", "changed", "face_count"}
 )
-IDENTITY_OPTIONAL_FIELDS = frozenset({"similarity", "camera"})
+IDENTITY_OPTIONAL_FIELDS = frozenset(
+    {"similarity", "camera", "horizontal_position"}
+)
 
 
 class PresenceValidationError(ValueError):
@@ -225,6 +227,15 @@ def _validate_identity(value: Any) -> dict[str, Any]:
             raise PresenceValidationError(
                 "identity camera must be a nonnegative integer for camera_error"
             )
+
+    horizontal_position = identity.get("horizontal_position")
+    if horizontal_position is not None and (
+        state not in {"owner", "unknown"}
+        or horizontal_position not in {"left", "center", "right"}
+    ):
+        raise PresenceValidationError(
+            "identity horizontal_position must be left, center, or right for owner/unknown"
+        )
     return identity
 
 

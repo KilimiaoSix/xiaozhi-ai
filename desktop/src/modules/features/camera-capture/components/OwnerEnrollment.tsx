@@ -1,4 +1,5 @@
 import type { EnrollmentState } from '../types';
+import { Check, RotateCcw, ScanFace, X } from 'lucide-react';
 
 interface OwnerEnrollmentProps {
   displayName: string;
@@ -72,11 +73,11 @@ export function OwnerEnrollment({
       <div className="camera-actions">
         {active ? (
           <button className="camera-secondary-button" type="button" onClick={onCancel}>
-            取消注册
+            <X size={14} aria-hidden="true" />取消注册
           </button>
         ) : enrollment.status === 'success' ? (
           <button className="camera-secondary-button" type="button" onClick={onReset}>
-            重新录入
+            <RotateCcw size={14} aria-hidden="true" />重新录入
           </button>
         ) : (
           <button
@@ -85,13 +86,14 @@ export function OwnerEnrollment({
             onClick={onStart}
             disabled={disabled || !displayName.trim()}
           >
-            开始注册
+            <ScanFace size={14} aria-hidden="true" />开始注册
           </button>
         )}
       </div>
 
       {enrollment.status === 'success' && (
         <div className="camera-enrollment-result">
+          <Check size={15} aria-hidden="true" />
           <span>{enrollment.sampleCount} 个有效样本已生成主人模板</span>
           <code>{enrollment.sampleId}</code>
         </div>

@@ -137,8 +137,26 @@ FEISHU_USER_ACCESS_TOKEN=<token> FEISHU_SELF_OPEN_ID=<open_id> \
 - 依赖：`server/main/xiaozhi-server/requirements.txt`
 - 部署方式、管理后台与各模块说明见 [`server/README.md`](server/README.md) 与 [`server/docs/`](server/docs/)。
 
+macOS 本地开发统一使用仓库根目录的管理脚本。双击 `server.command` 或不带参数运行时默认启动完整 Server：
+
 ```bash
-cd server/main/xiaozhi-server && python app.py
+./server.command start
+./server.command status
+./server.command logs
+./server.command restart
+./server.command stop
+```
+
+首次运行先执行 `./server.command doctor`。脚本固定使用
+`server/main/xiaozhi-server/.venv/bin/python`，并在启动前检查 Python 3.10、Opus、FFmpeg、配置文件和默认端口。后台进程 PID 与日志位于被 Git 忽略的
+`server/main/xiaozhi-server/tmp/launcher/`。如配置修改了默认端口，可通过
+`XIAOFEI_WS_PORT` 和 `XIAOFEI_HTTP_PORT` 覆盖脚本的端口检查。
+
+需要直接调试 Python 进程时仍可运行底层入口：
+
+```bash
+cd server/main/xiaozhi-server
+.venv/bin/python app.py
 ```
 
 摄像头识别统一运行在 Server 的 Python 3.10 进程中，不需要额外 Python worker。已有 Server 虚拟环境增加摄像头依赖：
@@ -177,6 +195,21 @@ npm run dev
 ```
 
 主人注册连续接受 20 个合格人脸样本，以其中 18 个样本生成模板。原始帧只在内存中流转，不写入磁盘。该识别没有活体检测，只能用于低风险提醒和个性化反馈。
+
+### 本人在岗关怀
+
+完整 Server 会消费本人在岗状态并直接编排机器人：连续在岗 50 分钟时轮换提醒站立和喝水，工作日下班前提醒路上安全，21 点提醒早点下班，23 点到次日 6 点每 10 分钟强提醒一次；白天还会以 45-90 分钟随机间隔给出暖心表情。暖心互动会使用摄像头输出的左/中/右三段位置选择 `look_left`、`look_right` 或 `nod`，不保存人脸框。
+
+只有 `effective_state=present` 且 `identity.state=owner` 才触发。设备离线时不会积压，重连后也不补播。单机器人在线且 `device_id` 留空时可自动绑定；多机器人部署请在 `server/main/xiaozhi-server/data/.config.yaml` 显式配置：
+
+```yaml
+wellbeing:
+  bindings:
+    - workstation_id: desktop-local
+      device_id: "dc:da:0c:26:9a:60"
+```
+
+时间、工作日、久坐阈值、强提醒间隔和暖心间隔均可在同一配置段覆盖，字段说明见 [`docs/api/camera-presence-api.md`](docs/api/camera-presence-api.md)。
 
 ### 独立 presence-agent（兼容工具）
 

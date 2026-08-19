@@ -40,6 +40,7 @@ _REGISTRY_IDENTITY = {
     "face_count",
     "similarity",
     "camera",
+    "horizontal_position",
 }
 
 
