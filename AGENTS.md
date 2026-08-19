@@ -48,7 +48,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 
 ### server/ — 主要大脑
 
-系统里唯一同时面向外部事件源和机器人硬件的组件。六件事：
+系统里唯一同时面向外部事件源和机器人硬件的组件。七件事：
 
 1. **完整的语音对话智能体。** 进程启动时按 `selected_module` 实例化 VAD / ASR / LLM / Intent / Memory 五类 provider 并在所有连接间共享（`core/websocket_server.py`）。每条设备连接持有一个 `ConnectionHandler`，其 `chat()`（`core/connection.py`）是流式主循环：查记忆 → 拼上下文 → 带 functions 调 LLM → 边流式解析边灌 TTS 队列 → 并发执行工具调用 → 结果写回历史后最多递归 5 层。
 2. **ESP32-S3 的唯一通信对端。** `ws://host:8000/xiaozhi/v1/`，自定义 JSON 协议 + 裸 Opus 二进制帧。
@@ -56,6 +56,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 4. **在岗状态汇聚。** 接收 `POST /xiaozhi/presence/report` 并在内存维护每工位最新状态，超 30 秒无上报派生为 `stale`。
 5. **桌面摄像头识别。** `GET /xiaozhi/presence/stream` 升级为 WebSocket，接收桌面 JPEG 流，在同一解码帧上运行 MediaPipe Pose 与 YuNet/SFace，并把稳定状态写入同一个 PresenceRegistry。
 6. **本人在岗关怀编排。** 后台规则每 5 秒消费配置工位的 PresenceRegistry 状态，仅对 `present + owner` 触发久坐、下班、加班和随机暖心提醒；暖心动作可使用人脸框量化后的 `left/center/right` 三段位置。规则不经过 LLM，设备离线不积压，重连不补发。
+7. **飞书晨报播报。** 工作日 08:00–09:30 窗口内 PresenceRegistry 第一次出现 `present + owner` 时扫一次飞书，把按优先级排好的前三条待办压成一句话推给机器人并 TTS 播报，每工位每天一次。排序仍是 `core/morning_brief/ranking.py` 的确定性规则，不经过 LLM；机器人不在线时不发起扫描，只在窗口内隔一分钟再看设备回来没有。
 
 ### desktop/ — 事件采集与看板
 

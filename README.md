@@ -118,6 +118,8 @@ im:message.group_msg:get_as_user
 calendar:calendar:readonly       # 仅日历源需要，拿不到就设 calendar_enabled: false
 ```
 
+开启后还有一条不用点按钮的路径：工作日 08:00–09:30 内，摄像头第一次认出主人（`present + owner`）时自动扫一次，把按优先级排好的前三条待办压成一句话推给机器人并念出来，每天一次。机器人不在线时不发起扫描，窗口内隔一分钟再看设备回来没有。改 `morning_brief.announce` 段可调时间窗、生效星期、称呼与状态栏文案、表情、条数和工位绑定（改完重启生效），`announce.enabled: false` 只关播报、保留手工预览。
+
 从开通权限到本机联调的完整步骤、常见错误码和接口字段说明见
 [`docs/api/飞书每日关注晨报接口.md`](docs/api/飞书每日关注晨报接口.md)，
 编码 Agent 为同组织新成员自动配置时见
