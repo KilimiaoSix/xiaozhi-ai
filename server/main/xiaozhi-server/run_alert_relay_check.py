@@ -23,7 +23,7 @@ from aiohttp import web
 
 from config.config_loader import read_config, get_project_dir
 from core.alert_relay.diagnosis_runner import ClaudeCodeRunner
-from core.alert_relay.factory import create_alert_relay_service
+from core.alert_relay.factory import create_alert_relay_service, default_diagnosis_cwd
 from core.alert_relay.feishu_bot import FeishuBot
 from core.alert_relay.robot import RobotNotifier
 from core.alert_relay.service import AlertRelayService
@@ -154,6 +154,22 @@ async def simulate(args) -> int:
     cli_command = ["claude"] if args.real_cli else canned_cli(args.tmp_dir)
     print(f"诊断 CLI: {' '.join(cli_command)}" + ("（真 Claude Code）" if args.real_cli else "（假 CLI）"))
 
+    runner = ClaudeCodeRunner(
+        cli_command=cli_command,
+        source_dirs=[path for path in args.source_dir or []],
+        cwd=args.cwd or default_diagnosis_cwd(),
+        timeout_seconds=float(args.timeout),
+    )
+    # 依赖先报一遍：换台机器最常见的失败就是缺 skill / 缺 SAE 凭证，
+    # 而那种失败原本要空转到超时才暴露。
+    step(0, "诊断依赖自检")
+    for item in runner.preflight():
+        mark = "✅" if item.ok else ("❌" if item.blocking else "⚠️ ")
+        print(f"    {mark} {item.name}: {item.detail}")
+    if args.real_cli and not runner.ready():
+        print("\n依赖没齐，真实诊断跑不了。按上面的提示补齐后再试。")
+        return 2
+
     service = AlertRelayService(
         robot=RobotNotifier(FakeRegistry(), "dc:da:0c:26:9a:60", push=record_push),
         feishu_bot=FeishuBot(
@@ -161,11 +177,7 @@ async def simulate(args) -> int:
             app_id="cli_fake",
             app_secret="fake",
         ),
-        runner=ClaudeCodeRunner(
-            cli_command=cli_command,
-            source_dirs=[path for path in args.source_dir or []],
-            timeout_seconds=float(args.timeout),
-        ),
+        runner=runner,
         receive_id="ou_oncall",
         enabled=True,
     )
@@ -272,6 +284,7 @@ def main() -> int:
     parser.add_argument("--alert-file", help="从文件读告警原文")
     parser.add_argument("--source-dir", action="append",
                         help="被诊断服务的源码目录，可多次指定")
+    parser.add_argument("--cwd", help="诊断子进程的工作目录，默认仓库根（那里有随仓库分发的 skill）")
     parser.add_argument("--timeout", type=float, default=600, help="诊断超时秒数")
     parser.add_argument("--tmp-dir", default="tmp", help="假 CLI 脚本落盘目录")
     args = parser.parse_args()

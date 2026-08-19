@@ -153,6 +153,14 @@ Claude Code 同机部署，且那台机器能连内网 SAE。
 完整配置、状态机、硬件语汇和失败模式见
 [`docs/api/告警值班中继接口.md`](docs/api/告警值班中继接口.md)。
 
+诊断用的 skill 和跨平台日志脚本随仓库分发在
+[`.claude/skills/diagnose-sae-alert/`](.claude/skills/diagnose-sae-alert/)，
+克隆下来就有，不依赖任何个人机器上的配置。换机器只需要三样：装 Claude Code、
+配 `SAE_AUTHORIZATION='Bearer <jwt>'`（或写进 `~/.sae/sae-token.env`）、
+把被诊断服务的源码目录填进 `alert_relay.diagnosis.source_dirs`。缺哪样，
+`GET /xiaozhi/alert/health` 和 `run_alert_relay_check.py` 的第 0 步都会直接列出来，
+真实告警也会**秒级失败**并在卡片上写明，不会空转到超时。
+
 改完代码可以先跑一遍全链路模拟（假飞书 + 假机器人，秒级）：
 
 ```bash

@@ -100,12 +100,18 @@ alert_relay:
   diagnosis:
     # 本机 Claude Code 的启动命令，可写成 "claude" 或 ["npx", "claude"]
     cli_command: ["claude"]
+    # skill 随仓库分发在 .claude/skills/<name>/，别人克隆就有，不依赖个人目录
     skill: diagnose-sae-alert
     # 留空则用 CLI 默认模型
     model: ""
-    # 被诊断服务的源码目录，会以 --add-dir 挂进子进程工作区
+    # 被诊断服务的源码目录，会以 --add-dir 挂进子进程工作区。
+    # 不填也能跑，但诊断只剩日志一条腿，why.code 给不出 file:line。
     source_dirs: []
+    # 留空 = 仓库根。必须能看到 .claude/skills，否则子进程找不到 skill。
     cwd: ""
+    # 拉日志的凭证不在这里配：设环境变量 SAE_AUTHORIZATION='Bearer <jwt>'，
+    # 或写进 ~/.sae/sae-token.env。换机器部署时先看 GET /xiaozhi/alert/health
+    # 的 diagnosis.prerequisites，缺什么会直接列出来。
     timeout_seconds: 900
     permission_mode: dontAsk
     # dontAsk 会拒掉不在白名单里的工具。PowerShell 不能删：skill 靠它跑 sae.ps1 拉日志。

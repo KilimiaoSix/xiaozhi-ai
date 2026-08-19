@@ -72,6 +72,28 @@ curl -X POST http://127.0.0.1:8003/xiaozhi/alert/ingest \
 `shocked → happy → thinking → confident`，最后播报「查清了：……」。
 源码没挂载时 `why.code` 会写成「未挂载源码」，这也说明 `source_dirs` 必须配对。
 
+## 换机器验证（2026-08-19，来自真实反馈）
+
+把分支拿到另一台 Mac 上，**单测和假 CLI 链路都能跑，真实告警诊断却空转到超时失败**。
+原因是诊断依赖两样只存在于作者 Windows 机器上的东西：个人目录里的
+`~/.claude/skills/diagnose-sae-alert`，和它调用的 Windows 专用 `sae.ps1`。
+仓库里一份都没有，所以别人克隆下来必然跑不了。
+
+三处修改：
+
+1. **诊断能力随仓库分发。** 新增 `.claude/skills/diagnose-sae-alert/`，其中
+   `scripts/sae_logs.py` 是 `sae.ps1` + `fetch_prod_logs.py` 的跨平台替代——纯标准库、
+   只发 GET、三个平台通用；凭证仍只从环境变量或 `~/.sae` 读，不入库。
+2. **缺依赖秒级失败。** `ClaudeCodeRunner.preflight()` 检查 CLI / skill / SAE 凭证
+   （硬性）和 source_dirs（降级警告），任一硬性项缺失就不起子进程，直接回失败卡片
+   列出缺什么。超时失败最难判——看着像模型慢，实际是依赖压根不存在。
+3. **工作目录默认改成仓库根**，否则 Claude Code 找不到项目级 skill。
+
+验证方式：把个人的两个 skill 临时改名藏起来（模拟别人的电脑），只留仓库自带的那份，
+用真 Claude Code 跑 `run_alert_relay_check.py --real-cli` —— **全链路打通**，
+诊断基于真实日志给出时间轴（18:15:47 提交 → engine 空回调 → 18:19:10 超时 200 秒判失败）。
+跑完自动还原个人 skill。
+
 ## 风险
 
 - **只有一块开发板**：硬件那段先用假 conn 单测覆盖，真机验证攒到最后一次性做。

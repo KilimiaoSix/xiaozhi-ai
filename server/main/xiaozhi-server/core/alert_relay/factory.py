@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from pathlib import Path
 from typing import Any, Mapping
 
 from core.alert_relay.diagnosis_runner import (
@@ -19,6 +20,22 @@ from core.alert_relay.diagnosis_runner import (
 from core.alert_relay.feishu_bot import DEFAULT_BASE_URL, FeishuBot
 from core.alert_relay.robot import RobotNotifier
 from core.alert_relay.service import AlertRelayService
+
+
+# server/main/xiaozhi-server/core/alert_relay/factory.py → 仓库根
+REPO_ROOT = Path(__file__).resolve().parents[5]
+
+
+def default_diagnosis_cwd() -> str:
+    """诊断子进程的默认工作目录：仓库根。
+
+    随仓库分发的 skill 在 `<仓库根>/.claude/skills/` 下，Claude Code 只会在工作目录
+    这一侧找项目级 skill。默认跑在 `server/main/xiaozhi-server` 里的话，别人克隆下来
+    照样找不到 skill——这正是「换台电脑就跑不起来」的成因之一。
+    """
+    if (REPO_ROOT / ".claude" / "skills").is_dir():
+        return str(REPO_ROOT)
+    return ""
 
 
 def _section(config: Mapping[str, Any], *path: str) -> dict[str, Any]:
@@ -86,7 +103,7 @@ def create_alert_relay_service(
         skill=str(diagnosis.get("skill") or DEFAULT_SKILL),
         model=str(diagnosis.get("model") or ""),
         source_dirs=_string_list(diagnosis.get("source_dirs")),
-        cwd=str(diagnosis.get("cwd") or ""),
+        cwd=str(diagnosis.get("cwd") or default_diagnosis_cwd()),
         permission_mode=str(diagnosis.get("permission_mode") or "dontAsk"),
         allowed_tools=_string_list(diagnosis.get("allowed_tools"))
         or list(DEFAULT_ALLOWED_TOOLS),

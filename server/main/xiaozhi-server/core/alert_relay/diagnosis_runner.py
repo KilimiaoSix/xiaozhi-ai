@@ -18,6 +18,7 @@ import shlex
 import shutil
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core.alert_relay.models import AlertEvent, Diagnosis, DiagnosisFormatError
@@ -55,6 +56,29 @@ PROMPT_TEMPLATE = """请使用 {skill} skill 诊断下面这条 i讯飞 SAE 告�
 已解析出的字段（与原文冲突时以原文为准）：
 {facts}
 """
+
+
+# 凭证文件：与 skill 里 sae_logs.py 认的是同两个位置，别在两处各写一套。
+SAE_TOKEN_FILE = ".sae/sae-token.env"
+SAE_COOKIE_FILE = ".sae/auth.env"
+
+
+@dataclass(frozen=True)
+class Prerequisite:
+    """一项诊断前置条件。blocking=False 表示缺了只是降级，不该拦着不跑。"""
+
+    name: str
+    ok: bool
+    detail: str
+    blocking: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "ok": self.ok,
+            "detail": self.detail,
+            "blocking": self.blocking,
+        }
 
 
 @dataclass(frozen=True)
@@ -146,6 +170,7 @@ class ClaudeCodeRunner:
         return bool(self.cli_command)
 
     def health(self) -> dict[str, Any]:
+        prerequisites = self.preflight()
         return {
             "cli_command": list(self.cli_command),
             "skill": self.skill,
@@ -153,7 +178,117 @@ class ClaudeCodeRunner:
             "source_dirs": list(self.source_dirs),
             "timeout_seconds": self.timeout_seconds,
             "permission_mode": self.permission_mode,
+            "cwd": self.cwd,
+            "ready": all(item.ok for item in prerequisites if item.blocking),
+            "prerequisites": [item.to_dict() for item in prerequisites],
         }
+
+    # ------------------------------------------------------------ 就绪度自检
+
+    def _skill_search_paths(self) -> list[Path]:
+        """先看仓库自带的，再看个人目录的。
+
+        顺序不能反：仓库那份是随代码分发、别人克隆就有的；个人目录那份只在
+        某台机器上存在。真实事故就是只有个人那份，换台 Mac 就查不了。
+        """
+        paths = []
+        if self.cwd:
+            paths.append(Path(self.cwd) / ".claude" / "skills" / self.skill / "SKILL.md")
+        paths.append(Path.home() / ".claude" / "skills" / self.skill / "SKILL.md")
+        return paths
+
+    @staticmethod
+    def _env_file_has_value(path: Path, key: str) -> bool:
+        try:
+            content = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            return False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            name, _, value = stripped.partition("=")
+            if name.strip() == key and value.strip():
+                return True
+        return False
+
+    def _check_credentials(self) -> Prerequisite:
+        if os.environ.get("SAE_AUTHORIZATION") or os.environ.get("SAE_COOKIE"):
+            return Prerequisite("sae_credentials", True, "来自环境变量")
+        home = Path.home()
+        for relative, key in (
+            (SAE_TOKEN_FILE, "SAE_AUTHORIZATION"),
+            (SAE_COOKIE_FILE, "SAE_COOKIE"),
+        ):
+            candidate = home / relative
+            if self._env_file_has_value(candidate, key):
+                return Prerequisite("sae_credentials", True, f"来自 {candidate}")
+        return Prerequisite(
+            "sae_credentials",
+            False,
+            "拉不到 SAE 日志：请设环境变量 SAE_AUTHORIZATION='Bearer <jwt>'，"
+            f"或在 ~/{SAE_TOKEN_FILE} 写入一行 SAE_AUTHORIZATION=Bearer <jwt>",
+        )
+
+    def preflight(self) -> list[Prerequisite]:
+        """开跑前把依赖点清一遍。
+
+        缺依赖时子进程往往不会立刻报错，而是让 agent 白查一通直到超时——
+        那种失败最难判：看着像模型慢，其实是依赖压根不存在。
+        """
+        items: list[Prerequisite] = []
+
+        head = self.cli_command[0] if self.cli_command else ""
+        resolved = shutil.which(head) if head else None
+        items.append(
+            Prerequisite("claude_cli", bool(resolved), resolved or f"找不到可执行文件 {head!r}")
+        )
+
+        skill_paths = self._skill_search_paths()
+        found = next((path for path in skill_paths if path.is_file()), None)
+        items.append(
+            Prerequisite(
+                "skill",
+                found is not None,
+                str(found)
+                if found
+                else (
+                    f"找不到 {self.skill} skill。仓库自带的应在 "
+                    f".claude/skills/{self.skill}/SKILL.md；"
+                    f"已找过：{', '.join(str(path) for path in skill_paths)}"
+                ),
+            )
+        )
+
+        items.append(self._check_credentials())
+
+        missing_sources = [path for path in self.source_dirs if not Path(path).is_dir()]
+        if not self.source_dirs:
+            items.append(
+                Prerequisite(
+                    "source_dirs",
+                    False,
+                    "未配置被诊断服务的源码目录，诊断只能靠日志，why.code 给不出 file:line",
+                    blocking=False,
+                )
+            )
+        elif missing_sources:
+            items.append(
+                Prerequisite(
+                    "source_dirs",
+                    False,
+                    f"源码目录不存在：{', '.join(missing_sources)}",
+                    blocking=False,
+                )
+            )
+        else:
+            items.append(
+                Prerequisite("source_dirs", True, ", ".join(self.source_dirs), blocking=False)
+            )
+        return items
+
+    def ready(self) -> bool:
+        return all(item.ok for item in self.preflight() if item.blocking)
 
     def build_command(self) -> list[str]:
         # 提示词走 stdin，不进 argv：告警原文可能很长，Windows 命令行有 32K 上限，
@@ -230,6 +365,17 @@ class ClaudeCodeRunner:
         command = self.command_preview()
         prompt = self.build_prompt(event)
         started = time.monotonic()
+
+        # 依赖不齐就别起进程：让 agent 在缺 skill / 缺凭证的情况下硬查，
+        # 结果是空转到超时，而超时看起来像「模型慢」，最难定位。
+        blocking = [item for item in self.preflight() if item.blocking and not item.ok]
+        if blocking:
+            return RunnerResult(
+                False,
+                reason="诊断依赖未就绪",
+                detail="\n".join(f"- {item.name}: {item.detail}" for item in blocking),
+                command=command,
+            )
 
         try:
             process = await self._create_process(argv, self._child_env())

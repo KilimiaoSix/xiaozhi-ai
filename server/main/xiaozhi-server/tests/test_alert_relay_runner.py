@@ -178,11 +178,25 @@ async def test_plain_json_without_the_cli_envelope_also_works():
 
 @pytest.mark.asyncio
 async def test_missing_cli_is_reported_as_a_configuration_problem():
+    """CLI 不存在会被开跑前的依赖自检拦下，不用等子进程起失败。"""
     runner, _ = make_runner(None, cli_command=["claude-not-installed"])
     result = await runner.run(EVENT)
     assert result.ok is False
-    assert "找不到" in result.reason
+    assert "依赖未就绪" in result.reason
+    assert "找不到" in result.detail
     assert "claude-not-installed" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_exec_failure_after_a_successful_preflight_is_still_handled(monkeypatch):
+    """自检过了但 exec 仍然炸（权限、坏的 shim）时，兜底分支不能丢。"""
+    monkeypatch.setattr(
+        "core.alert_relay.diagnosis_runner.ClaudeCodeRunner.preflight", lambda self: []
+    )
+    runner, _ = make_runner(None, cli_command=["claude"])
+    result = await runner.run(EVENT)
+    assert result.ok is False
+    assert "找不到 Claude Code CLI" in result.reason
 
 
 @pytest.mark.asyncio

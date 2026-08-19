@@ -119,6 +119,37 @@ async def test_http_server_wiring_signatures_stay_compatible():
     await service.stop()
 
 
+def test_diagnosis_runs_in_the_repo_root_so_the_bundled_skill_is_found():
+    """随仓库分发的 skill 在 <仓库根>/.claude/skills 下，工作目录不对就等于没有。"""
+    from pathlib import Path
+
+    from core.alert_relay.factory import REPO_ROOT
+
+    service = create_alert_relay_service({"alert_relay": {"enabled": True}})
+    assert service._runner.cwd == str(REPO_ROOT)
+    assert (Path(service._runner.cwd) / ".claude" / "skills" / "diagnose-sae-alert"
+            / "SKILL.md").is_file()
+
+
+def test_explicit_cwd_still_wins():
+    service = create_alert_relay_service(
+        {"alert_relay": {"enabled": True, "diagnosis": {"cwd": "/srv/iflyplot"}}}
+    )
+    assert service._runner.cwd == "/srv/iflyplot"
+
+
+def test_bundled_skill_is_discoverable_without_a_personal_copy(monkeypatch, tmp_path):
+    """把 HOME 指到空目录（模拟别人的电脑），仓库自带的 skill 仍要被找到。"""
+    empty_home = tmp_path / "elsewhere"
+    empty_home.mkdir()
+    monkeypatch.setattr(
+        "core.alert_relay.diagnosis_runner.Path.home", classmethod(lambda cls: empty_home)
+    )
+    service = create_alert_relay_service({"alert_relay": {"enabled": True}})
+    skill = {item.name: item for item in service._runner.preflight()}["skill"]
+    assert skill.ok is True
+
+
 def test_string_cli_command_is_split_into_argv():
     service = create_alert_relay_service(
         {"alert_relay": {"enabled": True, "diagnosis": {"cli_command": "npx claude"}}}
