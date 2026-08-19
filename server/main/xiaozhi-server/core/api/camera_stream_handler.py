@@ -23,6 +23,7 @@ from core.camera_stream.protocol import (
     parse_start,
     validate_jpeg,
 )
+from core.camera_stream.observers import FrameObserverHub, frame_observer_hub
 from core.camera_stream.session import CameraStreamSession, Frame
 from core.presence_registry import PresenceRegistry, PresenceReport
 
@@ -181,6 +182,7 @@ class CameraStreamHandler:
         now_provider: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
         on_accepted: Callable[..., Any] | None = None,
+        observer_hub: FrameObserverHub | None = None,
         logger=None,
     ) -> None:
         server_config = config.get("server", {})
@@ -198,6 +200,9 @@ class CameraStreamHandler:
         # 上报回调一次 (report, acceptance)。桌面摄像头流是产品默认链路，
         # 不接这个回调的话，迎接/休眠编排只对 presence-agent 的 HTTP 上报生效。
         self._on_accepted = on_accepted
+        # 手势审批 / 分心检测的旁路看帧入口。默认用进程级单例；
+        # 测试可注入独立实例避免用例间串台。
+        self._observer_hub = observer_hub or frame_observer_hub
         self._logger = logger or logging.getLogger(__name__)
 
     def _authorized(self, request: web.Request) -> bool:
@@ -313,10 +318,22 @@ class CameraStreamHandler:
         previous_presence = "starting"
         registry_sequence = 0
 
+        observer_hub = self._observer_hub
+        workstation_id = options.workstation_id
+        monitoring = options.mode == "monitoring"
+
+        def _process_sync(jpeg: bytes, sequence: int, now: float) -> dict[str, Any]:
+            result = runtime.process(jpeg, sequence, now)
+            # 识别成功后才把帧提供给旁路观察者（审批手势/分心检测）：
+            # 观察者在同一工作线程按需解码，原始帧仍不离开推理进程
+            if monitoring:
+                observer_hub.offer(workstation_id, jpeg, now)
+            return result
+
         async def process(frame: Frame) -> dict[str, Any]:
             try:
                 return await asyncio.to_thread(
-                    runtime.process,
+                    _process_sync,
                     frame.jpeg,
                     frame.sequence,
                     self._monotonic(),
