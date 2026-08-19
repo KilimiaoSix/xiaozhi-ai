@@ -11,18 +11,23 @@ PresenceRegistry 第一次出现 `present + owner` 就扫一次飞书并让机�
 - 设备不在线时不扫飞书：扫描是有额度和延迟的外部调用，念不出来的扫描没有意义，
   隔一个重试间隔再看设备回来没有。
 - 扫描连续失败到上限就放弃当天：早高峰每分钟重试一次飞书，既吵又没用。
+- 「每天一次」以台账里的播报标记为准，不是内存标记：改配置要重启进程是本仓库的
+  常规操作，内存状态活不过重启，同一天重播一遍比想象中容易发生。
+- 扫描结果先挂在工位状态上再送达：扫描和送达之间隔着秒级的飞书往返，设备可能
+  恰好转忙或断线重连，改期补送时不该再烧一次扫描额度。
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
 from core.handle.pushHandle import device_busy_reason, push_work_event
 from core.morning_brief.announcement import (
+    Announcement,
     DEFAULT_GREETING,
     DEFAULT_ITEM_CHARS,
     DEFAULT_MAX_ITEMS,
@@ -41,32 +46,122 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BUSY_GRACE_SECONDS = 120
 DEFAULT_RESTORE_AFTER_SECONDS = 20.0
 DEFAULT_WORKSTATION = "desktop-local"
+DEFAULT_WORKDAYS = frozenset({1, 2, 3, 4, 5})
+
+# 配置误写的表象一律是「改了没生效」：解析期必须出声，静默回退等于没人能排查。
+_config_logger = logging.getLogger(__name__)
 
 
-def _positive_int(value: Any, fallback: int, minimum: int = 1) -> int:
+class _ScanFailed(RuntimeError):
+    """扫描名义上成功、实际三路采集全军覆没，按扫描失败对待。"""
+
+
+def _warn_config(key: str, value: Any, fallback: Any) -> None:
+    _config_logger.warning(
+        f"morning_brief.announce.{key} 的配置值 {value!r} 无法使用，回退为 {fallback!r}"
+    )
+
+
+def _text(value: Any) -> str:
+    """None 安全的字符串归一。YAML 裸空键解析为 None，直接 str() 会得到 \"None\"。"""
+    return "" if value is None else str(value).strip()
+
+
+def _positive_int(value: Any, fallback: int, minimum: int = 1, *, key: str = "") -> int:
+    # bool 是 int 的子类：yes/on 会悄悄变成 1，必须显式拒绝。
+    if isinstance(value, bool):
+        _warn_config(key, value, fallback)
+        return fallback
     try:
         parsed = int(value)
     except (TypeError, ValueError):
+        if value is not None:
+            _warn_config(key, value, fallback)
         return fallback
-    return parsed if parsed >= minimum else fallback
+    if parsed < minimum:
+        _warn_config(key, value, fallback)
+        return fallback
+    return parsed
 
 
-def _positive_float(value: Any, fallback: float) -> float:
+def _non_negative_float(value: Any, fallback: float, *, key: str = "") -> float:
+    if isinstance(value, bool):
+        _warn_config(key, value, fallback)
+        return fallback
     try:
         parsed = float(value)
     except (TypeError, ValueError):
+        if value is not None:
+            _warn_config(key, value, fallback)
         return fallback
-    return parsed if parsed > 0 else fallback
+    if parsed < 0:
+        _warn_config(key, value, fallback)
+        return fallback
+    return parsed
 
 
-def _clock_time(value: Any, fallback: str) -> time:
-    text = str(value or fallback)
+def _flag(value: Any, default: bool, *, key: str = "") -> bool:
+    """布尔开关：带引号的 "no"/"false" 要按关闭理解，而不是按非空字符串恒真。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "on", "1"}:
+            return True
+        if lowered in {"false", "no", "off", "0", ""}:
+            return False
+        # 开关看不懂就当关：错开一个早晨的骚扰比错关一个功能更难收场
+        _warn_config(key, value, False)
+        return False
+    return bool(value)
+
+
+def _parse_clock(text: str) -> time:
+    hour, minute = (int(part) for part in text.split(":", 1))
+    return time(hour, minute)
+
+
+def _clock_time(value: Any, fallback: str, *, key: str = "") -> time:
+    if value is None:
+        return _parse_clock(fallback)
     try:
-        hour, minute = (int(part) for part in text.split(":", 1))
-        return time(hour, minute)
+        return _parse_clock(str(value))
     except (TypeError, ValueError):
-        hour, minute = (int(part) for part in fallback.split(":", 1))
-        return time(hour, minute)
+        # 不带引号的 8:00/10:00 会被 YAML 1.1 当六十进制整数读进来，到这里已无从恢复本意
+        _config_logger.warning(
+            f'morning_brief.announce.{key} 的配置值 {value!r} 不是 "HH:MM"'
+            f'（时间要带引号写，如 "08:00"），回退为 {fallback}'
+        )
+        return _parse_clock(fallback)
+
+
+def _workdays(raw: Any) -> frozenset[int]:
+    if raw is None:
+        return DEFAULT_WORKDAYS
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        _warn_config("workdays", raw, sorted(DEFAULT_WORKDAYS))
+        return DEFAULT_WORKDAYS
+    valid = {
+        day
+        for day in raw
+        if isinstance(day, int) and not isinstance(day, bool) and 1 <= day <= 7
+    }
+    dropped = [day for day in raw if day not in valid]
+    if dropped:
+        _config_logger.warning(
+            f"morning_brief.announce.workdays 忽略非法项 {dropped!r}（要用 1-7 的整数）"
+        )
+    if not valid and dropped:
+        # 写了内容但全不合法：按写错处理回落默认，而不是静默变成「永不播」
+        _warn_config("workdays", list(raw), sorted(DEFAULT_WORKDAYS))
+        return DEFAULT_WORKDAYS
+    if not valid:
+        _config_logger.warning(
+            "morning_brief.announce.workdays 为空列表，晨报不会在任何一天触发"
+        )
+    return frozenset(valid)
 
 
 @dataclass(frozen=True)
@@ -102,29 +197,38 @@ class AnnouncePolicy:
         for item in raw_bindings:
             if not isinstance(item, Mapping):
                 continue
-            workstation = str(item.get("workstation_id", "")).strip()
+            workstation = _text(item.get("workstation_id"))
             if workstation:
-                bindings[workstation] = str(item.get("device_id", "")).strip()
+                bindings[workstation] = _text(item.get("device_id"))
         if not bindings:
             bindings[DEFAULT_WORKSTATION] = ""
 
-        raw_workdays = raw.get("workdays", [1, 2, 3, 4, 5])
-        if not isinstance(raw_workdays, (list, tuple, set, frozenset)):
-            raw_workdays = [1, 2, 3, 4, 5]
-        workdays = {
-            day
-            for day in raw_workdays
-            if isinstance(day, int) and not isinstance(day, bool) and 1 <= day <= 7
-        }
+        window_start = _clock_time(
+            raw.get("window_start"), DEFAULT_WINDOW_START, key="window_start"
+        )
+        window_end = _clock_time(
+            raw.get("window_end"), DEFAULT_WINDOW_END, key="window_end"
+        )
+        if window_start >= window_end:
+            _config_logger.warning(
+                f"morning_brief.announce 时间窗写反了"
+                f"（window_start={window_start:%H:%M} >= window_end={window_end:%H:%M}），"
+                f"回退为 {DEFAULT_WINDOW_START}-{DEFAULT_WINDOW_END}"
+            )
+            window_start = _parse_clock(DEFAULT_WINDOW_START)
+            window_end = _parse_clock(DEFAULT_WINDOW_END)
 
         return cls(
             # 晨报总开关关着时，这条链路连扫描都不该发生。
-            enabled=bool(brief.get("enabled", False)) and bool(raw.get("enabled", True)),
-            timezone_name=str(brief.get("timezone", "Asia/Shanghai")),
+            enabled=(
+                _flag(brief.get("enabled"), False, key="morning_brief.enabled")
+                and _flag(raw.get("enabled"), True, key="enabled")
+            ),
+            timezone_name=_text(brief.get("timezone")) or "Asia/Shanghai",
             bindings=bindings,
-            workdays=frozenset(workdays),
-            window_start=_clock_time(raw.get("window_start"), DEFAULT_WINDOW_START),
-            window_end=_clock_time(raw.get("window_end"), DEFAULT_WINDOW_END),
+            workdays=_workdays(raw.get("workdays")),
+            window_start=window_start,
+            window_end=window_end,
             # 空串是有意义的取值（不再问好），所以不能用 or 兜底
             greeting=(
                 DEFAULT_GREETING
@@ -133,20 +237,33 @@ class AnnouncePolicy:
             ),
             status=str(raw.get("status") or STATUS_BRIEF),
             emotion=str(raw.get("emotion") or EMOTION_BRIEF),
-            max_items=_positive_int(raw.get("max_items"), DEFAULT_MAX_ITEMS),
-            item_chars=_positive_int(raw.get("item_chars"), DEFAULT_ITEM_CHARS),
-            poll_seconds=_positive_int(raw.get("poll_seconds"), DEFAULT_POLL_SECONDS),
+            max_items=_positive_int(
+                raw.get("max_items"), DEFAULT_MAX_ITEMS, key="max_items"
+            ),
+            item_chars=_positive_int(
+                raw.get("item_chars"), DEFAULT_ITEM_CHARS, key="item_chars"
+            ),
+            poll_seconds=_positive_int(
+                raw.get("poll_seconds"), DEFAULT_POLL_SECONDS, key="poll_seconds"
+            ),
             retry_seconds=_positive_int(
-                raw.get("retry_seconds"), DEFAULT_RETRY_SECONDS
+                raw.get("retry_seconds"), DEFAULT_RETRY_SECONDS, key="retry_seconds"
             ),
             max_attempts=_positive_int(
-                raw.get("max_attempts"), DEFAULT_MAX_ATTEMPTS
+                raw.get("max_attempts"), DEFAULT_MAX_ATTEMPTS, key="max_attempts"
             ),
+            # 0 是合法取值：不等宽限、立即照发
             busy_grace_seconds=_positive_int(
-                raw.get("busy_grace_seconds"), DEFAULT_BUSY_GRACE_SECONDS
+                raw.get("busy_grace_seconds"),
+                DEFAULT_BUSY_GRACE_SECONDS,
+                minimum=0,
+                key="busy_grace_seconds",
             ),
-            restore_after_seconds=_positive_float(
-                raw.get("restore_after_seconds"), DEFAULT_RESTORE_AFTER_SECONDS
+            # 0 是合法取值：播完不收屏
+            restore_after_seconds=_non_negative_float(
+                raw.get("restore_after_seconds"),
+                DEFAULT_RESTORE_AFTER_SECONDS,
+                key="restore_after_seconds",
             ),
         )
 
@@ -165,6 +282,12 @@ class _WorkstationState:
     attempts: int = 0
     next_attempt_at: datetime | None = None
     busy_since: datetime | None = None
+    # 报告已扫好但语音还没送达：改期补送时复用，不再烧一次飞书扫描。
+    pending: Announcement | None = None
+    # 画面是否已经上屏：补送 TTS 时带 silent，不再响第二声提示音。
+    screen_shown: bool = False
+    # 语音被设备忙态挤掉的首次时刻：宽限用完就接受只上屏。
+    speak_retry_since: datetime | None = None
 
 
 class MorningBriefAnnouncer:
@@ -229,6 +352,10 @@ class MorningBriefAnnouncer:
         if not self._in_window(now):
             return
         if not self._is_owner_present(self._presence_registry.get(workstation_id)):
+            # 离席打断了「连续忙」的观察：旧锚点留着会把返岗时 0 秒龄的新忙态
+            # 记成已经忙了好几分钟，直接绕过宽限硬推，语音又被挤掉。
+            state.busy_since = None
+            state.speak_retry_since = None
             return
         if state.next_attempt_at is not None and now < state.next_attempt_at:
             return
@@ -238,9 +365,7 @@ class MorningBriefAnnouncer:
         if conn is None:
             # 不计入失败次数：机器人没上线不是飞书的问题，窗口内一直等着它回来。
             state.next_attempt_at = now + timedelta(seconds=self.policy.retry_seconds)
-            self._logger.info(
-                f"工位 {workstation_id} 已认出主人，但机器人不在线，暂不生成晨报"
-            )
+            self._log_no_device(workstation_id, configured_device)
             return
 
         # 到岗迎接是事件驱动的、比这里先到一步，它的 TTS 还在放时插播会被
@@ -250,49 +375,126 @@ class MorningBriefAnnouncer:
             if state.busy_since is None:
                 state.busy_since = now
                 self._logger.info(f"{busy}，晨报稍后再播")
-            if now - state.busy_since < timedelta(
-                seconds=self.policy.busy_grace_seconds
-            ):
+            if not self._grace_spent(state, now):
                 return
             # 等太久了：只上屏也比今天不播强
         else:
             state.busy_since = None
 
-        state.attempts += 1
-        try:
-            report = await self._service.preview()
-        except Exception:
-            self._logger.exception("晨报扫描失败")
-            self._defer_or_give_up(state, now, "扫描")
-            return
+        if state.pending is None:
+            state.attempts += 1
+            try:
+                report = await self._service.preview(limit=self.policy.max_items)
+                if self._scan_came_back_empty_handed(report):
+                    # 三路采集全军覆没时念「今天暂时没有待办」是假话，按扫描失败改期。
+                    raise _ScanFailed("飞书三路采集全部失败")
+                state.pending = build_announcement(
+                    report,
+                    max_items=self.policy.max_items,
+                    item_chars=self.policy.item_chars,
+                    greeting=self.policy.greeting,
+                    status=self.policy.status,
+                    emotion=self.policy.emotion,
+                    display_timezone=self.policy.timezone,
+                )
+            except Exception:
+                self._logger.exception("晨报扫描失败")
+                self._defer_or_give_up(state, now, "扫描")
+                return
 
-        announcement = build_announcement(
-            report,
-            max_items=self.policy.max_items,
-            item_chars=self.policy.item_chars,
-            greeting=self.policy.greeting,
-            status=self.policy.status,
-            emotion=self.policy.emotion,
+            # 扫描要等飞书返回好几秒：期间固件断线重连会把 conn 换掉（固件 10 秒
+            # 就重连一次），设备也可能开始播迎接语。送达前按当前状态重新核一遍。
+            conn = self._device_registry.get(device_id)
+            if conn is None:
+                state.next_attempt_at = now + timedelta(
+                    seconds=self.policy.retry_seconds
+                )
+                self._logger.info(
+                    f"工位 {workstation_id} 扫描期间机器人离线，晨报改期补送"
+                )
+                return
+            busy = self._busy_reason(conn)
+            if busy:
+                if state.busy_since is None:
+                    state.busy_since = now
+                if not self._grace_spent(state, now):
+                    self._logger.info(f"{busy}，晨报改期补送（报告已备好）")
+                    return
+
+        announcement = state.pending
+        # 故障通知（speak=False）是给人看的，不套自动收屏：20 秒后被基态恢复
+        # 抹掉的话，没盯着屏幕的人全天不知道晨报坏了。
+        restore_after = (
+            self.policy.restore_after_seconds
+            if announcement.speak and self.policy.restore_after_seconds > 0
+            else None
         )
-        # 先置位再 await：推送期间又来一次 tick 不会重复播报。
-        state.done = True
         try:
-            await self._push(
+            spoke = await self._push(
                 conn,
                 text=announcement.text,
                 emotion=announcement.emotion,
                 status=announcement.status,
                 speak=announcement.speak,
-                restore_after=self.policy.restore_after_seconds,
+                restore_after=restore_after,
+                # 补送只为把语音送出去，画面早已上屏，别再响一声提示音
+                silent=state.screen_shown,
             )
         except Exception:
-            state.done = False
             self._logger.exception("晨报推送失败")
             self._defer_or_give_up(state, now, "推送")
             return
+        state.screen_shown = True
+
+        if announcement.speak and spoke is False and not self._grace_spent(state, now):
+            # push_work_event 内部只等 3 秒就降级只上屏（那是给桌面端 HTTP 超时
+            # 设计的预算）；这里有整个宽限期可用，改期补一次语音。
+            if state.speak_retry_since is None:
+                state.speak_retry_since = now
+            state.next_attempt_at = now + timedelta(seconds=self.policy.retry_seconds)
+            self._logger.info(
+                f"工位 {workstation_id} 晨报语音被设备忙态挤掉，画面已上屏，宽限内改期补播"
+            )
+            return
+
+        state.done = True
+        state.pending = None
+        self._mark_announced(workstation_id, now.date())
+        delivery = "已播报" if (not announcement.speak or spoke) else "仅上屏"
         self._logger.info(
-            f"工位 {workstation_id} 晨报已播报给设备 {device_id}：{announcement.text}"
+            f"工位 {workstation_id} 晨报{delivery}（设备 {device_id}）：{announcement.text}"
         )
+
+    def _grace_spent(self, state: _WorkstationState, now: datetime) -> bool:
+        grace = timedelta(seconds=self.policy.busy_grace_seconds)
+        if state.busy_since is not None and now - state.busy_since >= grace:
+            return True
+        return (
+            state.speak_retry_since is not None
+            and now - state.speak_retry_since >= grace
+        )
+
+    def _log_no_device(self, workstation_id: str, configured_device: str) -> None:
+        online = len(self._device_registry.device_ids())
+        if not configured_device and online > 1:
+            # 多台在线不猜、宁可不播是设计；但日志得指对方向，别把人引去查连接
+            self._logger.info(
+                f"工位 {workstation_id} 已认出主人，但有 {online} 台设备在线且未配置 "
+                f"device_id，无法自动绑定，晨报暂不生成"
+            )
+            return
+        self._logger.info(
+            f"工位 {workstation_id} 已认出主人，但机器人不在线，暂不生成晨报"
+        )
+
+    @staticmethod
+    def _scan_came_back_empty_handed(report: Any) -> bool:
+        if not isinstance(report, Mapping):
+            return False
+        if report.get("reauthorization_required") or report.get("permission_required"):
+            # 授权类故障有专门的屏显通知，不算扫描失败
+            return False
+        return report.get("coverage_status") == "FAILED" and not report.get("top_three")
 
     def _defer_or_give_up(
         self, state: _WorkstationState, now: datetime, stage: str
@@ -309,12 +511,32 @@ class MorningBriefAnnouncer:
         state = self._states.get(workstation_id)
         if state is None or state.local_date != now.date():
             state = _WorkstationState(local_date=now.date())
+            # 「每天一次」的账在台账里：重启后内存清零，靠这条不重播。
+            state.done = self._was_announced(workstation_id, now.date())
             self._states[workstation_id] = state
         return state
 
+    def _was_announced(self, workstation_id: str, local_date: date) -> bool:
+        checker = getattr(self._service, "was_announced", None)
+        if checker is None:
+            return False
+        try:
+            return bool(checker(workstation_id, local_date))
+        except Exception:
+            self._logger.exception("读取晨报播报标记失败")
+            return False
+
+    def _mark_announced(self, workstation_id: str, local_date: date) -> None:
+        marker = getattr(self._service, "mark_announced", None)
+        if marker is None:
+            return
+        try:
+            marker(workstation_id, local_date)
+        except Exception:
+            self._logger.exception("写入晨报播报标记失败")
+
     def _in_window(self, now: datetime) -> bool:
-        current = now.time().replace(tzinfo=None)
-        return self.policy.window_start <= current < self.policy.window_end
+        return self.policy.window_start <= now.time() < self.policy.window_end
 
     @staticmethod
     def _is_owner_present(presence: Mapping[str, Any] | None) -> bool:
@@ -362,9 +584,9 @@ def create_morning_brief_announcer(
     """
     if presence_registry is None or device_registry is None or service is None:
         return None
-    policy = AnnouncePolicy.from_config(config)
-    if not policy.enabled:
-        return None
-    return MorningBriefAnnouncer(
+    announcer = MorningBriefAnnouncer(
         config, presence_registry, device_registry, service, **kwargs
     )
+    if not announcer.policy.enabled:
+        return None
+    return announcer

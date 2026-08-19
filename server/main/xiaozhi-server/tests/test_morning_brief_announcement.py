@@ -214,3 +214,50 @@ def test_permission_required_is_shown_but_not_spoken():
 
     assert "权限" in announcement.text
     assert announcement.speak is False
+
+
+def test_calendar_time_is_rendered_in_display_timezone():
+    """海外组织者建的会带自身时区，钟点必须换算到播报时区再念。"""
+    from zoneinfo import ZoneInfo
+
+    report = make_report(
+        top_three=[ranked("e1", "美西同步会", kind="CALENDAR")],
+        calendar=[
+            {
+                "event_id": "e1",
+                "summary": "美西同步会",
+                # 北京 17:00 == 洛杉矶 02:00
+                "start": "2026-08-19T02:00:00-07:00",
+                "end": "2026-08-19T03:00:00-07:00",
+                "timezone": "America/Los_Angeles",
+                "location": "",
+                "rsvp_status": "accept",
+                "organizer": "",
+                "source_url": "https://example.invalid",
+                "conflicts": [],
+            }
+        ],
+    )
+
+    announcement = build_announcement(
+        report, display_timezone=ZoneInfo("Asia/Shanghai")
+    )
+
+    assert "17:00 美西同步会" in announcement.text
+    assert "02:00" not in announcement.text
+
+
+def test_partial_coverage_disclaimer_also_applies_when_empty():
+    report = make_report(coverage_status="PARTIAL", top_three=[])
+
+    announcement = build_announcement(report)
+
+    assert "不全" in announcement.text, "采集缺了一路时，空待办也不能说得斩钉截铁"
+
+
+def test_reauthorization_wording_covers_unconfigured_token():
+    report = make_report(reauthorization_required=True)
+
+    announcement = build_announcement(report)
+
+    assert "未配置" in announcement.text, "从未配置 token 也走这条通知，不能只说「已过期」"

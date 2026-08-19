@@ -239,7 +239,9 @@ class MorningBriefService:
             ):
                 self.ledger.mark_replied(reply.topic_id, reply.source_timestamp)
 
-    async def preview(self, report_date: date | None = None) -> dict[str, Any]:
+    async def preview(
+        self, report_date: date | None = None, *, limit: int = 3
+    ) -> dict[str, Any]:
         now = self.now_provider()
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
@@ -296,7 +298,7 @@ class MorningBriefService:
             else []
         )
         open_items = self.ledger.get_open_items()
-        ranked = rank_candidates(open_items, calendar, limit=3)
+        ranked = rank_candidates(open_items, calendar, limit=max(1, int(limit)))
         top_ids = {item.item_id for item in ranked if item.kind == "MESSAGE"}
         other_mentions = [
             item
@@ -350,6 +352,14 @@ class MorningBriefService:
 
     def latest(self) -> dict[str, Any] | None:
         return self.ledger.latest_brief()
+
+    # 播报器的「每工位每天一次」以台账为准：内存状态活不过进程重启。
+    # latest_brief 不能当这个幂等键——手工预览也会写它，会错误抑制播报。
+    def was_announced(self, workstation_id: str, report_date: date) -> bool:
+        return self.ledger.was_announced(workstation_id, report_date)
+
+    def mark_announced(self, workstation_id: str, report_date: date) -> None:
+        self.ledger.mark_announced(workstation_id, report_date)
 
     def health(self) -> dict[str, Any]:
         capabilities = self.client.capabilities()

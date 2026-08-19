@@ -119,3 +119,25 @@ def test_purge_clears_old_excerpts_and_removes_old_resolved_items(tmp_path):
     assert ledger.count_items() == 1
     assert ledger.get_open_items()[0].short_excerpt == ""
     assert ledger.latest_brief() is None
+
+
+def test_announce_marker_round_trip(tmp_path):
+    """播报标记要落库：进程重启后同一天不再重播。"""
+    from datetime import date
+
+    ledger = AttentionLedger(tmp_path / "ledger.sqlite3")
+    day = date(2026, 8, 19)
+
+    assert ledger.was_announced("desk", day) is False
+
+    ledger.mark_announced("desk", day)
+    assert ledger.was_announced("desk", day) is True
+    # 幂等：重复标记不炸
+    ledger.mark_announced("desk", day)
+
+    assert ledger.was_announced("desk", date(2026, 8, 20)) is False
+    assert ledger.was_announced("other", day) is False
+
+    # 模拟重启：同一路径新实例仍读得到
+    reopened = AttentionLedger(tmp_path / "ledger.sqlite3")
+    assert reopened.was_announced("desk", day) is True

@@ -372,3 +372,20 @@ async def test_disabled_calendar_drops_calendar_scopes_from_permission_hint(tmp_
     assert report["missing_scopes"] == list(MESSAGE_SCOPES)
     assert not set(report["missing_scopes"]) & set(CALENDAR_SCOPES)
     assert service.health()["capabilities"]["calendar_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_preview_limit_controls_top_items(tmp_path):
+    """announce.max_items 要能真正调大播报条数，limit 必须透传到排序。"""
+    msgs = [
+        raw_message(f"om_{i}", f"topic_{i}", f"线上待办事项{i}", mentions=[{"id": "ou_me"}])
+        for i in range(1, 5)
+    ]
+    client = FakeClient(mentions=msgs)
+    service = make_service(tmp_path, client)
+
+    default_report = await service.preview()
+    assert len(default_report["top_three"]) == 3
+
+    wider = await service.preview(limit=4)
+    assert len(wider["top_three"]) == 4

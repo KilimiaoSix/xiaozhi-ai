@@ -69,6 +69,8 @@ morning_brief:
   announce:
     enabled: true
     # 播报时间窗与生效星期（ISO 星期，1 为周一）。改完重启进程生效。
+    # 时间必须带引号写成 "HH:MM"：不带引号的 8:00/10:00 会被 YAML 当成数字，
+    # 解析不了的值会回退默认并打警告日志。
     window_start: "08:00"
     window_end: "09:30"
     workdays: [1, 2, 3, 4, 5]
@@ -78,15 +80,18 @@ morning_brief:
     status: "早报"
     emotion: happy
     # 播报几条待办、每条截断到多少字。屏幕和 TTS 都容不下长摘要。
+    # max_items 会同步作为扫描的排序条数，调大就真的多念几条。
     max_items: 3
     item_chars: 16
     # 机器人不在线或扫描失败时的重试间隔与当天最大尝试次数。
     retry_seconds: 60
     max_attempts: 3
     # 设备正忙（到岗迎接的 TTS 还在放、用户正在说话）时最多等这么久，
-    # 超时就照发——只上屏也比今天不播强。
+    # 超时就照发——只上屏也比今天不播强。配 0 表示不等、立即照发。
     busy_grace_seconds: 120
     poll_seconds: 5
+    # 播完多少秒后把画面还给设备基态；配 0 表示不收屏。
+    # 授权/权限故障的屏显通知一律常驻，不受本项影响。
     restore_after_seconds: 20
     # 与 wellbeing.bindings 保持一致；device_id 留空时仅在恰好一台机器人在线时自动绑定。
     bindings:
@@ -255,6 +260,9 @@ push_speak:
 dialogue_gate:
   enabled: false
   window_seconds: 60
+  # true（默认）单次对话：一次唤醒只答一轮，再说话要重新唤醒；光喊唤醒词时
+  # 窗口留给接下来的问题。false 连续对话：窗口内后续轮次照常放行并往后滑窗。
+  single_turn: true
 
 # 设备唤醒词。wakenet 是针对具体词训练的神经网络，只能在 esp-sr 预训练模型里选，
 # 不是任意字符串。用 scripts/pack_wake_word_assets.py 把模型打成 assets 包放进

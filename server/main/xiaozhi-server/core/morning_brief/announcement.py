@@ -25,7 +25,7 @@ EMOTION_BRIEF = "happy"
 STATUS_UNAVAILABLE = "早报不可用"
 EMOTION_UNAVAILABLE = "confused"
 
-TEXT_REAUTHORIZATION = "早报暂不可用：飞书授权已过期，重新授权后我再念。"
+TEXT_REAUTHORIZATION = "早报暂不可用：飞书授权未配置或已过期，修复后明早我再念。"
 TEXT_PERMISSION = "早报暂不可用：飞书应用还缺读取权限。"
 PARTIAL_SUFFIX = "数据可能不全。"
 
@@ -46,8 +46,12 @@ def _clip(text: str, limit: int) -> str:
     return flattened[:limit] + ELLIPSIS
 
 
-def _start_times(report: dict[str, Any]) -> dict[str, str]:
-    """日程只在 calendar 段里带开始时间，ranked 项里没有，这里按 event_id 建索引。"""
+def _start_times(report: dict[str, Any], display_timezone=None) -> dict[str, str]:
+    """日程只在 calendar 段里带开始时间，ranked 项里没有，这里按 event_id 建索引。
+
+    start 串带的是日程自身的时区偏移（海外组织者建的会不是 +08:00），钟点必须
+    换算到播报时区再念，否则北京 17:00 的会能被念成 02:00。
+    """
     times: dict[str, str] = {}
     for event in report.get("calendar") or []:
         if not isinstance(event, dict):
@@ -60,6 +64,8 @@ def _start_times(report: dict[str, Any]) -> dict[str, str]:
             start = datetime.fromisoformat(str(raw_start).replace("Z", "+00:00"))
         except ValueError:
             continue
+        if display_timezone is not None and start.tzinfo is not None:
+            start = start.astimezone(display_timezone)
         times[event_id] = start.strftime("%H:%M")
     return times
 
@@ -84,6 +90,7 @@ def build_announcement(
     greeting: str = DEFAULT_GREETING,
     status: str = STATUS_BRIEF,
     emotion: str = EMOTION_BRIEF,
+    display_timezone=None,
 ) -> Announcement:
     """按优先级列出待办，返回一条可直接推给设备的播报。
 
@@ -110,14 +117,18 @@ def build_announcement(
     ][:max_items]
 
     if not ranked:
+        text = f"{opening}今天暂时没有待办。"
+        if report.get("coverage_status") not in (None, "COMPLETE"):
+            # 采集缺了一路时，空待办也不能说得斩钉截铁
+            text += PARTIAL_SUFFIX
         return Announcement(
-            text=f"{opening}今天暂时没有待办。",
+            text=text,
             emotion=emotion,
             status=status,
             speak=True,
         )
 
-    start_times = _start_times(report)
+    start_times = _start_times(report, display_timezone)
     entries: list[str] = []
     for index, item in enumerate(ranked, start=1):
         title = _clip(item.get("title"), item_chars) or "待查看消息"

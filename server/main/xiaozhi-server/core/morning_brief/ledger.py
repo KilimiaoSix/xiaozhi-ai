@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -73,6 +73,13 @@ class AttentionLedger:
                     report_date TEXT NOT NULL,
                     generated_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS announcements (
+                    workstation_id TEXT NOT NULL,
+                    report_date TEXT NOT NULL,
+                    announced_at TEXT NOT NULL,
+                    PRIMARY KEY (workstation_id, report_date)
                 );
                 """
             )
@@ -250,6 +257,31 @@ class AttentionLedger:
                 "SELECT payload_json FROM briefs ORDER BY id DESC LIMIT 1"
             ).fetchone()
         return json.loads(row["payload_json"]) if row else None
+
+    def mark_announced(self, workstation_id: str, report_date) -> None:
+        """记下「这个工位今天已经播过晨报」，进程重启后仍然算数。"""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO announcements(
+                    workstation_id, report_date, announced_at
+                ) VALUES (?, ?, ?)
+                """,
+                (
+                    str(workstation_id),
+                    str(report_date),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def was_announced(self, workstation_id: str, report_date) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM announcements"
+                " WHERE workstation_id = ? AND report_date = ?",
+                (str(workstation_id), str(report_date)),
+            ).fetchone()
+        return row is not None
 
     def purge(self, now: datetime) -> dict[str, int]:
         resolved_before = (now - timedelta(days=self.resolved_retention_days)).isoformat()
