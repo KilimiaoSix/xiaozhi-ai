@@ -35,6 +35,10 @@ cd server/main/xiaozhi-server && python -m pytest tests/
 手势审批与分心检测的视觉模型不入库，新机器各跑一次：
 `python scripts/download_gesture_model.py --verify` 与 `python scripts/download_detection_model.py`
 
+桌面端摄像头流的推理代码从 presence-agent 导入，新机器必须装进 server venv（**必须带 `--no-deps`**，
+原因见 requirements-camera.txt 的注释——py3.10+torch 的 numpy 1.x 与 opencv 5 声明的 numpy>=2 无公共解）：
+`pip install --no-deps -r requirements-camera.txt`，漏装的症状是桌面端报 "camera inference runtime is unavailable"。
+
 ### firmware/（ESP-IDF）
 
 ```bash

@@ -1,1 +1,10 @@
+# 摄像头流运行时（camera_stream_handler 从 presence_agent 导入姿态/人脸模型）。
+#
+# 必须带 --no-deps 安装：
+#   .venv/bin/pip install --no-deps -r requirements-camera.txt
+#
+# 原因：本 venv 是 Python 3.10，torch 2.2.2 把 numpy 钉死在 1.x；而
+# opencv-contrib-python 5.0.0.93 的元数据声明 numpy>=2（实际在 1.26.4 上可用，
+# 本 venv 就是活证）。两者无公共解，普通 `pip install -r` 会 ResolutionImpossible。
+# 依赖（cv2/mediapipe/numpy/aiohttp）在本 venv 已按实况满足，这里只需要包代码。
 -e ../../../presence-agent
