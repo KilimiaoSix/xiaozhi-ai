@@ -114,9 +114,29 @@ def build_announcement(
         item
         for item in (report.get("top_three") or [])
         if isinstance(item, dict)
-    ][:max_items]
+    ]
+    start_times = _start_times(report, display_timezone)
 
-    if not ranked:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in ranked:
+        title = _clip(item.get("title"), item_chars) or "待查看消息"
+        prefix = ""
+        if item.get("kind") == "CALENDAR":
+            start = start_times.get(str(item.get("item_id") or ""))
+            if start:
+                prefix = f"{start} "
+        line = f"{prefix}{title}"
+        # 去重比的是「念出来的样子」：真实数据里出现过两条同文案的「授权操作通知」，
+        # 截断后同形的两条听起来也是同一件事，念第二遍只会让人以为机器人坏了。
+        if line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        if len(lines) == max_items:
+            break
+
+    if not lines:
         text = f"{opening}今天暂时没有待办。"
         if report.get("coverage_status") not in (None, "COMPLETE"):
             # 采集缺了一路时，空待办也不能说得斩钉截铁
@@ -128,17 +148,7 @@ def build_announcement(
             speak=True,
         )
 
-    start_times = _start_times(report, display_timezone)
-    entries: list[str] = []
-    for index, item in enumerate(ranked, start=1):
-        title = _clip(item.get("title"), item_chars) or "待查看消息"
-        prefix = ""
-        if item.get("kind") == "CALENDAR":
-            start = start_times.get(str(item.get("item_id") or ""))
-            if start:
-                prefix = f"{start} "
-        entries.append(f"{index} {prefix}{title}")
-
+    entries = [f"{index} {line}" for index, line in enumerate(lines, start=1)]
     text = f"{opening}今天 {len(entries)} 件待办：" + "；".join(entries) + "。"
 
     others = len(report.get("other_unhandled_mentions") or [])
