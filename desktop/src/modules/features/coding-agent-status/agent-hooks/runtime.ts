@@ -44,12 +44,24 @@ export interface AgentHooksManager {
   markActive?(source: AgentSource): Promise<void>;
 }
 
+/**
+ * 机器人意图的消费方。桌面端只负责把意图交出去，
+ * 「配什么表情动作、该不该打扰」由实现方决定（见 AGENTS.md 职责划分）。
+ */
+export interface RobotIntentNotifier {
+  notify(
+    intents: RobotActionIntent[],
+    tasks: AgentTaskSnapshot[],
+  ): void | Promise<void>;
+}
+
 interface AgentHooksRuntimeOptions {
   manager: AgentHooksManager;
   spool: AgentHooksSpool;
   tracker: AgentTaskTracker;
   statePath: string;
   attentionMonitor?: AgentAttentionMonitor;
+  robotNotifier?: RobotIntentNotifier;
   now?: () => Date;
 }
 
@@ -149,6 +161,24 @@ export class AgentHooksRuntime {
     this.actionIntents = this.options.tracker.drainActionIntents();
     await this.persistState();
     this.publish();
+    await this.notifyRobot();
+  }
+
+  /**
+   * 把新产生的意图交给机器人通知器。放在 publish 之后，且失败只吞不抛——
+   * 界面反馈不能因为 Server 没起或设备离线而被拖累。
+   */
+  private async notifyRobot(): Promise<void> {
+    const notifier = this.options.robotNotifier;
+    if (!notifier || this.actionIntents.length === 0) return;
+    try {
+      await notifier.notify(
+        this.actionIntents.map((intent) => ({ ...intent })),
+        this.tasksWithExternalAttention(),
+      );
+    } catch {
+      // 通知机器人是尽力而为，失败不影响事件处理与快照发布
+    }
   }
 
   private async acknowledgeHookEvent(source: AgentSource): Promise<void> {

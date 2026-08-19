@@ -8,6 +8,8 @@ import { EventSpool } from '../modules/features/coding-agent-status/agent-hooks/
 import { HOOK_RUNNER_SOURCE } from '../modules/features/coding-agent-status/agent-hooks/spool/hookRunnerSource';
 import { AgentTaskTracker } from '../modules/features/coding-agent-status/agent-hooks/taskTracker';
 import { createCodexUiApprovalProbe } from './codexUiApprovalProbe';
+import { AgentRobotNotifier, RobotEventPushClient } from './agentRobot/agentRobotNotifier';
+import { DiscoveringRobotNotifier } from './agentRobot/deviceDiscovery';
 
 interface CreateAgentHooksRuntimeOptions {
   homeDir: string;
@@ -15,6 +17,8 @@ interface CreateAgentHooksRuntimeOptions {
   electronPath: string;
   platform?: NodeJS.Platform;
   isAccessibilityTrusted?: () => boolean;
+  robotDeviceId?: string;
+  robotServerUrl?: string;
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -66,11 +70,36 @@ export const createAgentHooksRuntime = (
       })
     : undefined;
 
+  // 机器人反馈：把 tracker 产出的意图推给 Server 的 /xiaozhi/event/push。
+  // 地址与设备沿用 tools/cc-approval-hook.sh 已有的环境变量约定；
+  // 未配置 DESKPET_DEVICE_ID 时退而向 Server 查在线设备表，恰好一台在线才启用
+  // （多台不猜、查不到保持静默），没有机器人的开发机上监控照常工作。
+  const deviceId = options.robotDeviceId ?? process.env.DESKPET_DEVICE_ID ?? '';
+  const serverUrl = options.robotServerUrl
+    ?? process.env.DESKPET_SERVER
+    ?? 'http://127.0.0.1:8003';
+  const onRobotError = (error: unknown) => {
+    console.warn('机器人意图处理失败', error);
+  };
+  const robotNotifier = deviceId
+    ? new AgentRobotNotifier(
+        new RobotEventPushClient(fetch, serverUrl, (error) => {
+          console.warn('推送工作事件到机器人失败', error);
+        }),
+        deviceId,
+        { onError: onRobotError },
+      )
+    : new DiscoveringRobotNotifier({
+        serverUrl,
+        onError: onRobotError,
+      });
+
   return new AgentHooksRuntime({
     manager,
     spool: new EventSpool({ rootPath }),
     tracker: new AgentTaskTracker(),
     statePath: path.join(rootPath, 'state/tasks.json'),
     ...(attentionMonitor ? { attentionMonitor } : {}),
+    ...(robotNotifier ? { robotNotifier } : {}),
   });
 };
