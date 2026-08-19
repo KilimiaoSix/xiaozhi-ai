@@ -122,7 +122,7 @@ describe('PomodoroPanel', () => {
       await flush();
     });
 
-    expect(container.textContent).toContain('没有已连接的小飞设备');
+    expect(container.textContent).toContain('没有已连接的小智设备');
   });
 
   it('Server 不可达时显示离线态', async () => {
@@ -178,7 +178,7 @@ describe('PomodoroPanel', () => {
     expect(gatewayMocks.getStatus).toHaveBeenCalledWith('esp32-01');
     expect(container.textContent).toContain('20:30');
     expect(container.textContent).toContain('设备离线，会话仍在运行');
-    expect(container.textContent).not.toContain('没有已连接的小飞设备');
+    expect(container.textContent).not.toContain('没有已连接的小智设备');
 
     const buttons = [...container.querySelectorAll('button')];
     const pauseButton = buttons.find((button) => button.textContent === '暂停');

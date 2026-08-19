@@ -3,6 +3,8 @@
 AI Agent 驱动的打工人桌面宠物，由桌面应用、Server 和 ESP32-S3 双轴机器人组成。
 产品定位与体验目标见 [AGENTS.md](AGENTS.md)。
 
+项目功能、技术实现和产品价值的简短介绍见 [项目说明.md](项目说明.md)。
+
 ## 通信架构
 
 ```text
@@ -39,7 +41,7 @@ npm run typecheck
 npm run package
 ```
 
-macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`。
+macOS arm64 应用会生成到 `desktop/out/小智桌面机器人-darwin-arm64/`。
 
 ## AI Agent 任务监控
 
@@ -52,7 +54,7 @@ macOS arm64 应用会生成到 `desktop/out/小飞桌面机器人-darwin-arm64/`
 
 任务卡会保留并显示 Hook 提供的完整提示词、工作目录、错误和等待原因。数据只在本机处理，不会由 Hook 上传到第三方；Hook 也不会替用户批准权限请求或直接控制机器人。
 
-Codex 页面内的 Computer Use 应用授权不会触发 Hook。macOS 版小飞会在用户授予“辅助功能”权限后，只读匹配该授权卡片的标题与按钮标签，并临时显示“需要你”；卡片消失后恢复原任务状态。检测不会点击批准按钮，也不会读取代码、提示词或对话正文。
+Codex 页面内的 Computer Use 应用授权不会触发 Hook。macOS 版小智会在用户授予“辅助功能”权限后，只读匹配该授权卡片的标题与按钮标签，并临时显示“需要你”；卡片消失后恢复原任务状态。检测不会点击批准按钮，也不会读取代码、提示词或对话正文。
 
 ### 配置位置与撤销
 
@@ -69,7 +71,7 @@ Codex 页面内的 Computer Use 应用授权不会触发 Hook。macOS 版小飞�
 
 ### 本机数据与诊断
 
-监控数据位于 Electron 的 `userData/agent-hooks/` 目录（macOS 通常在 `~/Library/Application Support/小飞桌面机器人/agent-hooks/`），其中：
+监控数据位于 Electron 的 `userData/agent-hooks/` 目录（macOS 通常在 `~/Library/Application Support/小智桌面机器人/agent-hooks/`），其中：
 
 | 路径 | 内容 |
 | --- | --- |

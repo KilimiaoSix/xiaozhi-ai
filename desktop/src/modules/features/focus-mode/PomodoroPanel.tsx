@@ -140,7 +140,7 @@ export function PomodoroPanel() {
       {state.kind === 'offline' && (
         <p className="pomodoro-empty pomodoro-offline" role="alert">{state.message}</p>
       )}
-      {state.kind === 'no-device' && <p className="pomodoro-empty">没有已连接的小飞设备。</p>}
+      {state.kind === 'no-device' && <p className="pomodoro-empty">没有已连接的小智设备。</p>}
 
       {state.kind === 'ready' && (
         <div className="pomodoro-body">
