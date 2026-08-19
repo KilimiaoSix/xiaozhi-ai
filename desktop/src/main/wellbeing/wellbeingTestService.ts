@@ -1,4 +1,3 @@
-import { discoverRobotDeviceId } from '../agentRobot/deviceDiscovery';
 import type { WellbeingTestKind } from '../../modules/features/wellbeing/contracts';
 
 type Fetcher = (
@@ -67,14 +66,39 @@ const WELLBEING_TEST_EVENTS = {
 export class WellbeingTestService {
   constructor(
     private readonly fetcher: Fetcher = fetch,
-    private readonly baseUrl = 'http://127.0.0.1:8003',
+    private readonly baseUrl = process.env.DESKPET_SERVER ?? 'http://127.0.0.1:8003',
   ) {}
 
   async sendTest(kind: WellbeingTestKind): Promise<WellbeingTestResult> {
-    const deviceId = await discoverRobotDeviceId(this.fetcher, this.baseUrl);
-    if (!deviceId) {
-      throw new Error('需要恰好一台在线机器人才能发送测试提醒');
+    // discoverRobotDeviceId 把「连不上」和「设备数不为 1」都吞成 null，
+    // 两种排查方向完全不同，这里自己查一次以便分辨。
+    let devices: unknown[];
+    try {
+      const listing = await this.fetcher(`${this.baseUrl}/xiaozhi/event/devices`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!listing.ok) {
+        throw new Error(`查询在线机器人失败（HTTP ${listing.status}）`);
+      }
+      const payload = (await listing.json()) as { devices?: unknown };
+      devices = Array.isArray(payload.devices) ? payload.devices : [];
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError') {
+        throw new Error('连接本地 Server 超时');
+      }
+      if (error instanceof Error && error.message.startsWith('查询在线机器人失败')) {
+        throw error;
+      }
+      throw new Error('本地 Server 当前不可用');
     }
+    if (devices.length !== 1 || typeof devices[0] !== 'string' || !devices[0]) {
+      throw new Error(
+        devices.length === 0
+          ? '当前没有在线机器人，测试提醒无处可发'
+          : `在线机器人有 ${devices.length} 台，需要恰好一台才能发送测试提醒`,
+      );
+    }
+    const deviceId = devices[0];
 
     const response = await this.fetcher(`${this.baseUrl}/xiaozhi/event/push`, {
       method: 'POST',

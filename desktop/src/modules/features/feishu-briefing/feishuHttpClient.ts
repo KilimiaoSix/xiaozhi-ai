@@ -129,18 +129,21 @@ export class FeishuHttpClient {
       }
       throw new Error('本地 Server 当前不可用');
     }
-    let envelope: JsonRecord;
+    // 解析失败不能直接抛：错误响应体常是 aiohttp 的 text/plain（旧进程没有新
+    // 路由就回 404 纯文本），先留住状态码再判断，否则用户只看到 JSON 解析报错。
+    let envelope: JsonRecord | null = null;
     try {
       envelope = asRecord(await response.json(), 'Server 返回的不是 JSON');
-    } catch (error) {
-      if (error instanceof Error) throw error;
-      throw new Error('Server 返回的不是 JSON');
+    } catch {
+      envelope = null;
     }
-    if (!response.ok || envelope.code !== 'OK') {
+    if (!response.ok || (envelope !== null && envelope.code !== 'OK')) {
       throw new Error(
-        stringValue(envelope, 'message') ?? `Server 请求失败（${response.status}）`,
+        (envelope && stringValue(envelope, 'message')) ??
+          `Server 请求失败（${response.status}）`,
       );
     }
+    if (envelope === null) throw new Error('Server 返回的不是 JSON');
     return envelope.data;
   }
 }

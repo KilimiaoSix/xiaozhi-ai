@@ -219,6 +219,7 @@ class WellbeingEngine:
                 "下班平安",
                 "nod",
                 restore_after=8.0,
+                speak=True,
             )
 
         if self._long_work_due(state, local_now):

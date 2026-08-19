@@ -121,4 +121,18 @@ describe('FeishuHttpClient', () => {
 
     await expect(client.getStatus()).rejects.toThrow('本地 Server 当前不可用');
   });
+
+  it('把非 JSON 的错误响应按状态码报错，而不是抛 JSON 解析错', async () => {
+    // 服务端改完没重启时 aiohttp 回 text/plain 404，旧实现把 SyntaxError 原样
+    // 透给渲染层，用户看到 "Unexpected non-whitespace character…" 而不是 404。
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response('404: Not Found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain' },
+      }),
+    );
+    const client = new FeishuHttpClient(fetcher);
+
+    await expect(client.getBriefing()).rejects.toThrow('Server 请求失败（404）');
+  });
 });

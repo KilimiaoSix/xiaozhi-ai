@@ -186,3 +186,124 @@ async def test_briefing_fails_when_both_primary_sources_are_unavailable():
         match="未完成任务读取失败.*今日日程读取失败",
     ):
         await service.get_briefing(date(2026, 8, 19))
+
+
+class MalformedCalendarClient(FakeFeishuClient):
+    """真实飞书里出现过的畸形条目：缺 event_id、start_time 不完整。"""
+
+    async def list_calendar_events(self, start, end):
+        return CollectionResult(
+            (
+                {"summary": "缺 event_id 的残留同步"},
+                {
+                    "event_id": "event-ok",
+                    "summary": "产品周会",
+                    "start_time": {
+                        "timestamp": "1787097600",
+                        "timezone": "Asia/Shanghai",
+                    },
+                    "end_time": {
+                        "timestamp": "1787101200",
+                        "timezone": "Asia/Shanghai",
+                    },
+                },
+                {"event_id": "event-no-time", "summary": "没有时间的日程"},
+            ),
+            1,
+            True,
+        )
+
+
+class NullTasklistsClient(FakeFeishuClient):
+    async def list_tasks(self, *, completed=False):
+        return CollectionResult(
+            ({"guid": "task-1", "summary": "字段在但值是 null", "tasklists": None},),
+            1,
+            True,
+        )
+
+
+class TruncatedClient(FakeFeishuClient):
+    async def list_tasks(self, *, completed=False):
+        return CollectionResult(
+            ({"guid": "task-1", "summary": "只拉到第一页"},),
+            40,
+            False,
+            "next-page-token",
+        )
+
+
+class HugeTimestampClient(FakeFeishuClient):
+    async def list_tasks(self, *, completed=False):
+        return CollectionResult(
+            (
+                {
+                    "guid": "task-1",
+                    "summary": "截止时间是脏数据",
+                    "due": {"timestamp": "99999999999999999999"},
+                },
+            ),
+            1,
+            True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_one_malformed_calendar_entry_does_not_sink_the_whole_briefing():
+    service = FeishuWorkspaceService(
+        MalformedCalendarClient(),
+        self_open_id="ou_me",
+        timezone_name="Asia/Shanghai",
+        now_provider=lambda: datetime(2026, 8, 19, 8, 0, tzinfo=timezone.utc),
+    )
+
+    snapshot = await service.get_briefing(date(2026, 8, 19))
+
+    assert [item["id"] for item in snapshot["meetings"]] == ["event-ok"]
+    assert snapshot["tasks"], "坏日程不该连带丢掉已经拉到的任务"
+    assert any("2 条日程" in warning for warning in snapshot["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_tasklists_null_is_treated_as_no_tasklist():
+    service = FeishuWorkspaceService(
+        NullTasklistsClient(),
+        self_open_id="ou_me",
+        timezone_name="Asia/Shanghai",
+        now_provider=lambda: datetime(2026, 8, 19, 8, 0, tzinfo=timezone.utc),
+    )
+
+    snapshot = await service.get_briefing(date(2026, 8, 19))
+
+    assert snapshot["tasks"][0]["project_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_truncated_collection_is_reported_as_a_warning():
+    service = FeishuWorkspaceService(
+        TruncatedClient(),
+        self_open_id="ou_me",
+        timezone_name="Asia/Shanghai",
+        now_provider=lambda: datetime(2026, 8, 19, 8, 0, tzinfo=timezone.utc),
+    )
+
+    snapshot = await service.get_briefing(date(2026, 8, 19))
+
+    assert any(
+        "未完成任务" in w and "未取完" in w and "40 页" in w
+        for w in snapshot["warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_out_of_range_due_timestamp_degrades_instead_of_raising():
+    service = FeishuWorkspaceService(
+        HugeTimestampClient(),
+        self_open_id="ou_me",
+        timezone_name="Asia/Shanghai",
+        now_provider=lambda: datetime(2026, 8, 19, 8, 0, tzinfo=timezone.utc),
+    )
+
+    snapshot = await service.get_briefing(date(2026, 8, 19))
+
+    assert snapshot["tasks"][0]["due"] is None

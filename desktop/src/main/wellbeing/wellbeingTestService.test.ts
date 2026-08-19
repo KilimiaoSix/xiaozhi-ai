@@ -51,7 +51,7 @@ describe('WellbeingTestService', () => {
     const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
 
     await expect(service.sendTest('long_work')).rejects.toThrow(
-      '需要恰好一台在线机器人才能发送测试提醒',
+      '在线机器人有 2 台，需要恰好一台才能发送测试提醒',
     );
     expect(fetcher).toHaveBeenCalledOnce();
   });
@@ -128,5 +128,35 @@ describe('WellbeingTestService', () => {
       silent: false,
       action: 'nod',
     });
+  });
+
+  it('连不上 Server 时说的是连不上，而不是「需要恰好一台机器人」', async () => {
+    // 两种失败都走 discoverRobotDeviceId 的 null 分支，旧实现一律报设备数问题，
+    // 把「服务端没起」的排查方向引向机器人。
+    const fetcher = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const service = new WellbeingTestService(fetcher);
+
+    await expect(service.sendTest('long_work')).rejects.toThrow(
+      '本地 Server 当前不可用',
+    );
+  });
+
+  it('从 DESKPET_SERVER 读取服务端地址', async () => {
+    const previous = process.env.DESKPET_SERVER;
+    process.env.DESKPET_SERVER = 'http://10.0.0.9:8003';
+    try {
+      const fetcher = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, devices: ['dc:da:0c:26:9a:60'] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const service = new WellbeingTestService(fetcher);
+      await service.sendTest('long_work').catch(() => undefined);
+
+      expect(String(fetcher.mock.calls[0][0])).toContain('10.0.0.9:8003');
+    } finally {
+      if (previous === undefined) delete process.env.DESKPET_SERVER;
+      else process.env.DESKPET_SERVER = previous;
+    }
   });
 });

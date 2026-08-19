@@ -42,6 +42,13 @@ class BriefingFailingService(FakeService):
         raise FeishuWorkspaceUnavailable("两个飞书数据源都不可用")
 
 
+class UnexpectedlyExplodingService(FakeService):
+    """service 层漏出的非契约异常（脏时间戳、飞书改字段等）。"""
+
+    async def get_briefing(self, report_date=None):
+        raise TypeError("'NoneType' object is not iterable")
+
+
 class ConfigurationRequiredService(FakeService):
     def __init__(self):
         super().__init__()
@@ -163,3 +170,20 @@ async def test_briefing_rejects_non_iso_date(aiohttp_client):
 
     assert response.status == 400
     assert (await response.json())["code"] == "FEISHU_WORKSPACE_INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_service_error_stays_a_json_envelope(aiohttp_client):
+    """没有兜底时 aiohttp 会回 text/plain 500，桌面端 response.json() 当场炸。"""
+    client, _ = await make_client(
+        aiohttp_client,
+        service=UnexpectedlyExplodingService(),
+    )
+
+    response = await client.get("/xiaozhi/feishu/briefing")
+
+    assert response.status == 502
+    assert response.content_type == "application/json"
+    payload = await response.json()
+    assert payload["code"] == "FEISHU_WORKSPACE_UPSTREAM_ERROR"
+    assert payload["data"] is None

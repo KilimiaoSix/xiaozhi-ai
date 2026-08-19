@@ -6,13 +6,23 @@ import asyncio
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable
 
-from core.morning_brief.models import normalize_calendar_event, resolve_timezone
+from core.morning_brief.models import (
+    ModelValidationError,
+    normalize_calendar_event,
+    resolve_timezone,
+)
 from core.morning_brief.feishu_client import (
     CALENDAR_SCOPES,
     TASK_SCOPES,
     TASKLIST_SCOPES,
     FeishuApiError,
 )
+
+# 99991663=user access token 无效，99991672=缺少 scope。两者都要重新授权，
+# 但前者是令牌过期、后者是权限没开，文案不该混为一谈。
+FEISHU_TOKEN_INVALID_CODE = "99991663"
+FEISHU_SCOPE_MISSING_CODE = "99991672"
+FEISHU_REAUTH_CODES = frozenset({FEISHU_TOKEN_INVALID_CODE, FEISHU_SCOPE_MISSING_CODE})
 
 
 WORKSPACE_SCOPES = (
@@ -48,7 +58,18 @@ def _timestamp(value: Any) -> str | None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.isoformat()
     seconds = numeric / 1000 if numeric > 10_000_000_000 else numeric
-    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        # 飞书返回过位数异常的脏时间戳；一条任务的截止时间不该让整个面板 500
+        return None
+
+
+def _entries(value: Any) -> tuple[Any, ...]:
+    """飞书常把空列表字段返回成 null，直接 for 会 TypeError。"""
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return ()
 
 
 class FeishuWorkspaceService:
@@ -85,10 +106,7 @@ class FeishuWorkspaceService:
 
     @staticmethod
     def _warning(label: str, error: BaseException, scopes: tuple[str, ...]) -> str:
-        if isinstance(error, FeishuApiError) and str(error.code) in {
-            "99991663",
-            "99991672",
-        }:
+        if isinstance(error, FeishuApiError) and str(error.code) in FEISHU_REAUTH_CODES:
             return f"{label}缺少飞书权限：{'、'.join(scopes)}"
         return f"{label}读取失败：{error}"
 
@@ -112,10 +130,10 @@ class FeishuWorkspaceService:
             warnings.append(
                 self._warning("未完成任务", task_result, TASK_SCOPES)
             )
-            if isinstance(task_result, FeishuApiError) and str(task_result.code) in {
-                "99991663",
-                "99991672",
-            }:
+            if (
+                isinstance(task_result, FeishuApiError)
+                and str(task_result.code) in FEISHU_REAUTH_CODES
+            ):
                 missing_scopes.extend(TASK_SCOPES)
         if isinstance(calendar_result, BaseException):
             warnings.append(
@@ -125,9 +143,10 @@ class FeishuWorkspaceService:
                     CALENDAR_SCOPES,
                 )
             )
-            if isinstance(calendar_result, FeishuApiError) and str(
-                calendar_result.code
-            ) in {"99991663", "99991672"}:
+            if (
+                isinstance(calendar_result, FeishuApiError)
+                and str(calendar_result.code) in FEISHU_REAUTH_CODES
+            ):
                 missing_scopes.extend(CALENDAR_SCOPES)
         if isinstance(task_result, BaseException) and isinstance(
             calendar_result, BaseException
@@ -139,8 +158,14 @@ class FeishuWorkspaceService:
         calendar_items = (
             () if isinstance(calendar_result, BaseException) else calendar_result.items
         )
+        # 分页没取完时必须说出来：面板少了一半任务却显示得像全部，比报错更误导
+        for label, result in (("未完成任务", task_result), ("今日日程", calendar_result)):
+            if isinstance(result, BaseException) or result.complete:
+                continue
+            detail = f"（{result.error}）" if result.error else ""
+            warnings.append(f"{label}未取完，只显示了前 {result.pages} 页{detail}")
         for task in task_items:
-            for entry in task.get("tasklists", []):
+            for entry in _entries(task.get("tasklists")):
                 if isinstance(entry, dict) and entry.get("tasklist_guid"):
                     guid = str(entry["tasklist_guid"])
                     if guid not in tasklist_guids:
@@ -173,7 +198,7 @@ class FeishuWorkspaceService:
             )
             if any(
                 isinstance(error, FeishuApiError)
-                and str(error.code) in {"99991663", "99991672"}
+                and str(error.code) in FEISHU_REAUTH_CODES
                 for error in tasklist_errors
             ):
                 missing_scopes.extend(TASKLIST_SCOPES)
@@ -182,7 +207,7 @@ class FeishuWorkspaceService:
         for index, task in enumerate(task_items):
             due = task.get("due") if isinstance(task.get("due"), dict) else {}
             project_name = ""
-            for entry in task.get("tasklists", []):
+            for entry in _entries(task.get("tasklists")):
                 if not isinstance(entry, dict):
                     continue
                 project_name = tasklist_names.get(
@@ -203,8 +228,18 @@ class FeishuWorkspaceService:
             )
 
         meetings = []
+        malformed = 0
         for raw in calendar_items:
-            item = normalize_calendar_event(raw, self.timezone_name)
+            # 一条残留的同步记录（缺 event_id / 缺时间）不该拖垮整份简报，
+            # 连带把已经拉到的任务一起丢掉。与 morning_brief 的逐条容错一致。
+            if not isinstance(raw, dict):
+                malformed += 1
+                continue
+            try:
+                item = normalize_calendar_event(raw, self.timezone_name)
+            except ModelValidationError:
+                malformed += 1
+                continue
             meetings.append(
                 {
                     "id": item.event_id,
@@ -219,6 +254,9 @@ class FeishuWorkspaceService:
                 }
             )
         meetings.sort(key=lambda item: item["start"])
+        if malformed:
+            # 静默丢弃等于谎报「今天就这些会」，必须让用户知道有条目没解析出来
+            warnings.append(f"{malformed} 条日程无法解析，已跳过。")
 
         return {
             "status": self.status(missing_scopes),

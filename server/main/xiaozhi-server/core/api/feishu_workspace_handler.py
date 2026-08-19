@@ -100,4 +100,16 @@ class FeishuWorkspaceHandler:
                 None,
                 status=502,
             )
+        except Exception:
+            # 没有这层兜底，service 漏出的任何异常都会变成 aiohttp 默认的
+            # text/plain 500，桌面端 response.json() 当场抛 SyntaxError，
+            # 用户看到的是解析报错而不是「上游出问题」。
+            if self._logger is not None:
+                self._logger.exception("飞书工作台简报失败")
+            return self._json_response(
+                "FEISHU_WORKSPACE_UPSTREAM_ERROR",
+                "飞书工作台数据读取失败",
+                None,
+                status=502,
+            )
         return self._json_response("OK", "success", briefing)
