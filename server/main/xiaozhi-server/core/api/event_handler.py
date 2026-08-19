@@ -3,6 +3,7 @@
 给 Codex / Claude Code / 监控告警等外部来源一个 HTTP 入口，把事件推给指定的
 常连设备。设备侧需要是常连固件（WebsocketProtocol 开机即连并 ping 保活）。
 """
+import asyncio
 import json
 
 from aiohttp import web
@@ -92,9 +93,9 @@ class EventHandler(BaseHandler):
                 404,
             )
 
-        try:
-            spoke = await push_work_event(
-                conn,
+        async def _push(target) -> bool:
+            return await push_work_event(
+                target,
                 text=str(text),
                 emotion=str(data.get("emotion") or DEFAULT_EMOTION),
                 status=str(data.get("status") or DEFAULT_STATUS),
@@ -105,11 +106,34 @@ class EventHandler(BaseHandler):
                                 if "idle_animation" in data else None),
                 silent=bool(data.get("silent", False)),
             )
-        except Exception as e:
-            self.logger.bind(tag=TAG).error(f"推送事件到设备 {device_id} 失败: {e}")
-            return self._json_response(
-                {"ok": False, "message": f"push failed: {e}", "delivered": False}, 502
+
+        try:
+            spoke = await _push(conn)
+        except Exception as first_error:
+            # 固件断线 10s 就重连：注册表里的 conn 可能正是那条垂死连接
+            # （send 抛 1001 going away）。等一拍重取当前活跃连接再试一次，
+            # 把整个重连窗口的 502 压成偶发而不是必然。
+            self.logger.bind(tag=TAG).warning(
+                f"推送事件到设备 {device_id} 首次失败，重取连接重试: {first_error}"
             )
+            await asyncio.sleep(1.0)
+            retry_conn = self.device_registry.get(device_id)
+            if retry_conn is None or retry_conn is conn:
+                self.logger.bind(tag=TAG).error(
+                    f"推送事件到设备 {device_id} 失败: {first_error}"
+                )
+                return self._json_response(
+                    {"ok": False, "message": f"push failed: {first_error}",
+                     "delivered": False}, 502
+                )
+            try:
+                spoke = await _push(retry_conn)
+            except Exception as e:
+                self.logger.bind(tag=TAG).error(f"推送事件到设备 {device_id} 失败: {e}")
+                return self._json_response(
+                    {"ok": False, "message": f"push failed: {e}", "delivered": False},
+                    502,
+                )
 
         # 流程五：主人离席时经过的事件攒进台账，等他回来一次性汇总。
         # 是否入待播报队列由 AwayLedger 按离席窗口自行判断，这里无条件调用。

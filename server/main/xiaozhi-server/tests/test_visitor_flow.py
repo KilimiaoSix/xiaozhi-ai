@@ -119,11 +119,24 @@ async def test_meeting_without_expected_return_omits_time():
 
 @pytest.mark.asyncio
 async def test_leave_uses_leave_wording():
+    """无 leave_end 时退回不带日期的请假文案（绝不编造返回时间）。"""
     flow, _clock, push, _ledger, _conn = build(FakeOwnerStatus(state="leave"))
 
     await flow.on_visitor_detected(WORKSTATION)
 
     assert push.texts == ["他今天请假，不在工位。有重要的事我可以帮你记下来。"]
+
+
+@pytest.mark.asyncio
+async def test_leave_with_end_date_tells_public_return_date():
+    """需求：请假期间说明"不在岗"和可公开的返回时间——返回日=假期结束次日。"""
+    flow, _clock, push, _ledger, _conn = build(
+        FakeOwnerStatus(state="leave", leave_start="2026-08-20", leave_end="2026-08-20")
+    )
+
+    await flow.on_visitor_detected(WORKSTATION)
+
+    assert push.texts == ["他请假了，预计8月21日回来。有重要的事我可以帮你记下来。"]
 
 
 @pytest.mark.asyncio

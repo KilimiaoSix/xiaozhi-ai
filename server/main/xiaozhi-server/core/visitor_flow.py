@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional
 
 TAG = __name__
@@ -35,6 +35,9 @@ DEFAULT_ACTION = "center"
 # 来访应答文案。全部是固定模板，唯一的变量是预计返回时刻。
 TEXT_MEETING_WITH_TIME = "他正在开会，预计{time}回来。需要帮你留句话吗？"
 TEXT_MEETING = "他正在开会，暂时不在工位。需要帮你留句话吗？"
+# 请假文案带的是「可公开的返回日期」（假期结束次日），不是请假原因——
+# 需求原话：请假期间只说明"不在岗"和可公开的返回时间，不播报请假原因
+TEXT_LEAVE_WITH_DATE = "他请假了，预计{date}回来。有重要的事我可以帮你记下来。"
 TEXT_LEAVE = "他今天请假，不在工位。有重要的事我可以帮你记下来。"
 TEXT_AWAY_WITH_TIME = "他暂时不在工位，预计{time}回来。需要帮你留句话吗？"
 TEXT_GENERIC = "他暂时不在工位，需要帮你留句话吗？"
@@ -74,6 +77,17 @@ def _format_expected_return(value: Any) -> Optional[str]:
         return datetime.fromisoformat(str(value)).strftime("%H:%M")
     except (TypeError, ValueError):
         return None
+
+
+def _format_leave_return_date(leave_end: Any) -> Optional[str]:
+    """把 leave_end（含当天）读成假期结束次日的「M月D日」；解析不了返回 None。"""
+    if not leave_end:
+        return None
+    try:
+        back = date.fromisoformat(str(leave_end)) + timedelta(days=1)
+    except (TypeError, ValueError):
+        return None
+    return f"{back.month}月{back.day}日"
 
 
 def _is_decline(text: str) -> bool:
@@ -236,6 +250,9 @@ class VisitorFlow:
                 return TEXT_MEETING_WITH_TIME.format(time=expected)
             return TEXT_MEETING
         if state == "leave":
+            back = _format_leave_return_date(status.get("leave_end"))
+            if back:
+                return TEXT_LEAVE_WITH_DATE.format(date=back)
             return TEXT_LEAVE
         if expected:
             return TEXT_AWAY_WITH_TIME.format(time=expected)

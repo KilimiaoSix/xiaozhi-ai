@@ -212,6 +212,7 @@ class IncidentManager:
         self._push_event = push_event or _default_push_event
         self._device_resolver = device_resolver
         self._on_low_severity = on_low_severity
+        self._on_announced: Optional[Callable[[dict], Any]] = None
         self._diagnosis_runner = diagnosis_runner
         self._clock = clock or datetime.now
         self._sleep = sleep or asyncio.sleep
@@ -252,6 +253,13 @@ class IncidentManager:
     def set_on_low_severity(self, callback: Optional[Callable[[dict], Any]]) -> None:
         """低级别告警的去向（离席台账 / 日终摘要），由集成方接。"""
         self._on_low_severity = callback
+
+    def set_on_announced(self, callback: Optional[Callable[[dict], Any]]) -> None:
+        """P0/P1 播报后的去向，由集成方接（离席台账的严重告警桶）。
+
+        主人不在时 P0/P1 只对着空工位喊了一嗓子；没有这条回调，返岗汇总的
+        「严重告警优先」桶在真实告警链路里永远不会有产出。"""
+        self._on_announced = callback
 
     def _settings(self) -> _Settings:
         return _Settings(self._config)
@@ -315,9 +323,19 @@ class IncidentManager:
             return await self._route_new_firing(record, settings)
 
         # 仍在燃烧：冷却期内只累计次数，不再出声，也不再往摘要里塞一条
-        # （监控对同一故障通常每 30~60 秒重发一次，不挡住的话摘要也会被刷屏）
+        # （监控对同一故障通常每 30~60 秒重发一次，不挡住的话摘要也会被刷屏）。
+        # 例外：严重度刚升级跨进播报档（如 P2 → P0）且这条故障还从未播报过——
+        # 冷却门只看时间不看严重度的话，「低级别先到、随后升级」这个真实告警里
+        # 最常见的形态会被当成普通重复静默吞掉，P0 打断就成了空话。
+        severity_broke_through = (
+            record["severity"] in ANNOUNCE_SEVERITIES and not record.get("announced")
+        )
         since = _seconds_between(now, record.get("last_notified_at"))
-        if since is not None and since < settings.dedup_cooldown_s:
+        if (
+            since is not None
+            and since < settings.dedup_cooldown_s
+            and not severity_broke_through
+        ):
             self._persist(record)
             self._logger.info(
                 f"告警 {incident_id} 在冷却期内重复上报（第 {record['repeat_count']} 次），不播报"
@@ -355,6 +373,12 @@ class IncidentManager:
         record["announced"] = True
         record["last_announced_at"] = self._now_iso()
         self._append_event(record, EVENT_ANNOUNCED, text)
+        # 回调失败只记日志：台账挂了不该反过来影响告警播报的成败判定
+        if self._on_announced is not None:
+            try:
+                await _maybe_await(self._on_announced(self.snapshot(record)))
+            except Exception:
+                self._logger.exception("announced 回调处理失败，已忽略")
         return spoke
 
     def _alert_text(self, record: dict) -> str:

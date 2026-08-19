@@ -13,7 +13,14 @@ from core.api.presence_handler import PresenceHandler
 from core.api.camera_stream_handler import CameraStreamHandler
 from core.approval_manager import get_approval_manager
 from core.approval_routes import add_approval_routes
-from core.away_ledger import KIND_INCIDENT, SEVERITY_NORMAL, get_away_ledger
+from datetime import date, timedelta
+
+from core.away_ledger import (
+    KIND_INCIDENT,
+    SEVERITY_CRITICAL,
+    SEVERITY_NORMAL,
+    get_away_ledger,
+)
 from core.away_routes import add_away_routes
 from core.camera_stream.distraction_observer import (
     DistractionObserver,
@@ -27,10 +34,11 @@ from core.incident_routes import add_incident_routes
 from core.morning_brief.factory import create_morning_brief_service
 from core.morning_brief_routes import add_morning_brief_routes
 from core.api.pomodoro_handler import PomodoroHandler
-from core.owner_status import get_owner_status_store
+from core.owner_status import STATUS_LEAVE, get_owner_status_store
 from core.owner_status_reminder import OwnerStatusReminder
 from core.owner_status_routes import add_owner_status_routes
 from core.pomodoro_manager import pomodoro_manager
+from plugins_func.functions.day_summary import register_summary_provider
 from core.presence_arrival import create_presence_arrival_orchestrator
 from core.presence_registry import PresenceRegistry
 from core.presence_routes import add_presence_routes
@@ -193,6 +201,43 @@ class SimpleHttpServer:
                     source="incident",
                 )
             )
+            # P0/P1 播报后也要记台账：主人不在时那一嗓子是对着空工位喊的，
+            # 没有这条，返岗汇总的「严重告警优先」桶在真实告警链路里永远空转
+            get_incident_manager(config).set_on_announced(
+                lambda incident: get_away_ledger(config).record(
+                    KIND_INCIDENT,
+                    f"{incident['service']} {incident['title']}",
+                    task_key=f"incident:{incident['incident_id']}",
+                    severity=SEVERITY_CRITICAL,
+                    source="incident",
+                )
+            )
+
+        # ── 日终总结数据源（流程八）──────────────────────
+        # day_summary 语音函数按注册表取数；不接这三个槽位，
+        # 「总结一下今天」永远只会说兜底话术
+        register_summary_provider(
+            "agent_events", lambda: get_away_ledger(config).events_today()
+        )
+        register_summary_provider(
+            "incidents", lambda: get_incident_manager(config).list_today()
+        )
+
+        def _tomorrow_status() -> dict:
+            record = get_owner_status_store(config).get()
+            if record.get("state") != STATUS_LEAVE:
+                return {"state": "available"}
+            tomorrow = date.today() + timedelta(days=1)
+            try:
+                start = date.fromisoformat(record.get("leave_start") or "")
+                end = date.fromisoformat(record.get("leave_end") or "")
+            except ValueError:
+                return {"state": "available"}
+            if start <= tomorrow <= end:
+                return {"state": "leave"}
+            return {"state": "available"}
+
+        register_summary_provider("tomorrow_status", _tomorrow_status)
 
         # ── 分心检测（流程六）────────────────────────────
         self.distraction_observer = None

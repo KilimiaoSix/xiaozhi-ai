@@ -245,15 +245,38 @@ async def test_low_severity_repeat_within_cooldown_does_not_spam_summary(tmp_pat
 
 
 async def test_severity_upgrade_breaks_through_cooldown_state(tmp_path):
+    """P2 在冷却窗**之内**升级 P0 必须立即播报。
+
+    冷却门只比时间的话，「低级别先到、随后升级」这个真实告警里最常见的
+    形态会被当成普通重复静默吞掉——advance 超过冷却期的写法测不到这条。
+    """
     seen = []
     manager, clock, _, push = build_manager(tmp_path, on_low_severity=seen.append)
     await manager.handle_webhook(firing(severity="P2"))
 
-    clock.advance(200)
+    clock.advance(10)  # 远小于 dedup_cooldown_s=120，仍在冷却窗内
     result = await manager.handle_webhook(firing(severity="P0"))
 
     assert result["outcome"] == "announced"
     assert push.calls[0]["status"] == "线上告警 P0"
+    assert result["incident"]["severity"] == "P0"
+
+
+async def test_announced_incident_repeat_upgrade_still_merges_in_cooldown(tmp_path):
+    """已播报过的 P1 在冷却窗内又升 P0：只该合并，不该二次出声。
+
+    升级突破冷却的特例只给「从未播报过」的故障；已经打断过一次的故障
+    在冷却窗内反复出声就是需求里明说要防的连续播报。
+    """
+    manager, clock, _, push = build_manager(tmp_path)
+    await manager.handle_webhook(firing(severity="P1"))
+    assert len(push.calls) == 1
+
+    clock.advance(10)
+    result = await manager.handle_webhook(firing(severity="P0"))
+
+    assert result["outcome"] == "merged"
+    assert len(push.calls) == 1
     assert result["incident"]["severity"] == "P0"
 
 
