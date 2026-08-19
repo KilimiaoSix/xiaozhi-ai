@@ -468,6 +468,49 @@ async def test_stale_timer_does_not_fire_after_pause():
 
 
 @pytest.mark.asyncio
+async def test_stale_timer_does_not_fire_after_pause_in_celebration_window():
+    """庆祝窗口内暂停：计时任务不得在 pause 之后再推任何画面。
+
+    相位到点后会先庆祝 celebration_delay_s 秒、再由计时任务推新相位画面，
+    这段窗口里会话已切到新相位但 deadline 还是 None。窗口内 pause 必须让
+    睡在庆祝里的旧任务彻底作废，否则它醒来会把"运行中"的画面盖掉暂停回显，
+    设备看起来就像暂停失灵。
+    """
+    celebration_s = 0.2
+    manager, alerts, _, tools = make_manager(celebration_delay_s=celebration_s)
+
+    await manager.start(DEVICE_ID)
+    await wait_for_shows(tools, 1)
+    # 转相位的 alert 在庆祝 sleep 之前发出，等到它就等到了庆祝窗口
+    await wait_until(lambda: len(alerts.calls) >= 1, what="进入庆祝窗口")
+    # 新相位画面要等庆祝结束才推，此刻只该有 start 那一次——证明确实在窗口内
+    assert tools.phases() == ["focus"]
+
+    result = await manager.pause(DEVICE_ID)
+    assert result["outcome"] == "paused"
+    # 会话在庆祝开始时就已切到短休，暂停冻结的是新相位的整段时长
+    assert result["status"]["phase"] == "short_break"
+
+    # pause 的画面回显是射后不理的后台任务，先等它落地再取基线，
+    # 否则会把这条回显误算成"计时器在暂停后还在推"
+    await wait_until(
+        lambda: tools.shows() and tools.shows()[-1]["paused"] is True,
+        what="pause 的画面回显落地",
+    )
+    baseline = len(tools.shows())
+
+    # 覆盖庆祝残余 + 一整个相位：旧任务若只是被打断而没作废，会在这里醒来推 show
+    await asyncio.sleep(celebration_s + PHASE_SECONDS + SETTLE_SECONDS)
+    await wait_pushes_settled(manager)
+
+    assert tools.shows()[baseline:] == []
+    # 也不该有第二次转相位播报
+    assert len(alerts.calls) == 1
+
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
 async def test_stale_timer_does_not_fire_after_stop():
     manager, alerts, _, tools = make_manager()
 
