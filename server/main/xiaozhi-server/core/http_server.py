@@ -10,6 +10,7 @@ from core.api.camera_stream_handler import CameraStreamHandler
 from core.morning_brief.factory import create_morning_brief_service
 from core.morning_brief_routes import add_morning_brief_routes
 from core.api.pomodoro_handler import PomodoroHandler
+from core.presence_arrival import create_presence_arrival_orchestrator
 from core.presence_registry import PresenceRegistry
 from core.presence_routes import add_presence_routes
 from core.pomodoro_routes import add_pomodoro_routes
@@ -29,15 +30,35 @@ class SimpleHttpServer:
             EventHandler(config, ws_server.device_registry) if ws_server else None
         )
         self.presence_registry = PresenceRegistry()
+        # 在岗状态的消费方：主人到岗让机器人迎接，工位持续无人让它休眠。
+        # 需要 device_registry 才能按 device_id 找到活跃连接，故与事件推送同样依赖 ws_server；
+        # 未配置 presence_robot 或走 presence_server.py 轻量入口时返回 None，接口行为不变。
+        self.presence_orchestrator = create_presence_arrival_orchestrator(
+            config,
+            ws_server.device_registry if ws_server else None,
+            logger=self.logger,
+        )
         self.presence_handler = PresenceHandler(
             config,
             self.presence_registry,
             logger=self.logger,
+            on_accepted=(
+                self.presence_orchestrator.on_report
+                if self.presence_orchestrator
+                else None
+            ),
         )
         self.camera_stream_handler = CameraStreamHandler(
             config,
             self.presence_registry,
             logger=self.logger,
+            # 桌面摄像头流是产品默认链路，它写 registry 走的是内部直调而不是
+            # /presence/report，必须单独接同一个编排回调，迎接/休眠才对它生效
+            on_accepted=(
+                self.presence_orchestrator.on_report
+                if self.presence_orchestrator
+                else None
+            ),
         )
         self.morning_brief_service = create_morning_brief_service(config)
         self.morning_brief_handler = MorningBriefHandler(

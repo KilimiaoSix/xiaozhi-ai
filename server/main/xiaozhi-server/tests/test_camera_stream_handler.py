@@ -85,6 +85,7 @@ async def make_client(
     enrollment_runtime=None,
     auth=False,
     monitoring_factory=None,
+    on_accepted=None,
 ):
     config = {
         "server": {
@@ -103,6 +104,7 @@ async def make_client(
         enrollment_factory=lambda options: enrollment_runtime,
         now_provider=lambda: NOW,
         monotonic=lambda: 100.0,
+        on_accepted=on_accepted,
     )
     app = web.Application()
     add_presence_routes(
@@ -111,6 +113,80 @@ async def make_client(
         stream_handler,
     )
     return await aiohttp_client(app), registry, monitoring_runtime, enrollment_runtime
+
+
+MONITORING_RESULT = {
+    "presence": {"state": "present", "changed": True},
+    "identity": {
+        "state": "owner",
+        "previous_state": "starting",
+        "changed": True,
+        "face_count": 1,
+        "face_detected": True,
+        "similarity": 0.731245,
+        "threshold": 0.45,
+        "matched": True,
+    },
+    "metrics": {
+        "visible_core_landmarks": 5,
+        "has_visible_shoulder": True,
+        "positive_streak": 3,
+        "seconds_since_last_positive": 0.0,
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_monitoring_stream_invokes_on_accepted_callback(aiohttp_client):
+    """摄像头流写 registry 时必须同步触发编排回调。
+
+    迎接/休眠编排靠这个回调拿到状态变化；漏掉它的话，产品默认链路
+    （桌面摄像头流）看得见识别结果，机器人却毫无反应。
+    """
+    calls = []
+
+    async def on_accepted(report, acceptance):
+        calls.append((report, acceptance))
+
+    runtime = FakeRuntime([dict(MONITORING_RESULT)])
+    client, _, _, _ = await make_client(
+        aiohttp_client, monitoring_runtime=runtime, on_accepted=on_accepted
+    )
+    ws = await client.ws_connect("/xiaozhi/presence/stream")
+    await ws.send_json(start_message())
+    await ws.receive_json()
+    await ws.send_bytes(JPEG)
+    await ws.receive_json()
+    await ws.close()
+
+    assert len(calls) == 1
+    report, acceptance = calls[0]
+    assert report.workstation_id == "desk-test"
+    assert report.state == "present"
+    assert report.identity["state"] == "owner"
+    assert acceptance.get("duplicate") is False
+
+
+@pytest.mark.asyncio
+async def test_monitoring_stream_survives_on_accepted_failure(aiohttp_client):
+    """编排回调抛异常不能拖垮识别流：桌面端还等着结果刷新 UI。"""
+
+    async def on_accepted(report, acceptance):
+        raise RuntimeError("orchestrator exploded")
+
+    runtime = FakeRuntime([dict(MONITORING_RESULT), dict(MONITORING_RESULT)])
+    client, registry, _, _ = await make_client(
+        aiohttp_client, monitoring_runtime=runtime, on_accepted=on_accepted
+    )
+    ws = await client.ws_connect("/xiaozhi/presence/stream")
+    await ws.send_json(start_message())
+    await ws.receive_json()
+    await ws.send_bytes(JPEG)
+    result = await ws.receive_json()
+    await ws.close()
+
+    assert result["type"] == "recognition_result"
+    assert registry.get("desk-test")["reported_state"] == "present"
 
 
 @pytest.mark.asyncio

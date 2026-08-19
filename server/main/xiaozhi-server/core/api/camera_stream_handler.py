@@ -180,6 +180,7 @@ class CameraStreamHandler:
         enrollment_factory: Callable[[StreamStart], Any] | None = None,
         now_provider: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
+        on_accepted: Callable[..., Any] | None = None,
         logger=None,
     ) -> None:
         server_config = config.get("server", {})
@@ -193,6 +194,10 @@ class CameraStreamHandler:
         self._enrollment_factory = enrollment_factory or _default_enrollment_factory
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic or time.monotonic
+        # 与 PresenceHandler 的 on_accepted 同一契约：每条被 registry 接受的
+        # 上报回调一次 (report, acceptance)。桌面摄像头流是产品默认链路，
+        # 不接这个回调的话，迎接/休眠编排只对 presence-agent 的 HTTP 上报生效。
+        self._on_accepted = on_accepted
         self._logger = logger or logging.getLogger(__name__)
 
     def _authorized(self, request: web.Request) -> bool:
@@ -391,7 +396,13 @@ class CameraStreamHandler:
                 },
                 now_utc=now,
             )
-            self._registry.accept(report)
+            acceptance = self._registry.accept(report)
+            if self._on_accepted is not None:
+                try:
+                    await self._on_accepted(report, acceptance)
+                except Exception:
+                    # 编排失败不能拖垮识别流：桌面端还等着 recognition_result 刷新 UI
+                    self._logger.exception("presence on_accepted 回调失败，已忽略")
             previous_presence = current_presence
             await ws.send_json(event)
 
