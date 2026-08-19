@@ -89,7 +89,7 @@ def _require_models(*paths: Path) -> None:
         )
 
 
-def _default_monitoring_factory(options: StreamStart):
+def _default_monitoring_factory(options: StreamStart, *, face_implies_present: bool = False):
     try:
         from presence_agent.app import (
             DEFAULT_FACE_DETECTOR_PATH,
@@ -131,6 +131,7 @@ def _default_monitoring_factory(options: StreamStart):
             presence_tracker=PresenceTracker(3, 2.0),
             face_verifier=face_verifier,
             face_threshold=0.45,
+            face_implies_present=face_implies_present,
         )
     except ModelUnavailableError:
         raise
@@ -191,9 +192,18 @@ class CameraStreamHandler:
         self._auth_enabled = bool(auth_config.get("enabled", False))
         self._auth_key = str(server_config.get("auth_key", ""))
         self._registry = registry
-        self._monitoring_factory = (
-            monitoring_factory or _default_monitoring_factory
-        )
+        if monitoring_factory is not None:
+            self._monitoring_factory = monitoring_factory
+        else:
+            # 摄像头取景只拍到头肩时姿态判不出在岗,配置里可以放宽成「看到脸就算在岗」
+            face_first = bool(
+                (config.get("camera") or {}).get("face_implies_present", False)
+            )
+            self._monitoring_factory = (
+                lambda options: _default_monitoring_factory(
+                    options, face_implies_present=face_first
+                )
+            )
         self._enrollment_factory = enrollment_factory or _default_enrollment_factory
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic or time.monotonic
