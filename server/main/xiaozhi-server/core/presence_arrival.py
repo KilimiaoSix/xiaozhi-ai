@@ -31,6 +31,10 @@ SETTLED_IDENTITY_STATES = frozenset(
 # 这两种状态下的在岗结论都不可信，一律不驱动机器人。
 IGNORED_PRESENCE_STATES = frozenset({"starting", "camera_error"})
 
+# 识别结果确定是「不是主人」的那两种。not_enrolled（底片没录过）与识别超时
+# 都只说明认不准，不足以断定来了个访客，因此不进来访者流程。
+VISITOR_IDENTITY_STATES = frozenset({"unknown", "multiple_faces"})
+
 DEFAULT_IDENTITY_WAIT_SECONDS = 5.0
 DEFAULT_ABSENT_GRACE_SECONDS = 90.0
 DEFAULT_GREETING_OWNER = "早上好，今天也一起把事情搞定吧。"
@@ -52,6 +56,14 @@ async def _default_push_alert(conn, text: str, **kwargs) -> None:
     from core.handle.pushHandle import push_alert_to_device
 
     return await push_alert_to_device(conn, text=text, **kwargs)
+
+
+def _join_sentences(first: str, second: str) -> str:
+    """迎接语 + 返岗汇总拼成一条播报，缺句号就补一个，避免两句黏成一坨。"""
+    first = first.rstrip()
+    if first and first[-1] not in "。！？!?.…":
+        first += "。"
+    return first + second
 
 
 @dataclass
@@ -131,6 +143,9 @@ class PresenceArrivalOrchestrator:
     """把在岗状态变化翻译成机器人指令。
 
     推送函数与时钟都可注入，便于离线单测；生产用默认实现走 pushHandle。
+
+    away_ledger / visitor_flow / owner_status_store 是流程四/五接进来的可选依赖，
+    三个都缺省 None 时行为与接入前完全一致（只做迎接与休眠）。
     """
 
     def __init__(
@@ -143,6 +158,9 @@ class PresenceArrivalOrchestrator:
         clock: Optional[Callable[[], float]] = None,
         logger=None,
         settings: Optional[_Settings] = None,
+        owner_status_store=None,
+        away_ledger=None,
+        visitor_flow=None,
     ) -> None:
         self._settings = settings or _read_settings(config)
         if self._settings is None:
@@ -153,6 +171,9 @@ class PresenceArrivalOrchestrator:
         self._clock = clock or time.monotonic
         self._logger = logger or logging.getLogger(__name__)
         self._states: dict[str, _WorkstationState] = {}
+        self._owner_status_store = owner_status_store
+        self._away_ledger = away_ledger
+        self._visitor_flow = visitor_flow
 
     def _state_for(self, workstation_id: str) -> _WorkstationState:
         state = self._states.get(workstation_id)
@@ -208,7 +229,25 @@ class PresenceArrivalOrchestrator:
 
         greeting = self._choose_greeting(report, state, now)
         if greeting is None:
+            # identity 还没收敛：既不问好也不当访客，等下一条上报
             return
+
+        identity_state = (report.identity or {}).get("state")
+        if (
+            self._visitor_flow is not None
+            and identity_state in VISITOR_IDENTITY_STATES
+            and self._owner_is_out()
+        ):
+            # 流程四：主人不在时来的是访客，走应答+留言，不走迎接。
+            # 刻意不置 greeted——访客还站在工位前时主人回来，仍然要被迎接。
+            await self._handle_visitor(report.workstation_id)
+            return
+
+        is_owner = identity_state == "owner"
+        # 流程五：返岗汇总接在迎接语后面，一条推送说完，不拆成两次播报
+        summary = self._compose_away_summary() if is_owner else None
+        if summary:
+            greeting = _join_sentences(greeting, summary)
 
         conn = self._resolve_conn(device_id)
         if conn is None:
@@ -234,9 +273,82 @@ class PresenceArrivalOrchestrator:
             # 回滚标记，让下一条上报还能再试一次，否则一次抖动就永久丢掉这次迎接
             state.greeted = False
             raise
+        if is_owner:
+            # 只有推送成功之后才清账：先清后推的话，一次断线就把同事的留言吞了
+            self._settle_return(reported=bool(summary))
         self._logger.info(
             f"工位 {report.workstation_id} 到岗，已让设备 {device_id} 迎接：{greeting}"
         )
+
+    # ---------- 流程四/五：离席台账与来访者 ----------
+
+    def _owner_is_out(self) -> bool:
+        """主人是不是「不在」：声明状态非在岗，或摄像头已确认离席。
+
+        两个来源都要看——主人可能只是走开没声明（台账说了算），
+        也可能人还在楼里但已声明会议中（声明状态说了算）。
+        """
+        ledger = self._away_ledger
+        if ledger is not None:
+            try:
+                if ledger.is_away():
+                    return True
+            except Exception as e:
+                self._logger.warning(f"读取离席台账失败，按主人在岗处理: {e}")
+        store = self._owner_status_store
+        if store is not None:
+            try:
+                return str(store.get().get("state") or "") != "available"
+            except Exception as e:
+                self._logger.warning(f"读取主人状态失败，按主人在岗处理: {e}")
+        return False
+
+    async def _handle_visitor(self, workstation_id: str) -> None:
+        try:
+            await self._visitor_flow.on_visitor_detected(workstation_id)
+        except Exception as e:
+            self._logger.warning(f"来访者应答失败，已忽略本次上报: {e}")
+
+    def _compose_away_summary(self) -> Optional[str]:
+        ledger = self._away_ledger
+        if ledger is None:
+            return None
+        try:
+            return ledger.compose_speech()
+        except Exception as e:
+            self._logger.warning(f"组装返岗汇总失败，本次只做迎接: {e}")
+            return None
+
+    def _settle_return(self, *, reported: bool) -> None:
+        """主人已被迎接：念过的清账，离席窗口无论有没有汇总都要关。
+
+        没有待播报事项也要 mark_returned，否则 is_away() 一直为真，
+        来访者流程会把主人自己当成访客。
+        """
+        ledger = self._away_ledger
+        if ledger is None:
+            return
+        try:
+            if reported:
+                ledger.mark_reported()
+            ledger.mark_returned()
+        except Exception as e:
+            self._logger.warning(f"返岗台账收尾失败: {e}")
+
+    def _begin_away_window(self) -> None:
+        """确认离席后开始攒返岗汇总。
+
+        先问 is_away() 再标记：离席心跳 15 秒一条，无条件调用会让台账
+        每条心跳都重写一次落盘文件。
+        """
+        ledger = self._away_ledger
+        if ledger is None:
+            return
+        try:
+            if not ledger.is_away():
+                ledger.mark_away()
+        except Exception as e:
+            self._logger.warning(f"标记离席失败: {e}")
 
     def _choose_greeting(
         self, report: PresenceReport, state: _WorkstationState, now: float
@@ -267,6 +379,8 @@ class PresenceArrivalOrchestrator:
 
         # 确认是真的离开了，复位到岗周期，下次回来重新迎接
         state.greeted = False
+        # 流程五：从这一刻起的事件才算「离席期间发生的」，回来要汇总
+        self._begin_away_window()
 
         if not self._settings.sleep_on_absent or state.asleep:
             return
