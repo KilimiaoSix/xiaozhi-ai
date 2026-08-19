@@ -63,6 +63,12 @@ async def _default_push_alert(conn, text: str, **kwargs) -> None:
     return await push_alert_to_device(conn, text=text, **kwargs)
 
 
+def _default_set_base_state(device_id: str, status: str, message: str, emotion: str) -> None:
+    from core.handle.pushHandle import set_base_state
+
+    set_base_state(device_id, status, message, emotion)
+
+
 def _join_sentences(first: str, second: str) -> str:
     """迎接语 + 返岗汇总拼成一条播报，缺句号就补一个，避免两句黏成一坨。"""
     first = first.rstrip()
@@ -154,7 +160,7 @@ def _read_settings(config: dict) -> Optional[_Settings]:
 class PresenceArrivalOrchestrator:
     """把在岗状态变化翻译成机器人指令。
 
-    推送函数与时钟都可注入，便于离线单测；生产用默认实现走 pushHandle。
+    推送/基态函数与时钟都可注入，便于离线单测；生产用默认实现走 pushHandle。
 
     away_ledger / visitor_flow / owner_status_store 是流程四/五接进来的可选依赖，
     三个都缺省 None 时行为与接入前完全一致（只做迎接与休眠）。
@@ -167,6 +173,7 @@ class PresenceArrivalOrchestrator:
         *,
         push_event: Optional[Callable] = None,
         push_alert: Optional[Callable] = None,
+        set_base_state: Optional[Callable] = None,
         clock: Optional[Callable[[], float]] = None,
         logger=None,
         settings: Optional[_Settings] = None,
@@ -180,6 +187,7 @@ class PresenceArrivalOrchestrator:
         self._device_registry = device_registry
         self._push_event = push_event or _default_push_event
         self._push_alert = push_alert or _default_push_alert
+        self._set_base_state = set_base_state or _default_set_base_state
         self._clock = clock or time.monotonic
         self._logger = logger or logging.getLogger(__name__)
         self._states: dict[str, _WorkstationState] = {}
@@ -254,6 +262,14 @@ class PresenceArrivalOrchestrator:
             # 刻意不置 greeted——访客还站在工位前时主人回来，仍然要被迎接。
             await self._handle_visitor(report.workstation_id)
             return
+
+        # 认清来人后立刻注册「在岗」基态。wellbeing/审批/告警/晨报都带 restore_after,
+        # 基态不注册的话,任何一条提醒播完画面都回落默认「待机」——人在工位,
+        # 屏幕却写着待机(设计文档 §4.4:迎接后设备应保持醒着的状态)。
+        # 基态按 device_id 存、与连接无关,设备离线也要注册,上线后第一次恢复就是对的;
+        # 也必须先于冷却分支——静默返岗不出声,但基态照样要切回来。
+        # emotion 用 neutral:基态恢复是静默收画面,不该每次都触发表情舵机动作。
+        self._set_base_state(device_id, self._settings.greeting_status, "", "neutral")
 
         is_owner = identity_state == "owner"
         # 流程五：返岗汇总接在迎接语后面，一条推送说完，不拆成两次播报
@@ -408,6 +424,20 @@ class PresenceArrivalOrchestrator:
         state.greeted = False
         # 流程五：从这一刻起的事件才算「离席期间发生的」，回来要汇总
         self._begin_away_window()
+
+        # 基态跟着离席走:睡则常驻休眠画面(sleepy 让离席期间的告警播完后
+        # 顺带低头回到睡姿),不睡则传空值回落 pushHandle 的默认待机。
+        # 不用 clear_base_state——它会顺带取消进行中的恢复任务,离席期间的
+        # 告警画面会被永久钉在屏上;set 是幂等写,心跳每 15 秒重走这里也无害。
+        if self._settings.sleep_on_absent:
+            self._set_base_state(
+                device_id,
+                self._settings.sleep_status,
+                self._settings.sleep_text,
+                self._settings.sleep_emotion,
+            )
+        else:
+            self._set_base_state(device_id, "", "", "")
 
         if not self._settings.sleep_on_absent or state.asleep:
             return

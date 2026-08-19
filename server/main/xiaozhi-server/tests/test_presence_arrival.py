@@ -3,11 +3,14 @@
 全部离线：注入假时钟与假推送函数，不依赖真机、网络与 LLM。
 """
 
+import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from itertools import count
 
 import pytest
 
+from core.handle import pushHandle
 from core.presence_arrival import (
     PresenceArrivalOrchestrator,
     create_presence_arrival_orchestrator,
@@ -816,6 +819,273 @@ async def test_without_injections_behaviour_is_unchanged(env):
 
     assert push_event.texts == ["早上好，今天也一起把事情搞定吧。"]
     assert len(push_alert.calls) == 1
+
+
+# ---------------------------------------------------------------- 基态注册
+#
+# wellbeing/审批/告警/晨报的提醒都带 restore_after,播完把画面恢复到设备基态。
+# 基态不跟着到岗/离席走的话,任何一条提醒播完,屏幕都会回落默认「待机」——
+# 人明明在工位,机器人却写着待机,直到下一个事件才纠正。
+
+
+@pytest.fixture(autouse=True)
+def _isolate_base_states():
+    """构造器缺省时走真实 pushHandle 的模块级基态存储,测试间必须清空。"""
+    pushHandle._base_states.clear()
+    yield
+    pushHandle._base_states.clear()
+    for task in list(pushHandle._restore_tasks.values()):
+        try:
+            task.cancel()
+        except RuntimeError:
+            pass  # 事件循环已随用例关闭,残留任务不再需要取消
+    pushHandle._restore_tasks.clear()
+
+
+class BaseStateRecorder:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def __call__(self, device_id, status, message, emotion):
+        self.calls.append(
+            {
+                "device_id": device_id,
+                "status": status,
+                "message": message,
+                "emotion": emotion,
+            }
+        )
+
+    @property
+    def statuses(self):
+        return [call["status"] for call in self.calls]
+
+
+def _base_state_env(*, config=None, conn=..., visitor_flow=None, owner_status=None):
+    if conn is ...:
+        conn = object()
+    clock = FakeClock()
+    recorder = BaseStateRecorder()
+    orchestrator = PresenceArrivalOrchestrator(
+        config or make_config(),
+        FakeRegistry(conn),
+        push_event=Recorder(),
+        push_alert=Recorder(),
+        clock=clock,
+        set_base_state=recorder,
+        visitor_flow=visitor_flow,
+        owner_status_store=owner_status,
+    )
+    return orchestrator, clock, recorder
+
+
+@pytest.mark.asyncio
+async def test_owner_arrival_registers_on_duty_base_state():
+    orchestrator, _clock, base = _base_state_env()
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+
+    # emotion 必须是 neutral:基态恢复是静默收画面,happy 会每次都触发 HeadUp 舵机动作
+    assert base.calls == [
+        {"device_id": DEVICE_ID, "status": "在岗", "message": "", "emotion": "neutral"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generic_greeting_also_registers_on_duty_base_state():
+    """识别不清的人也被迎接(通用问候),画面同样常驻「在岗」。"""
+    orchestrator, _clock, base = _base_state_env()
+
+    await orchestrator.on_report(make_report(identity_state="unknown"), ACCEPTED)
+
+    assert base.statuses == ["在岗"]
+
+
+@pytest.mark.asyncio
+async def test_unsettled_identity_does_not_register_base_state():
+    orchestrator, _clock, base = _base_state_env()
+
+    await orchestrator.on_report(make_report(identity_state="no_face"), ACCEPTED)
+
+    assert base.calls == []
+
+
+@pytest.mark.asyncio
+async def test_visitor_flow_does_not_touch_base_state():
+    """主人不在时来的是访客:基态描述的是主人的状态,不能被访客改成「在岗」。"""
+    orchestrator, _clock, base = _base_state_env(
+        visitor_flow=FakeVisitorFlow(), owner_status=FakeOwnerStatus("meeting")
+    )
+
+    await orchestrator.on_report(make_report(identity_state="unknown"), ACCEPTED)
+
+    assert base.calls == []
+
+
+@pytest.mark.asyncio
+async def test_offline_device_still_registers_base_state():
+    """基态按 device_id 存、与连接无关:设备离线也要注册,上线后第一次恢复就是对的。"""
+    orchestrator, _clock, base = _base_state_env(conn=None)
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+
+    assert base.statuses == ["在岗"]
+
+
+@pytest.mark.asyncio
+async def test_confirmed_absence_switches_base_state_to_sleep_screen():
+    orchestrator, clock, base = _base_state_env()
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    # sleepy 让恢复时顺带低头回到睡姿;message 保留休眠文案,画面和刚睡着时一致
+    assert base.calls[-1] == {
+        "device_id": DEVICE_ID,
+        "status": "休眠",
+        "message": "工位没人，我先眯一会儿。",
+        "emotion": "sleepy",
+    }
+
+
+@pytest.mark.asyncio
+async def test_absence_within_grace_keeps_on_duty_base_state():
+    """弯腰捡东西不算离开,基态不该跟着切到休眠。"""
+    orchestrator, clock, base = _base_state_env()
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(30)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    assert base.statuses == ["在岗"]
+
+
+@pytest.mark.asyncio
+async def test_quiet_return_in_cooldown_still_restores_on_duty_base_state():
+    """姿态抖动虚过宽限期后快速返岗:冷却期内不出声,但基态必须切回「在岗」。"""
+    orchestrator, clock, base = _base_state_env()
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    assert base.calls[-1]["status"] == "休眠"
+
+    clock.advance(2)
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+
+    assert base.calls[-1]["status"] == "在岗"
+
+
+@pytest.mark.asyncio
+async def test_absence_without_sleep_falls_back_to_default_base_state():
+    """sleep_on_absent 关掉时,确认离席要回落默认待机基态(走真实默认接线验证)。"""
+    conn = object()
+    clock = FakeClock()
+    # 不注入 set_base_state:验证生产默认实现真的写进 pushHandle
+    orchestrator = PresenceArrivalOrchestrator(
+        make_config(sleep_on_absent=False),
+        FakeRegistry(conn),
+        push_event=Recorder(),
+        push_alert=Recorder(),
+        clock=clock,
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    assert pushHandle.get_base_state(DEVICE_ID)["status"] == "在岗"
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    assert pushHandle.get_base_state(DEVICE_ID) == pushHandle.DEFAULT_BASE_STATE
+
+
+# ------------------------------------------- 基态与恢复的端到端时序
+
+
+class _StubLogger:
+    def bind(self, **kwargs):
+        return self
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+
+class _StubDialogue:
+    def put(self, message):
+        pass
+
+
+class _FrameRecorder:
+    def __init__(self) -> None:
+        self.frames = []
+
+    async def send(self, payload):
+        self.frames.append(json.loads(payload))
+
+
+class FakeDeviceConn:
+    """够 push_work_event 全链路跑通的最小连接假体。"""
+
+    def __init__(self, device_id=DEVICE_ID) -> None:
+        self.device_id = device_id
+        self.session_id = "sess-test"
+        self.tts = None  # ensure_speakable 会因此判忙,播报自动降级为纯提示
+        self.client_is_speaking = False
+        self.client_have_voice = False
+        # 播报等待缩到 10ms,否则 TTS 缺失要空等默认 3 秒
+        self.config = {"push_speak": {"wait_seconds": 0.01, "poll_interval": 0.005}}
+        self.logger = _StubLogger()
+        self.dialogue = _StubDialogue()
+        self.websocket = _FrameRecorder()
+
+    @property
+    def sent(self):
+        return self.websocket.frames
+
+
+@pytest.mark.asyncio
+async def test_greeting_then_reminder_restore_returns_to_on_duty():
+    """迎接 → wellbeing 式提醒(带 restore_after) → 恢复后回到「在岗」而非「待机」。
+
+    走真实 pushHandle 全链路(不注入推送与基态函数)。wellbeing/审批/告警/晨报
+    的提醒都是同一机制:push_work_event + restore_after,这里用缩短的延时代表它们。
+    """
+    conn = FakeDeviceConn()
+    orchestrator = PresenceArrivalOrchestrator(
+        make_config(), FakeRegistry(conn), clock=FakeClock()
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    greeting = conn.sent[-1]
+    assert greeting["status"] == "在岗"
+    assert greeting["message"] == "早上好，今天也一起把事情搞定吧。"
+
+    await pushHandle.push_work_event(
+        conn, "起来活动一下吧", emotion="happy", status="健康提醒", restore_after=0.05
+    )
+    assert conn.sent[-1]["status"] == "健康提醒"
+
+    await asyncio.sleep(0.2)
+    restored = conn.sent[-1]
+    assert restored["status"] == "在岗"  # 修复前这里是默认基态「待机」
+    assert restored["silent"] is True  # 基态恢复是收画面,不该响提示音
+    assert restored["message"] == ""
 
 
 # ---------------------------------------------------------------- 工厂
