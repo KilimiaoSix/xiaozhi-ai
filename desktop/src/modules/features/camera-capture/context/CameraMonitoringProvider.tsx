@@ -166,7 +166,17 @@ export function CameraMonitoringProvider({ children }: PropsWithChildren) {
     const video = hiddenVideoRef.current;
     if (!video) return;
     video.srcObject = stream;
-    if (stream) void video.play();
+    if (stream) {
+      // StrictMode 与换流会先卸载再重挂，挂起的 play() 被下面的 srcObject 置空
+      // 打断后抛 AbortError——属正常时序，接住以免开发日志刷未处理 rejection、
+      // 掩盖真实错误。真正的播放失败留一条 warn，摄像头恢复由既有重试路径兜底。
+      // jsdom 的 play() 返回 undefined，必须用可选链。
+      void video.play()?.catch((error: unknown) => {
+        if ((error as DOMException | null)?.name !== 'AbortError') {
+          console.warn('隐藏视频启动播放失败', error);
+        }
+      });
+    }
     return () => { video.srcObject = null; };
   }, [stream]);
 
