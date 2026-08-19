@@ -10,6 +10,8 @@ firmware/sdkconfig.old
 firmware/serial_log.txt
 firmware/**/tmp/
 firmware/.vscode/c_cpp_properties.json
+# 编译期默认 WiFi 凭据（模板见 main/wifi_credentials.h.example），不入库
+firmware/main/wifi_credentials.h
 
 # ===== 上位机 server =====
 # server/ 目录下另有上游自带的 .gitignore，此处只补充易漏项

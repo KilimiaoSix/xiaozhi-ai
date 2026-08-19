@@ -17,7 +17,37 @@
 #include <ssid_manager.h>
 #include "afsk_demod.h"
 
+// 编译期默认 WiFi 凭据，可选。凭据放在 gitignore 的 main/wifi_credentials.h 里
+// （模板见同目录 wifi_credentials.h.example），没有那个文件时下面整段不参与编译，
+// 行为回到原本的"没配过 WiFi 就进 AP 配网模式"。
+#if __has_include("wifi_credentials.h")
+#include "wifi_credentials.h"
+#endif
+
 static const char *TAG = "WifiBoard";
+
+#ifdef DEFAULT_WIFI_SSID
+static void SeedDefaultSsid() {
+    // 模板里两个宏都是空串，照抄不填等于不启用
+    if (DEFAULT_WIFI_SSID[0] == '\0') {
+        return;
+    }
+    auto& ssid_manager = SsidManager::GetInstance();
+    // AddSsid 命中同名会覆盖密码并整段回写 NVS。不先比对就等于每次开机写一遍 flash，
+    // 而这个函数在每次正常启动路径上都会被调到。
+    for (const auto& item : ssid_manager.GetSsidList()) {
+        if (item.ssid == DEFAULT_WIFI_SSID && item.password == DEFAULT_WIFI_PASSWORD) {
+            return;
+        }
+    }
+    ESP_LOGI(TAG, "Seeding built-in default SSID: %s", DEFAULT_WIFI_SSID);
+    // AddSsid 是插到列表最前，默认 WiFi 优先级最高；
+    // 用户之后从配网页面另存的 WiFi 仍留在表里，不会被顶掉。
+    ssid_manager.AddSsid(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+}
+#else
+static void SeedDefaultSsid() {}
+#endif
 
 WifiBoard::WifiBoard() {
     Settings settings("wifi", true);
@@ -74,6 +104,9 @@ void WifiBoard::StartNetwork() {
         EnterWifiConfigMode();
         return;
     }
+
+    // 播种必须在读列表之前：否则首次开机拿到的是空表，会白白进一次 AP 配网模式
+    SeedDefaultSsid();
 
     // If no WiFi SSID is configured, enter WiFi configuration mode
     auto& ssid_manager = SsidManager::GetInstance();
