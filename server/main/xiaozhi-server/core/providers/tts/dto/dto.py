@@ -35,9 +35,12 @@ class TTSMessageDTO:
         content_detail: Optional[str] = None,
         # 如果内容类型为文件，则需要传入文件路径
         content_file: Optional[str] = None,
+        # 整句文本在入队时就已经完整（推送播报），不需要为了压首字延迟在逗号处提前切段
+        whole_text: bool = False,
     ):
         self.sentence_id = sentence_id
         self.sentence_type = sentence_type
         self.content_type = content_type
         self.content_detail = content_detail
         self.content_file = content_file
+        self.whole_text = whole_text

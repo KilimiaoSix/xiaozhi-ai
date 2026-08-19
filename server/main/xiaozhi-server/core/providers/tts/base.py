@@ -376,12 +376,7 @@ class TTSProviderBase(ABC):
                 if message.sentence_id != self.conn.sentence_id:
                     continue
                 if message.sentence_type == SentenceType.FIRST:
-                    self.current_sentence_id = message.sentence_id
-                    self.tts_stop_request = False
-                    self.processed_chars = 0
-                    self.tts_text_buff = []
-                    self.is_first_sentence = True
-                    self.tts_audio_first_sentence = True
+                    self._begin_sentence(message)
                 elif ContentType.TEXT == message.content_type:
                     self.tts_text_buff.append(message.content_detail)
                     segment_text = self._get_segment_text()
@@ -479,6 +474,21 @@ class TTSProviderBase(ABC):
         self._sentence_text_map.clear()
         if hasattr(self, "ws") and self.ws:
             await self.ws.close()
+
+    def _begin_sentence(self, message):
+        """一句话开始：复位分段状态。
+
+        is_first_sentence 打开的是「首句在逗号处提前切段」，为的是 LLM 边生成边播时
+        尽快出声。推送播报的文本入队时就是完整的，再切一刀只多一次 TTS 往返，两个
+        半句之间会空出整整一次合成的时间（代理/弱网下 3 秒以上），听感是话说到一半
+        卡住。所以整句播报显式关掉它。
+        """
+        self.current_sentence_id = message.sentence_id
+        self.tts_stop_request = False
+        self.processed_chars = 0
+        self.tts_text_buff = []
+        self.is_first_sentence = not getattr(message, "whole_text", False)
+        self.tts_audio_first_sentence = True
 
     def _get_segment_text(self):
         # 合并当前全部文本并处理未分割部分

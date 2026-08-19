@@ -345,6 +345,9 @@ async def speak_on_device(conn, text: str) -> bool:
             sentence_id=conn.sentence_id,
             sentence_type=SentenceType.FIRST,
             content_type=ContentType.ACTION,
+            # 推送的文案是一次性写好的，不要按 LLM 流式那样在逗号处抢跑切段：
+            # 多出来的那次 TTS 往返会在两个半句之间留出好几秒空白
+            whole_text=True,
         )
     )
     tts.tts_one_sentence(conn, ContentType.TEXT, content_detail=text)

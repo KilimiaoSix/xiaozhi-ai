@@ -5,6 +5,19 @@ from datetime import datetime
 from core.providers.tts.base import TTSProviderBase
 
 
+# 大小写两种写法都认：不同 shell/启动器写入的键名不一致。
+_PROXY_ENV_KEYS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+
+
+def _proxy_from_env():
+    for key in _PROXY_ENV_KEYS:
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+
 class TTSProvider(TTSProviderBase):
     TTS_PARAM_CONFIG = [
         ("ttsVolume", "volume", 0, 100, 50, int),
@@ -32,6 +45,11 @@ class TTSProvider(TTSProviderBase):
         # 应用百分比调整
         self._apply_percentage_params(config)
 
+        # Edge TTS 走 aiohttp 自建 session（trust_env=False），系统代理环境变量对它无效。
+        # 直连 speech.platform.bing.com 被重置的网络（公司网/热点）下必须显式把代理传进去，
+        # 否则 TTS 全线失败、机器人一句话都说不出来。配置留空时回落到标准代理环境变量。
+        self.proxy = config.get("proxy") or _proxy_from_env()
+
         self.edge_rate = f"{self.speech_rate:+}%"
         self.edge_volume = f"{self.volume:+}%"
         self.edge_pitch = f"{self.pitch_rate:+}Hz"
@@ -50,6 +68,7 @@ class TTSProvider(TTSProviderBase):
                 rate=self.edge_rate,
                 volume=self.edge_volume,
                 pitch=self.edge_pitch,
+                proxy=self.proxy,
             )
             if output_file:
                 # 确保目录存在并创建空文件
