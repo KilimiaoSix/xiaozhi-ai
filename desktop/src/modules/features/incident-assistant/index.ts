@@ -1,1 +1,2 @@
-export { incidentAssistantModule } from './module';
+export { createIncidentAssistantModule, incidentAssistantModule } from './module';
+export { IncidentPanel } from './IncidentPanel';

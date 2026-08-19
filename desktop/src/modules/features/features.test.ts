@@ -26,11 +26,12 @@ describe('默认功能模块', () => {
     expect(featureRegistry.list()).toHaveLength(8);
   });
 
-  it('飞书、编码 Agent 和专注模式返回实时入口，其余模块保持场景化 Mock', async () => {
+  it('飞书、编码 Agent、专注模式与告警管理返回实时入口，其余模块保持场景化 Mock', async () => {
     const results = await Promise.all(
       expectedIds.map((id) => featureRegistry.execute(id, context)),
     );
-    const liveIndexes = [1, 2, 4]; // feishu-briefing, coding-agent-status, focus-mode
+    // feishu-briefing, coding-agent-status, focus-mode, incident-assistant
+    const liveIndexes = [1, 2, 4, 7];
 
     liveIndexes.forEach((index) => expect(results[index].source).toBe('live'));
     expect(results.filter((_, index) => !liveIndexes.includes(index))
@@ -40,6 +41,7 @@ describe('默认功能模块', () => {
 
     // 专注模式在无渲染进程（无 window.xiaofei）时找不到网关，走异常兜底分支，
     // 结果 tone 会变成 coral 而不是卡片静态定义的 violet，因此单独断言。
+    // 告警管理同样走兜底分支，但它的定义 tone 本来就是 coral，无需豁免。
     results.forEach((result, index) => {
       if (index === 4) return;
       expect(result.tone).toBe(featureModules[index].definition.tone);

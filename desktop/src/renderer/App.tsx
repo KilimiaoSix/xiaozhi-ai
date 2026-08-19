@@ -16,6 +16,7 @@ import { featureCatalog, featureRegistry } from '../modules/features';
 import { CameraPage } from '../modules/features/camera-capture';
 import { useCameraMonitoring } from '../modules/features/camera-capture/context/CameraMonitoringProvider';
 import { PomodoroPanel } from '../modules/features/focus-mode/PomodoroPanel';
+import { IncidentPanel } from '../modules/features/incident-assistant/IncidentPanel';
 import type {
   AgentSource,
   AgentTaskSnapshot,
@@ -383,6 +384,21 @@ export function App() {
             <PomodoroPanel />
           </main>
         </div>
+      ) : activePage === 'incident' ? (
+        <div className="app-shell focus-shell">
+          <header className="topbar">
+            <div className="view-title">
+              <h1>告警管理</h1>
+              <span>两条告警链路的合并视图与只读诊断</span>
+            </div>
+            <div className="topbar-status">
+              <span className="runtime-label">Electron {runtime.versions.electron}</span>
+            </div>
+          </header>
+          <main className="focus-page">
+            <IncidentPanel />
+          </main>
+        </div>
       ) : (
       <div className="app-shell">
       <header className="topbar">
@@ -689,6 +705,7 @@ export function App() {
                     onClick={() => {
                       if (feature.id === 'coding-agent-status') focusAgentMonitor();
                       if (feature.id === 'focus-mode') setActivePage('focus');
+                      if (feature.id === 'incident-assistant') setActivePage('incident');
                       if (feature.id === 'feishu-briefing') {
                         focusFeishuWorkspace();
                         void refreshFeishuBriefing();

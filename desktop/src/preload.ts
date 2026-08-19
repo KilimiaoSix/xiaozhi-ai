@@ -15,8 +15,15 @@ import type {
   PomodoroIpcResult,
   PomodoroStatus,
 } from './modules/features/focus-mode/types';
+import type {
+  IncidentAckResult,
+  IncidentDiagnoseResult,
+  IncidentIpcResult,
+  IncidentListResult,
+} from './modules/features/incident-assistant/types';
 import type { XiaofeiDesktopApi } from './shared/contracts';
 import { CAMERA_STREAM_CHANNELS } from './main/camera/cameraStreamIpc';
+import { INCIDENT_CHANNELS } from './main/incident/registerIncidentIpc';
 import { POMODORO_CHANNELS } from './main/pomodoro/registerPomodoroIpc';
 
 const invoke = async <T>(channel: string, ...args: unknown[]): Promise<T> => {
@@ -90,6 +97,22 @@ const desktopApi: XiaofeiDesktopApi = {
       invokeEnvelope<PomodoroStatus>(POMODORO_CHANNELS.getStatus, deviceId),
     sendCommand: (input: PomodoroCommandInput) =>
       invokeEnvelope<PomodoroStatus>(POMODORO_CHANNELS.sendCommand, input),
+  },
+  // 告警管理与番茄钟同理走信封：IncidentGatewayError 的 code/status 必须以
+  // 数据形式跨 contextBridge，由 incidentDesktopGateway 还原
+  incident: {
+    list: () => (
+      ipcRenderer.invoke(INCIDENT_CHANNELS.list) as
+        Promise<IncidentIpcResult<IncidentListResult>>
+    ),
+    ack: (incidentId: string) => (
+      ipcRenderer.invoke(INCIDENT_CHANNELS.ack, incidentId) as
+        Promise<IncidentIpcResult<IncidentAckResult>>
+    ),
+    diagnose: (incidentId: string) => (
+      ipcRenderer.invoke(INCIDENT_CHANNELS.diagnose, incidentId) as
+        Promise<IncidentIpcResult<IncidentDiagnoseResult>>
+    ),
   },
 };
 

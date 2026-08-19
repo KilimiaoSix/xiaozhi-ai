@@ -1,6 +1,6 @@
-import { Bot, Camera, House, Timer, Wifi, WifiOff } from 'lucide-react';
+import { Bot, Camera, House, Siren, Timer, Wifi, WifiOff } from 'lucide-react';
 
-export type AppPage = 'dashboard' | 'focus' | 'camera';
+export type AppPage = 'dashboard' | 'focus' | 'incident' | 'camera';
 
 interface AppSidebarProps {
   activePage: AppPage;
@@ -15,6 +15,7 @@ interface AppSidebarProps {
 const navigation = [
   { id: 'dashboard', label: '今天', icon: House },
   { id: 'focus', label: '番茄钟', icon: Timer },
+  { id: 'incident', label: '告警', icon: Siren },
   { id: 'camera', label: '摄像头', icon: Camera },
 ] as const;
 

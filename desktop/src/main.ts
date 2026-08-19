@@ -8,6 +8,8 @@ import { registerCameraIpc } from './main/camera/registerCameraIpc';
 import { registerMonitoringWindowGuard } from './main/camera/monitoringWindowGuard';
 import { createAgentHooksRuntime } from './main/createAgentHooksRuntime';
 import { registerFeishuIpc } from './main/feishuIpc';
+import { IncidentHttpClient } from './main/incident/incidentHttpClient';
+import { registerIncidentIpc } from './main/incident/registerIncidentIpc';
 import { PomodoroHttpClient } from './main/pomodoro/pomodoroHttpClient';
 import { registerPomodoroIpc } from './main/pomodoro/registerPomodoroIpc';
 
@@ -15,6 +17,7 @@ let agentHooksRuntime: AgentHooksRuntime | undefined;
 let cleanupAgentHooksIpc: (() => void) | undefined;
 let cleanupFeishuIpc: (() => void) | undefined;
 let cleanupPomodoroIpc: (() => void) | undefined;
+let cleanupIncidentIpc: (() => void) | undefined;
 let cameraIpc: ReturnType<typeof registerCameraIpc> | undefined;
 let isQuitting = false;
 
@@ -93,6 +96,10 @@ app.whenReady().then(() => {
     ipcMain,
     client: new PomodoroHttpClient(),
   });
+  cleanupIncidentIpc = registerIncidentIpc({
+    ipcMain,
+    client: new IncidentHttpClient(),
+  });
   createWindow();
 
   app.on('activate', () => {
@@ -112,6 +119,8 @@ app.on('before-quit', () => {
   cleanupFeishuIpc = undefined;
   cleanupPomodoroIpc?.();
   cleanupPomodoroIpc = undefined;
+  cleanupIncidentIpc?.();
+  cleanupIncidentIpc = undefined;
   void agentHooksRuntime?.stop();
 });
 

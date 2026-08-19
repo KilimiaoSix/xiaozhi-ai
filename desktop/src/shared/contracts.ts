@@ -17,6 +17,12 @@ import type {
   PomodoroIpcResult,
   PomodoroStatus,
 } from '../modules/features/focus-mode/types';
+import type {
+  IncidentAckResult,
+  IncidentDiagnoseResult,
+  IncidentIpcResult,
+  IncidentListResult,
+} from '../modules/features/incident-assistant/types';
 
 export interface RuntimeInfo {
   platform: NodeJS.Platform;
@@ -44,6 +50,14 @@ export interface PomodoroDesktopApi {
   sendCommand: (input: PomodoroCommandInput) => Promise<PomodoroIpcResult<PomodoroStatus>>;
 }
 
+// 告警管理与番茄钟同理走信封：错误的 code/status 必须以数据形式跨 contextBridge。
+// 拆信封的活儿在 incidentDesktopGateway。
+export interface IncidentDesktopApi {
+  list: () => Promise<IncidentIpcResult<IncidentListResult>>;
+  ack: (incidentId: string) => Promise<IncidentIpcResult<IncidentAckResult>>;
+  diagnose: (incidentId: string) => Promise<IncidentIpcResult<IncidentDiagnoseResult>>;
+}
+
 export interface FeishuDesktopApi {
   getStatus: () => Promise<FeishuCliStatus>;
   getBriefing: () => Promise<FeishuBriefingSnapshot>;
@@ -69,4 +83,5 @@ export interface XiaofeiDesktopApi {
   camera: CameraDesktopApi;
   feishu: FeishuDesktopApi;
   pomodoro: PomodoroDesktopApi;
+  incident: IncidentDesktopApi;
 }
