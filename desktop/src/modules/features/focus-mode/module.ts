@@ -22,7 +22,7 @@ export const createFocusModeModule = (
       if (!target) {
         return {
           title: '未找到可用设备',
-          detail: '没有已连接的小飞设备，无法开始番茄钟专注周期。',
+          detail: '没有已连接的小智设备，无法开始番茄钟专注周期。',
           tone: 'coral',
           source: 'live',
         };

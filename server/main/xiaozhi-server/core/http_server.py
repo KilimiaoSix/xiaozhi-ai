@@ -185,7 +185,7 @@ class SimpleHttpServer:
         return None, None
 
     def _init_companion_orchestration(self, config: dict, ws_server) -> None:
-        """小飞全功能串联的装配点：审批手势、告警、分心检测、状态提醒、定时提示。
+        """小智全功能串联的装配点：审批手势、告警、分心检测、状态提醒、定时提示。
 
         各模块自身都做了「依赖缺失就降级」：没有 ws_server 不播报、没有事件循环
         不装摄像头旁路观察者、模型文件缺失观察者置 disabled。装配失败不该让

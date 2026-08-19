@@ -31,7 +31,7 @@ DEFAULT_MESSAGE = "支付回调接口 5 分钟内错误率 12%，超过 5% 阈�
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="给小飞桌伴机器人发一条模拟线上告警（或恢复信号）"
+        description="给小智桌伴机器人发一条模拟线上告警（或恢复信号）"
     )
     parser.add_argument("--server", default=DEFAULT_SERVER, help="服务端地址")
     parser.add_argument(

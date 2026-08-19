@@ -73,7 +73,7 @@ enum class RobotAction {
     kLookRight,
     kLookUp,
     kLookDown,
-    // "保持"变体：转过去就停住不回中。流程四要小飞转向同事并保持注视，
+    // "保持"变体：转过去就停住不回中。流程四要小智转向同事并保持注视，
     // 而普通的 look_* 800ms 后强制回中，镜头上是"瞥一眼又扭回去"，明显穿帮。
     kHoldLeft,
     kHoldRight,
