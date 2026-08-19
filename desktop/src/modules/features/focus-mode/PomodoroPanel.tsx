@@ -30,7 +30,7 @@ type PanelState =
   | { kind: 'loading' }
   | { kind: 'offline'; message: string }
   | { kind: 'no-device' }
-  | { kind: 'ready'; deviceId: string; status: PomodoroStatus };
+  | { kind: 'ready'; deviceId: string; status: PomodoroStatus; fetchedAtMs: number };
 
 // /devices 的契约是"在线 ∪ 有活跃会话"：设备 WiFi 抖动的十几秒重连窗口里，
 // 同一台设备会是 connected:false + active:true。只认 connected 会让面板退化成
@@ -42,12 +42,27 @@ const locateActiveDevice = async (): Promise<PanelState> => {
     ?? devices.find((device) => device.active);
   if (!target) return { kind: 'no-device' };
   const status = await pomodoroDesktopGateway.getStatus(target.deviceId);
-  return { kind: 'ready', deviceId: target.deviceId, status };
+  return { kind: 'ready', deviceId: target.deviceId, status, fetchedAtMs: Date.now() };
+};
+
+// 快照之间的本地插值：轮询每 2s 才校准一次，纯靠它数字每 2 秒才跳一次，观感是
+// "倒计时很慢"。与固件同一套做法——按快照锚点 + 真实流逝时间推算，而不是每秒
+// 自减：窗口被 Electron 后台节流时 interval 会欠账，自减会把欠掉的秒数永久丢掉，
+// 锚点推算在回到前台的下一次渲染就自动追平。走到 00:00 停住等服务端推下一相位。
+const displayedRemainingS = (
+  status: PomodoroStatus,
+  fetchedAtMs: number,
+  nowMs: number,
+): number => {
+  if (!status.active || status.paused || status.phase === 'idle') return status.remainingS;
+  const elapsedS = Math.floor(Math.max(0, nowMs - fetchedAtMs) / 1000);
+  return Math.max(0, status.remainingS - elapsedS);
 };
 
 export function PomodoroPanel() {
   const [state, setState] = useState<PanelState>({ kind: 'loading' });
   const [busy, setBusy] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeRef = useRef(true);
   // HTTP 超时 5s 比轮询间隔 2s 长，在途请求必然重叠。没有序号的话，
@@ -82,6 +97,16 @@ export function PomodoroPanel() {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [refresh]);
+
+  // 倒计时跑动时才起 1Hz 本地重渲；空闲/暂停/离线面板不需要每秒醒一次
+  const ticking = state.kind === 'ready' && state.status.active
+    && !state.status.paused && state.status.phase !== 'idle';
+
+  useEffect(() => {
+    if (!ticking) return undefined;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [ticking]);
 
   const runCommand = async (deviceId: string, command: PomodoroCommand): Promise<void> => {
     setBusy(true);
@@ -124,7 +149,7 @@ export function PomodoroPanel() {
               {phaseLabels[state.status.phase]}
               {state.status.paused ? ' · 已暂停' : ''}
             </span>
-            <strong>{formatClock(state.status.remainingS)}</strong>
+            <strong>{formatClock(displayedRemainingS(state.status, state.fetchedAtMs, nowMs))}</strong>
             <small>第 {state.status.round} / {state.status.totalRounds} 轮</small>
           </div>
           <div className="pomodoro-actions">

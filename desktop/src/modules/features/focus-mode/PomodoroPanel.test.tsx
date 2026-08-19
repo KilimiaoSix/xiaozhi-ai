@@ -75,6 +75,45 @@ describe('PomodoroPanel', () => {
     expect(container.textContent).toContain('第 2 / 4 轮');
   });
 
+  it('两次轮询之间倒计时本地每秒推进', async () => {
+    vi.useFakeTimers();
+    gatewayMocks.listDevices.mockResolvedValue({
+      devices: [{ deviceId: 'esp32-01', connected: true, active: true }],
+    });
+    gatewayMocks.getStatus.mockResolvedValue(readyStatus());
+
+    await act(async () => {
+      root.render(<PomodoroPanel />);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(container.textContent).toContain('20:30');
+
+    // 1s < 轮询间隔 2s：没有新快照,数字要靠本地推算走起来
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(container.textContent).toContain('20:29');
+  });
+
+  it('暂停时倒计时冻结,不做本地推进', async () => {
+    vi.useFakeTimers();
+    gatewayMocks.listDevices.mockResolvedValue({
+      devices: [{ deviceId: 'esp32-01', connected: true, active: true }],
+    });
+    gatewayMocks.getStatus.mockResolvedValue(readyStatus({ paused: true }));
+
+    await act(async () => {
+      root.render(<PomodoroPanel />);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(container.textContent).toContain('已暂停');
+    expect(container.textContent).toContain('20:30');
+  });
+
   it('没有已连接设备时显示离线态文案', async () => {
     gatewayMocks.listDevices.mockResolvedValue({ devices: [] });
 
