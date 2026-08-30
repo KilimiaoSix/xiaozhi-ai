@@ -59,6 +59,8 @@ Codex / Claude Code / WorkBuddy          摄像头
 7. **飞书晨报播报。** 工作日 08:00–09:30 窗口内 PresenceRegistry 第一次出现 `present + owner` 时扫一次飞书，把按优先级排好的前三条待办压成一句话推给机器人并 TTS 播报，每工位每天一次。排序仍是 `core/morning_brief/ranking.py` 的确定性规则，不经过 LLM；机器人不在线时不发起扫描，只在窗口内隔一分钟再看设备回来没有。
 8. **飞书任务与会议工作台。** `GET /xiaozhi/feishu/status` 和 `GET /xiaozhi/feishu/briefing` 使用 Server 保存的用户令牌直接调用飞书 OpenAPI，读取当前用户今日日程、未完成任务和任务清单名。日历、任务、清单名称三路可独立降级；Desktop 不安装、不执行 `lark-cli`，也不接触飞书 access token。
 
+上述编排中的**设备基态、番茄钟会话与告警中继记录持久化在 `data/` 下**（`base_states.json` / `pomodoro_sessions.json` / `alert_relay_records.json`，均原子写），服务重启自动恢复：番茄钟按墙钟截止时刻续跑或过期收屏，告警中继重启后飞书回复仍能按 alert_id 认领回帖，被重启打断的诊断判 FAILED。
+
 ### desktop/ — 事件采集与看板
 
 **不是大脑，不做 LLM 判断。** 三件事：
@@ -66,7 +68,8 @@ Codex / Claude Code / WorkBuddy          摄像头
 1. 往本机 Codex / Claude Code / WorkBuddy 的 JSON 配置注入带 `launchcrush-agent-hook` 标记的 hook，让它们在 SessionStart / PreToolUse / Stop 等时机回调一个落盘的 Node 脚本。
 2. hook 脚本把事件原子落盘到 `userData/agent-hooks/inbox`，主进程 watch 消费并用**纯规则**（关键字、正则、事件名映射，见 `taskTracker.ts`）判定成 running / completed / failed / needs_user 四态，经 IPC 推给界面。
 3. 应用根 Provider 独占摄像头，监测开启后以 5 FPS 生成最大 640×360 JPEG，经 IPC 交给主进程 WebSocket 客户端；切页、最小化、Server 断线和摄像头短暂中断都保留监测意图，只有手动关闭或退出应用才停止。
-4. “飞书任务与会议”看板只通过 Server HTTP 读取结构化日程与任务；Electron 主进程使用 `DESKPET_SERVER` 和可选的 `DESKPET_SERVER_AUTH_TOKEN`，不调用本机飞书 CLI。
+4. “飞书任务与会议”看板只通过 Server HTTP 读取结构化日程与任务；Electron 主进程不调用本机飞书 CLI。
+5. Server 地址、设备号、认证令牌由主进程**配置中心**统一供给（`desktop/src/main/config/`，设置页可视化读写，落盘 userData）：逐字段取值优先级为**环境变量 > 配置文件 > 默认值**；env 兼容 `DESKPET_SERVER`（优先）与 `XIAOFEI_SERVER_URL`、`DESKPET_DEVICE_ID`、`DESKPET_SERVER_AUTH_TOKEN` 与 `XIAOFEI_SERVER_AUTH_TOKEN`。摄像头、飞书、机器人推送与发现、番茄钟、告警、返岗六条链路全部按次向配置中心取值，serverUrl 变更时摄像头流自动重连。
 
 ### firmware/ — 表演终端
 
@@ -136,6 +139,7 @@ Codex / Claude Code / WorkBuddy          摄像头
 - 上行：`hello` / `ping` / `listen`(start·stop·detect) / `abort` / `mcp` / 二进制 Opus 帧
 - 下行：`hello` / `pong` / `tts`(start·stop·sentence_start) / `stt` / `llm` / `mcp` / `alert` / `system`
 - `tts.start` 是设备从 Idle 切到 Speaking 的**唯一触发**，而 `OnIncomingAudio` 只在 Speaking 态收包——**推送音频前必须先发它，否则真机上一片寂静**。
+- 无真机时用 `./gongban mock-device` 起模拟设备（`tools/mock_device.py`）：完成 hello 握手、30s ping、注册下表 4 个 MCP 工具并结构化打印全部下行，设备号默认 `mo:ck:00:00:00:01`（刻意非法 MAC，防与真机混淆）。
 
 ### 机器人 MCP 工具（由固件注册，Server 调用）
 
@@ -179,8 +183,8 @@ Codex / Claude Code / WorkBuddy          摄像头
    自动发现（恰好一台在线才启用）。
 2. ~~在岗状态没有消费方~~ **已接通**（`core/presence_arrival.py` 迎接/休眠/来访/返岗汇总
    + `core/wellbeing.py` 在岗关怀），HTTP 上报与摄像头流两条链路都接了同一编排回调。
-3. **返岗摘要"推到电脑"只有数据源没有桌面 UI。** `GET /xiaozhi/away/summary` 可查，
-   桌面端尚无对应面板；演示里由机器人语音播报承担。
+3. ~~返岗摘要"推到电脑"只有数据源没有桌面 UI~~ **已接通**（`desktop/src/modules/features/away-summary/`）：
+   桌面「返岗」页只读展示 `GET /xiaozhi/away/summary` 的分桶汇总，不清账（清账仍在返岗播报后）。
 4. ~~晨报没有主动送达路径~~ **已接通**（`core/morning_brief/announcer.py`）：时间窗内
    认出主人即扫描并推给机器人播报（见上方职责 7）。仍未做的两个真实缺口：
    **固定时刻的定时调度**（触发靠摄像头，窗口内没人出现当天就不播）；

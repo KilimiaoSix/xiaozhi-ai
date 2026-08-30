@@ -255,14 +255,17 @@ source .venv/bin/activate
 
 启动 Server 和桌面端后，在桌面应用“摄像头”页完成主人录入，再打开“实时监测”开关。桌面端独占摄像头，以 5 FPS、最大 640×360 的 JPEG 流发送给 Server。监测会跨页面切换、窗口最小化、Server 重启和摄像头短暂中断持续运行，直到手动关闭开关或退出应用。
 
-Server 地址和认证只提供给 Electron 主进程：
+Server 地址、设备号与认证令牌统一由桌面端配置中心管理：在应用「设置」页的连接工作台面板填写并保存（落盘 userData 下的配置文件），逐字段取值优先级为**环境变量 > 配置文件 > 默认值**（默认 `http://127.0.0.1:8003`）。环境变量仍完全兼容，留给脚本与演示做一次性覆盖：
 
 ```bash
-export XIAOFEI_SERVER_URL=http://127.0.0.1:8003
-export XIAOFEI_SERVER_AUTH_TOKEN='<server.auth_key>'
+# 可选覆盖；serverUrl 同时认 DESKPET_SERVER（优先）与 XIAOFEI_SERVER_URL
+export DESKPET_SERVER=http://127.0.0.1:8003
+export DESKPET_SERVER_AUTH_TOKEN='<server.auth_key>'
 cd desktop
 npm run dev
 ```
+
+> `npm run dev` 直启时摄像头授权归终端宿主（TCC 归属问题，见 CLAUDE.md「坑」），验证摄像头链路请用 `npm run package` 后的打包版。
 
 主人注册连续接受 20 个合格人脸样本，以其中 18 个样本生成模板。原始帧只在内存中流转，不写入磁盘。该识别没有活体检测，只能用于低风险提醒和个性化反馈。
 
