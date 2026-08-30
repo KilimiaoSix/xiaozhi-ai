@@ -1,0 +1,676 @@
+#!/usr/bin/env bash
+# 工伴统一启动器：一条命令把 Server 与桌面应用带起来，并给出一屏可读的状态。
+#
+# 设计约束：
+#   - 仓库根靠 dirname 自定位，克隆到哪都能跑，脚本里不出现任何绝对路径。
+#   - Server 的启停一律经 ./server.command，本脚本只做预检、健康等待、
+#     桌面应用与状态汇总，不重复实现进程管理（那边已经有 launchd + PID 文件）。
+#   - status / doctor 全程只读，不会去动任何正在跑的进程。
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+XZ_DIR="$REPO_ROOT/server/main/xiaozhi-server"
+VENV_PY="$XZ_DIR/.venv/bin/python"
+SERVER_ENTRY="$XZ_DIR/app.py"
+SERVER_COMMAND="$REPO_ROOT/server.command"
+TOOLS_DIR="$REPO_ROOT/tools"
+DESKTOP_DIR="$REPO_ROOT/desktop"
+# GONGBAN_DESKTOP_OUT_DIR 只给测试用：不设时行为不变，正常使用不需要碰它
+DESKTOP_OUT_DIR="${GONGBAN_DESKTOP_OUT_DIR:-$DESKTOP_DIR/out}"
+# GONGBAN_DESKTOP_PACKAGE_JSON 同样只给测试用：读 productName 的 package.json 路径覆盖
+DESKTOP_PACKAGE_JSON="${GONGBAN_DESKTOP_PACKAGE_JSON:-$DESKTOP_DIR/package.json}"
+SERVER_LOG="$XZ_DIR/tmp/server.log"
+LAUNCHER_LOG="$XZ_DIR/tmp/launcher/server.log"
+
+# 端口变量名与 server.command 保持一致，两边不会各说各话
+WS_PORT="${XIAOFEI_WS_PORT:-8000}"
+HTTP_PORT="${XIAOFEI_HTTP_PORT:-8003}"
+SERVER_URL="${DESKPET_SERVER:-http://127.0.0.1:$HTTP_PORT}"
+DEVICE_ID="${DESKPET_DEVICE_ID:-}"
+WORKSTATION_ID="${GONGBAN_WORKSTATION:-}"
+HEALTH_TIMEOUT="${GONGBAN_HEALTH_TIMEOUT:-40}"
+
+# 状态查询只用系统 python 解 JSON：venv 缺失时 status 也得能跑
+SYS_PY=/usr/bin/python3
+
+info() {
+    printf '\033[1;34m[工伴]\033[0m %s\n' "$1"
+}
+
+success() {
+    printf '\033[1;32m[工伴]\033[0m %s\n' "$1"
+}
+
+warn() {
+    printf '\033[1;33m[工伴]\033[0m %s\n' "$1"
+}
+
+fail() {
+    printf '\033[1;31m[工伴]\033[0m %s\n' "$1" >&2
+}
+
+section() {
+    printf '\n\033[1m── %s ─────────────────────────────\033[0m\n' "$1"
+}
+
+# ── HTTP 与 JSON ────────────────────────────────────────────
+
+http_get() {
+    if [ -n "${DESKPET_SERVER_AUTH_TOKEN:-}" ]; then
+        curl -s --max-time 5 \
+            -H "Authorization: Bearer $DESKPET_SERVER_AUTH_TOKEN" \
+            "$SERVER_URL$1"
+    else
+        curl -s --max-time 5 "$SERVER_URL$1"
+    fi
+}
+
+http_code() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$SERVER_URL$1" 2>/dev/null
+}
+
+device_count() {
+    http_get /xiaozhi/event/devices \
+        | "$SYS_PY" -c 'import json,sys; print(json.load(sys.stdin).get("count",0))' \
+        2>/dev/null
+}
+
+device_ids() {
+    http_get /xiaozhi/event/devices | "$SYS_PY" -c '
+import json, sys
+devices = json.load(sys.stdin).get("devices") or []
+print(", ".join(devices) if devices else "(空)")
+' 2>/dev/null
+}
+
+# 工位在岗一行摘要；主人识别在 identity.state 里，不是顶层字段
+presence_line() {
+    http_get "/xiaozhi/presence/$1" | "$SYS_PY" -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+data = body.get("data")
+if not data:
+    print("%s: %s" % (body.get("code"), body.get("message")))
+else:
+    identity = data.get("identity") or {}
+    print("%s | 上报 %s | 主人识别 %s | %ss 前" % (
+        data.get("effective_state"),
+        data.get("reported_state"),
+        identity.get("state", "-"),
+        data.get("age_seconds"),
+    ))
+' 2>/dev/null
+}
+
+# ── 端口与进程 ──────────────────────────────────────────────
+
+port_owner() {
+    lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -n 1
+}
+
+is_our_server() {
+    [ -n "${1:-}" ] || return 1
+    ps -p "$1" -o command= 2>/dev/null | grep -q -- "$SERVER_ENTRY"
+}
+
+# 打印端口归属；被别人占着返回 1，空闲或本项目 Server 返回 0
+describe_port() {
+    local port="$1"
+    local label="$2"
+    local owner
+
+    owner="$(port_owner "$port")"
+    if [ -z "$owner" ]; then
+        printf '  %-9s 端口 %s：空闲\n' "$label" "$port"
+        return 0
+    fi
+    if is_our_server "$owner"; then
+        printf '  %-9s 端口 %s：本项目 Server，PID %s\n' "$label" "$port" "$owner"
+        return 0
+    fi
+    printf '  %-9s 端口 %s：被别的进程占用，PID %s（%s）\n' \
+        "$label" "$port" "$owner" "$(ps -p "$owner" -o comm= 2>/dev/null)"
+    return 1
+}
+
+# ── 桌面应用 ────────────────────────────────────────────────
+
+# desktop/package.json 的 productName，读不到（文件缺失/无字段/JSON 坏了）打印空串，
+# 调用方按空串处理即可，不需要额外判错误类型。
+desktop_product_name() {
+    "$SYS_PY" -c '
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    name = data.get("productName")
+except Exception:
+    name = None
+if name:
+    print(name)
+' "$DESKTOP_PACKAGE_JSON" 2>/dev/null
+}
+
+find_desktop_app() {
+    local candidate
+    local best=""
+    local count=0
+    local product_name
+
+    # 优先按 desktop/package.json 的 productName 精确匹配：mtime 只是启发式，
+    # productName 是打包时写死的真实产物名，新旧两代同名产物共存时更可靠。
+    product_name="$(desktop_product_name)"
+    if [ -n "$product_name" ]; then
+        for candidate in "$DESKTOP_OUT_DIR"/*/"$product_name.app"; do
+            if [ -d "$candidate" ]; then
+                printf '%s' "$candidate"
+                return 0
+            fi
+        done
+    fi
+
+    # productName 读不到或按它找不到产物：desktop/out 下可能同时留着旧产物
+    # （如「小飞桌面机器人.app」）与新产物，按名字排序取首个在很多 locale 下会
+    # 选中旧的，改成全量扫一遍取 mtime 最新兜底，locale 无关。
+    for candidate in "$DESKTOP_OUT_DIR"/*/*.app; do
+        [ -d "$candidate" ] || continue
+        count=$((count + 1))
+        if [ -z "$best" ] || [ "$candidate" -nt "$best" ]; then
+            best="$candidate"
+        fi
+    done
+
+    [ -n "$best" ] || return 1
+    if [ "$count" -gt 1 ]; then
+        warn "desktop/out 下有 $count 个打包产物，取 mtime 最新的一个：$(basename "$best")；建议清理其余旧产物" >&2
+    fi
+    printf '%s' "$best"
+}
+
+desktop_pid() {
+    local app
+    app="$(find_desktop_app)" || return 1
+    pgrep -f "$(basename "$app")/Contents/MacOS/" 2>/dev/null | head -n 1
+}
+
+open_desktop_app() {
+    local app
+    if ! app="$(find_desktop_app)"; then
+        warn "没找到打包版桌面应用（$DESKTOP_OUT_DIR 下没有 .app）"
+        printf '  先打包：cd "%s" && npm run package\n' "$DESKTOP_DIR"
+        printf '  提醒：npm run dev 直启时摄像头调不起来，验摄像头链路必须用打包版\n'
+        return 1
+    fi
+    if [ -n "$(desktop_pid)" ]; then
+        success "桌面应用已在运行：$(basename "$app")"
+        return 0
+    fi
+    info "拉起桌面应用：$(basename "$app")"
+    if open "$app"; then
+        success "已 open 桌面应用"
+        return 0
+    fi
+    fail "open 桌面应用失败：$app"
+    return 1
+}
+
+quit_desktop_app() {
+    local app
+    local name
+    local pid
+    local attempt
+
+    if ! app="$(find_desktop_app)"; then
+        info "没找到打包版桌面应用，跳过"
+        return 0
+    fi
+    pid="$(desktop_pid)"
+    if [ -z "$pid" ]; then
+        info "桌面应用未在运行"
+        return 0
+    fi
+
+    name="$(basename "$app" .app)"
+    info "退出桌面应用 ${name}（PID ${pid}）"
+    # 优雅优先：走 AppleScript quit，让渲染进程有机会收尾（摄像头会话、未落盘的配置）
+    osascript -e "tell application \"$name\" to quit" >/dev/null 2>&1
+
+    attempt=0
+    while [ "$attempt" -lt 25 ]; do
+        if [ -z "$(desktop_pid)" ]; then
+            success "桌面应用已退出"
+            return 0
+        fi
+        sleep 0.2
+        attempt=$((attempt + 1))
+    done
+
+    warn "5 秒内没优雅退出，改发 TERM"
+    pid="$(desktop_pid)"
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
+    attempt=0
+    while [ "$attempt" -lt 25 ]; do
+        if [ -z "$(desktop_pid)" ]; then
+            success "桌面应用已退出"
+            return 0
+        fi
+        sleep 0.2
+        attempt=$((attempt + 1))
+    done
+    fail "桌面应用没退干净，请手动检查 PID $(desktop_pid)"
+    return 1
+}
+
+# ── 预检 ────────────────────────────────────────────────────
+
+preflight() {
+    local errors=0
+
+    if [ ! -x "$VENV_PY" ]; then
+        fail "缺少 Server 虚拟环境：$VENV_PY"
+        printf '  修复：cd "%s" && python3.10 -m venv .venv && .venv/bin/pip install -r requirements.txt\n' \
+            "$XZ_DIR"
+        errors=$((errors + 1))
+    else
+        success "Server venv：$VENV_PY"
+        # 起服务必须用 .venv：系统 python 缺 presence_agent，摄像头链路会静默瘸腿
+        if "$VENV_PY" -c 'import presence_agent' >/dev/null 2>&1; then
+            success "presence_agent 可导入"
+        else
+            fail "venv 里导不进 presence_agent"
+            printf '  修复（必须带 --no-deps，原因见 requirements-camera.txt 注释）：\n'
+            printf '    cd "%s" && .venv/bin/pip install --no-deps -r requirements-camera.txt\n' \
+                "$XZ_DIR"
+            errors=$((errors + 1))
+        fi
+        # 摄像头推理是可降级项：缺了 Server 照常起，只是桌面端会报
+        # "camera inference runtime is unavailable"，所以只警告不拦
+        if "$VENV_PY" -c 'import presence_agent.pose_detector' >/dev/null 2>&1; then
+            success "摄像头推理依赖就位"
+        else
+            warn "摄像头推理不可用，桌面端会报 camera inference runtime is unavailable"
+            printf '  修复（必须带 --no-deps）：\n'
+            printf '    cd "%s" && .venv/bin/pip install --no-deps -r requirements-camera.txt\n' \
+                "$XZ_DIR"
+        fi
+    fi
+
+    if [ -f "$XZ_DIR/config.yaml" ]; then
+        success "基础配置 config.yaml"
+    else
+        fail "缺少 $XZ_DIR/config.yaml"
+        errors=$((errors + 1))
+    fi
+
+    if [ -f "$XZ_DIR/data/.config.yaml" ]; then
+        success "本地配置 data/.config.yaml"
+    else
+        fail "缺少 $XZ_DIR/data/.config.yaml（LLM key、工位、告警配置都在这里，不入库）"
+        errors=$((errors + 1))
+    fi
+
+    describe_port "$WS_PORT" "WebSocket" || errors=$((errors + 1))
+    describe_port "$HTTP_PORT" "HTTP" || errors=$((errors + 1))
+
+    return "$errors"
+}
+
+# ── SSL_CERT_FILE ───────────────────────────────────────────
+
+ensure_ssl_cert() {
+    local cert
+    local session_cert
+
+    if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "${SSL_CERT_FILE:-}" ]; then
+        success "SSL_CERT_FILE 已由环境给定：$SSL_CERT_FILE"
+    else
+        if [ ! -x "$VENV_PY" ]; then
+            return 0
+        fi
+        cert="$("$VENV_PY" -c 'import certifi; print(certifi.where())' 2>/dev/null)"
+        if [ -z "$cert" ] || [ ! -f "$cert" ]; then
+            warn "venv 里取不到 certifi 证书包，飞书/LLM 的 HTTPS 调用可能报证书错误"
+            return 0
+        fi
+        export SSL_CERT_FILE="$cert"
+        success "已从 venv certifi 推导 SSL_CERT_FILE"
+        printf '  %s\n' "$cert"
+    fi
+
+    # server.command 经 launchctl bootstrap 起服务，而 launchd 作业**不继承本 shell 的
+    # 环境**——实测作业只拿到 plist EnvironmentVariables 里的 PATH/PYTHONUNBUFFERED。
+    # 所以光 export 对 Server 进程是无效的，必须写进 launchd 会话环境。
+    session_cert="$(launchctl getenv SSL_CERT_FILE 2>/dev/null)"
+    if [ -z "$session_cert" ]; then
+        if launchctl setenv SSL_CERT_FILE "$SSL_CERT_FILE" 2>/dev/null; then
+            info "已写入 launchd 会话环境，Server 进程才拿得到（撤销：launchctl unsetenv SSL_CERT_FILE）"
+        else
+            warn "写 launchd 会话环境失败，Server 侧 HTTPS 调用可能仍报证书错误"
+        fi
+    elif [ "$session_cert" != "$SSL_CERT_FILE" ]; then
+        warn "launchd 会话里已有另一个 SSL_CERT_FILE，保持原样：$session_cert"
+    fi
+}
+
+# ── 健康等待 ────────────────────────────────────────────────
+
+wait_health() {
+    local attempt=0
+    local code
+
+    info "等待 HTTP 健康：$SERVER_URL/xiaozhi/event/devices"
+    while [ "$attempt" -lt "$HEALTH_TIMEOUT" ]; do
+        code="$(http_code /xiaozhi/event/devices)"
+        if [ "$code" = "200" ]; then
+            success "HTTP 已就绪"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    fail "Server 在 ${HEALTH_TIMEOUT} 秒内没有响应 HTTP（最后一次 HTTP ${code}）"
+    printf '  看日志：%s\n' "$LAUNCHER_LOG"
+    return 1
+}
+
+recent_errors() {
+    local log=""
+    local candidate
+
+    for candidate in "$LAUNCHER_LOG" "$SERVER_LOG"; do
+        if [ -f "$candidate" ]; then
+            if [ -z "$log" ] || [ "$candidate" -nt "$log" ]; then
+                log="$candidate"
+            fi
+        fi
+    done
+
+    if [ -z "$log" ]; then
+        printf '  还没有 Server 日志\n'
+        return 0
+    fi
+
+    printf '  日志：%s\n' "$log"
+    local errors
+    errors="$(grep -- ' - ERROR - ' "$log" 2>/dev/null | tail -n 3)"
+    if [ -z "$errors" ]; then
+        printf '  最近没有 ERROR\n'
+        return 0
+    fi
+    printf '%s\n' "$errors" | cut -c1-200 | sed 's/^/  /'
+}
+
+# ── 子命令 ──────────────────────────────────────────────────
+
+cmd_up() {
+    local errors
+    local count
+
+    section "预检"
+    preflight
+    errors=$?
+    if [ "$errors" -gt 0 ]; then
+        fail "预检未通过，共 $errors 项，先修上面的问题再 up"
+        return 1
+    fi
+
+    section "证书"
+    ensure_ssl_cert
+
+    section "Server"
+    if ! "$SERVER_COMMAND" start; then
+        fail "server.command start 失败"
+        return 1
+    fi
+    wait_health || return 1
+
+    section "桌面应用"
+    open_desktop_app
+
+    section "设备"
+    count="$(device_count)"
+    if [ "${count:-0}" = "0" ] || [ -z "${count:-}" ]; then
+        warn "当前在线设备 0 台"
+        printf '  真机没回连时可以先用模拟设备把链路跑通：./gongban mock-device\n'
+    else
+        success "在线设备 ${count} 台：$(device_ids)"
+    fi
+
+    section "就绪"
+    printf '  一屏状态：./gongban status\n'
+    printf '  演示场景：./gongban demo\n'
+    printf '  收工：    ./gongban down\n'
+}
+
+cmd_down() {
+    section "桌面应用"
+    quit_desktop_app
+
+    section "Server"
+    "$SERVER_COMMAND" stop
+}
+
+cmd_status() {
+    local code
+    local count
+    local pid
+    local presence
+
+    section "Server 进程"
+    "$SERVER_COMMAND" status
+
+    section "HTTP"
+    code="$(http_code /xiaozhi/event/devices)"
+    if [ "$code" = "200" ]; then
+        success "$SERVER_URL 健康（HTTP 200）"
+    else
+        warn "$SERVER_URL 不健康（HTTP ${code:-无响应}）"
+    fi
+
+    section "在线设备"
+    if [ "$code" = "200" ]; then
+        count="$(device_count)"
+        printf '  在线 %s 台：%s\n' "${count:-0}" "$(device_ids)"
+        if [ -n "$DEVICE_ID" ]; then
+            printf '  关心的设备（DESKPET_DEVICE_ID）：%s\n' "$DEVICE_ID"
+        fi
+    else
+        printf '  Server 没起来，查不到\n'
+    fi
+
+    section "在岗状态"
+    if [ -z "$WORKSTATION_ID" ]; then
+        printf '  未配置 GONGBAN_WORKSTATION，跳过\n'
+    elif [ "$code" != "200" ]; then
+        printf '  Server 没起来，查不到\n'
+    else
+        presence="$(presence_line "$WORKSTATION_ID")"
+        printf '  工位 %s：%s\n' "$WORKSTATION_ID" "${presence:-查询失败}"
+    fi
+
+    section "桌面应用"
+    pid="$(desktop_pid)"
+    if [ -n "$pid" ]; then
+        success "打包版桌面应用在跑，PID $pid"
+    elif find_desktop_app >/dev/null; then
+        warn "已打包但没在跑：./gongban up 或直接 open $(find_desktop_app)"
+    else
+        warn "还没打包：cd \"$DESKTOP_DIR\" && npm run package"
+    fi
+
+    section "最近错误"
+    recent_errors
+}
+
+cmd_doctor() {
+    local server_status
+    local errors
+
+    section "server.command doctor"
+    "$SERVER_COMMAND" doctor
+    server_status=$?
+
+    section "启动器预检"
+    preflight
+    errors=$?
+
+    section "结论"
+    if [ "$server_status" -eq 0 ] && [ "$errors" -eq 0 ]; then
+        success "两项检查都通过，可以 ./gongban up"
+        return 0
+    fi
+    fail "server.command doctor 退出码 ${server_status}，启动器预检 ${errors} 项不通过"
+    return 1
+}
+
+DEMO_SCENARIOS="incident away-return"
+
+demo_script_for() {
+    case "$1" in
+        incident)
+            printf '%s' "$TOOLS_DIR/demo-incident.sh"
+            ;;
+        away-return)
+            printf '%s' "$TOOLS_DIR/demo-away-return.sh"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+demo_usage() {
+    cat <<EOF
+用法：./gongban demo <场景> [参数...]
+
+可用场景：
+  incident      流程七 线上故障与诊断协助（alert / diagnose / resolve / status / reset）
+  away-return   流程四五 离席→来访留言→回岗告知（away / sleep / visitor / recorded / back / reset）
+
+不带参数跑一次场景就会打印它自己的分镜用法，例如：
+  ./gongban demo incident
+  ./gongban demo incident alert take-2
+EOF
+}
+
+cmd_demo() {
+    local scenario
+    local script
+
+    scenario="${1:-}"
+    if [ -z "$scenario" ]; then
+        demo_usage >&2
+        exit 2
+    fi
+    shift
+
+    if ! script="$(demo_script_for "$scenario")"; then
+        fail "没有这个演示场景：${scenario}（可用：${DEMO_SCENARIOS}）"
+        demo_usage >&2
+        exit 2
+    fi
+    if [ ! -x "$script" ]; then
+        fail "演示脚本不可执行：$script"
+        exit 2
+    fi
+
+    DESKPET_SERVER="$SERVER_URL" exec "$script" "$@"
+}
+
+cmd_mock_device() {
+    local has_server=0
+    local arg
+
+    if [ ! -x "$VENV_PY" ]; then
+        fail "缺少 Server 虚拟环境：$VENV_PY"
+        printf '  先跑：./gongban doctor\n' >&2
+        exit 1
+    fi
+
+    if [ "$#" -gt 0 ]; then
+        for arg in "$@"; do
+            case "$arg" in
+                --server | --server=*)
+                    has_server=1
+                    ;;
+            esac
+        done
+    fi
+    # 没显式指定就按本仓库的 WS 端口来，省得 XIAOFEI_WS_PORT 改过之后连错地方
+    if [ "$has_server" -eq 0 ]; then
+        set -- --server "ws://127.0.0.1:$WS_PORT/xiaozhi/v1/" "$@"
+    fi
+
+    exec "$VENV_PY" "$TOOLS_DIR/mock_device.py" "$@"
+}
+
+usage() {
+    cat <<EOF
+用法：./gongban <命令> [参数...]
+
+  up            预检环境 → 起 Server → 等健康 → 拉起打包版桌面应用 → 报设备数
+  down          退出桌面应用（优雅优先）并停止 Server
+  status        一屏看 Server / HTTP / 在线设备 / 在岗 / 桌面应用 / 最近错误（只读）
+  doctor        环境体检：server.command doctor 加启动器自己的预检（只读）
+  demo <场景>   跑演示脚本，不带场景名时列出全部
+  mock-device   起模拟设备顶替真机，参数透传给 tools/mock_device.py
+  help          显示本帮助
+
+环境变量：
+  DESKPET_SERVER       Server HTTP 地址，默认 http://127.0.0.1:$HTTP_PORT
+  DESKPET_DEVICE_ID    关心的设备号，status 里标出来
+  GONGBAN_WORKSTATION  要查在岗状态的工位 ID，不设就跳过
+  XIAOFEI_WS_PORT      WebSocket 端口，默认 8000（与 server.command 同名同义）
+  XIAOFEI_HTTP_PORT    HTTP 端口，默认 8003
+  GONGBAN_HEALTH_TIMEOUT  up 等健康的秒数，默认 40
+EOF
+}
+
+# source 时（供测试直接调用内部函数，如 find_desktop_app）跳过分发：
+# source 场景下 $0 是调用方自己的 $0，不等于被 source 的这个文件路径。
+# 正常执行（./gongban ... / bash gongban ...）时两者相等，行为不变。
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    case "${1:-}" in
+        up)
+            shift
+            cmd_up "$@"
+            ;;
+        down)
+            shift
+            cmd_down "$@"
+            ;;
+        status)
+            shift
+            cmd_status "$@"
+            ;;
+        doctor)
+            shift
+            cmd_doctor "$@"
+            ;;
+        demo)
+            shift
+            cmd_demo "$@"
+            ;;
+        mock-device)
+            shift
+            cmd_mock_device "$@"
+            ;;
+        help | -h | --help)
+            usage
+            ;;
+        "")
+            usage >&2
+            exit 2
+            ;;
+        *)
+            fail "未知命令：$1"
+            usage >&2
+            exit 2
+            ;;
+    esac
+fi
