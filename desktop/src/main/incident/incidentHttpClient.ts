@@ -133,8 +133,9 @@ const toIncident = (value: unknown): IncidentSummary => {
 
 export class IncidentHttpClient {
   constructor(
-    private readonly fetcher: Fetcher = fetch,
-    private readonly baseUrl = 'http://127.0.0.1:8003',
+    private readonly fetcher: Fetcher,
+    /** 地址按次向配置中心取，构造期不缓存，改完设置无需重启。 */
+    private readonly resolveBaseUrl: () => string,
   ) {}
 
   async list(): Promise<IncidentListResult> {
@@ -174,7 +175,7 @@ export class IncidentHttpClient {
     options: { tolerateStatus?: number } = {},
   ): Promise<JsonRecord> {
     try {
-      const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      const response = await this.fetcher(`${this.resolveBaseUrl()}${path}`, {
         ...init,
         signal: AbortSignal.timeout(5000),
       });

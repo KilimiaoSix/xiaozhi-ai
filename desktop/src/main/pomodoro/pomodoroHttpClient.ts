@@ -80,8 +80,9 @@ const toDeviceSummary = (value: unknown): PomodoroDeviceSummary => {
 
 export class PomodoroHttpClient {
   constructor(
-    private readonly fetcher: Fetcher = fetch,
-    private readonly baseUrl = 'http://127.0.0.1:8003',
+    private readonly fetcher: Fetcher,
+    /** 地址按次向配置中心取，构造期不缓存，改完设置无需重启。 */
+    private readonly resolveBaseUrl: () => string,
   ) {}
 
   async listDevices(): Promise<PomodoroDeviceListResult> {
@@ -119,7 +120,7 @@ export class PomodoroHttpClient {
 
   private async request(path: string, init: RequestInit): Promise<JsonRecord> {
     try {
-      const response = await this.fetcher(`${this.baseUrl}${path}`, {
+      const response = await this.fetcher(`${this.resolveBaseUrl()}${path}`, {
         ...init,
         signal: AbortSignal.timeout(5000),
       });

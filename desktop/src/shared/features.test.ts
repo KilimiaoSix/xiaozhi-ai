@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { featureCatalog } from '../modules/features';
+import { featureCatalog, visibleFeatureCatalog } from '../modules/features';
 
 describe('featureCatalog', () => {
-  it('provides all eight demo capabilities in priority order', () => {
+  it('保留全部九张卡片的定义（含四张已从 UI 收起的占位卡）', () => {
     expect(featureCatalog.map((feature) => feature.id)).toEqual([
       'identity-welcome',
       'feishu-briefing',
@@ -11,14 +11,22 @@ describe('featureCatalog', () => {
       'gesture-approval',
       'focus-mode',
       'away-messages',
-      'return-summary',
+      'away-summary',
       'incident-assistant',
+      'return-summary',
     ]);
   });
 
-  it('飞书 OpenAPI、编码 Agent 监控、专注模式与告警管理已就绪，其余仍是占位', () => {
+  it('五项能力已做实，四张占位卡仍是 placeholder 但不上屏', () => {
     expect(featureCatalog.filter((feature) => feature.status === 'ready').map(({ id }) => id))
-      .toEqual(['feishu-briefing', 'coding-agent-status', 'focus-mode', 'incident-assistant']);
+      .toEqual([
+        'feishu-briefing',
+        'coding-agent-status',
+        'focus-mode',
+        'away-summary',
+        'incident-assistant',
+      ]);
     expect(featureCatalog.filter((feature) => feature.status === 'placeholder')).toHaveLength(4);
+    expect(visibleFeatureCatalog.every((feature) => feature.status === 'ready')).toBe(true);
   });
 });

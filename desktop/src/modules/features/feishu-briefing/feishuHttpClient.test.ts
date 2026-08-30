@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { FeishuHttpClient } from './feishuHttpClient';
 
+// 配置中心的默认地址；客户端自己不再留任何硬编码兜底。
+const BASE_URL = 'http://127.0.0.1:8003';
+
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -24,8 +27,8 @@ describe('FeishuHttpClient', () => {
     }));
     const client = new FeishuHttpClient(
       fetcher,
-      'http://127.0.0.1:8003/',
-      'server-secret',
+      () => 'http://127.0.0.1:8003/',
+      () => 'server-secret',
     );
 
     await expect(client.getStatus()).resolves.toEqual({
@@ -42,6 +45,41 @@ describe('FeishuHttpClient', () => {
         method: 'GET',
         headers: { Authorization: 'Bearer server-secret' },
       }),
+    );
+  });
+
+  it('地址与令牌按次向配置中心取，改完配置不用重启', async () => {
+    let baseUrl = BASE_URL;
+    let authToken = '';
+    // 每次现造一个 Response：同一个实例的 body 只能读一次。
+    const fetcher = vi.fn().mockImplementation(async () => jsonResponse({
+      code: 'OK',
+      message: 'success',
+      data: {
+        state: 'ready',
+        message: 'ok',
+        open_id: 'ou_me',
+        source: 'server_openapi',
+        required_scopes: [],
+        missing_scopes: [],
+      },
+    }));
+    const client = new FeishuHttpClient(fetcher, () => baseUrl, () => authToken);
+
+    await client.getStatus();
+    baseUrl = 'http://192.168.1.20:8003/';
+    authToken = 'later-secret';
+    await client.getStatus();
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:8003/xiaozhi/feishu/status',
+      expect.objectContaining({ headers: {} }),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      'http://192.168.1.20:8003/xiaozhi/feishu/status',
+      expect.objectContaining({ headers: { Authorization: 'Bearer later-secret' } }),
     );
   });
 
@@ -79,7 +117,7 @@ describe('FeishuHttpClient', () => {
         fetched_at: '2026-08-19T08:01:00+08:00',
       },
     }));
-    const client = new FeishuHttpClient(fetcher);
+    const client = new FeishuHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.getBriefing()).resolves.toEqual({
       status: {
@@ -117,7 +155,7 @@ describe('FeishuHttpClient', () => {
 
   it('把 Server 离线转换为可操作错误', async () => {
     const fetcher = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
-    const client = new FeishuHttpClient(fetcher);
+    const client = new FeishuHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.getStatus()).rejects.toThrow('本地 Server 当前不可用');
   });
@@ -131,7 +169,7 @@ describe('FeishuHttpClient', () => {
         headers: { 'content-type': 'text/plain' },
       }),
     );
-    const client = new FeishuHttpClient(fetcher);
+    const client = new FeishuHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.getBriefing()).rejects.toThrow('Server 请求失败（404）');
   });

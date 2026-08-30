@@ -26,14 +26,15 @@ export interface RobotPusher {
  */
 export class RobotEventPushClient implements RobotPusher {
   constructor(
-    private readonly fetcher: Fetcher = fetch,
-    private readonly baseUrl = 'http://127.0.0.1:8003',
+    private readonly fetcher: Fetcher,
+    /** 地址按次向配置中心取，构造期不缓存。 */
+    private readonly resolveBaseUrl: () => string,
     private readonly onError?: (error: unknown) => void,
   ) {}
 
   async push(body: RobotPushBody): Promise<boolean> {
     try {
-      const response = await this.fetcher(`${this.baseUrl}/xiaozhi/event/push`, {
+      const response = await this.fetcher(`${this.resolveBaseUrl()}/xiaozhi/event/push`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),

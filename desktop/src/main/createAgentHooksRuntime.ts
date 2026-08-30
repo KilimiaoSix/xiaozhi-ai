@@ -9,16 +9,18 @@ import { HOOK_RUNNER_SOURCE } from '../modules/features/coding-agent-status/agen
 import { AgentTaskTracker } from '../modules/features/coding-agent-status/agent-hooks/taskTracker';
 import { createCodexUiApprovalProbe } from './codexUiApprovalProbe';
 import { AgentRobotNotifier, RobotEventPushClient } from './agentRobot/agentRobotNotifier';
+import { ConfiguredRobotNotifier } from './agentRobot/configuredRobotNotifier';
 import { DiscoveringRobotNotifier } from './agentRobot/deviceDiscovery';
+import type { AppConfigReader } from './config/appConfigStore';
 
 interface CreateAgentHooksRuntimeOptions {
   homeDir: string;
   userDataPath: string;
   electronPath: string;
+  /** 机器人链路的地址与设备号唯一来源。 */
+  config: AppConfigReader;
   platform?: NodeJS.Platform;
   isAccessibilityTrusted?: () => boolean;
-  robotDeviceId?: string;
-  robotServerUrl?: string;
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -71,28 +73,35 @@ export const createAgentHooksRuntime = (
     : undefined;
 
   // 机器人反馈：把 tracker 产出的意图推给 Server 的 /xiaozhi/event/push。
-  // 地址与设备沿用 tools/cc-approval-hook.sh 已有的环境变量约定；
-  // 未配置 DESKPET_DEVICE_ID 时退而向 Server 查在线设备表，恰好一台在线才启用
+  // 地址与设备号一律来自配置中心（env > 配置文件 > 默认值），按条事件现取；
+  // 没有设备号时退而向 Server 查在线设备表，恰好一台在线才启用
   // （多台不猜、查不到保持静默），没有机器人的开发机上监控照常工作。
-  const deviceId = options.robotDeviceId ?? process.env.DESKPET_DEVICE_ID ?? '';
-  const serverUrl = options.robotServerUrl
-    ?? process.env.DESKPET_SERVER
-    ?? 'http://127.0.0.1:8003';
+  const resolveServerUrl = () => options.config.get().serverUrl;
   const onRobotError = (error: unknown) => {
     console.warn('机器人意图处理失败', error);
   };
-  const robotNotifier = deviceId
-    ? new AgentRobotNotifier(
-        new RobotEventPushClient(fetch, serverUrl, (error) => {
-          console.warn('推送工作事件到机器人失败', error);
-        }),
-        deviceId,
-        { onError: onRobotError },
-      )
-    : new DiscoveringRobotNotifier({
-        serverUrl,
-        onError: onRobotError,
-      });
+  let discovering: DiscoveringRobotNotifier | undefined;
+  const createDiscovering = (): DiscoveringRobotNotifier => {
+    discovering ??= new DiscoveringRobotNotifier({
+      resolveServerUrl,
+      onError: onRobotError,
+    });
+    return discovering;
+  };
+  // 启动时就没有设备号的话立刻开始轮询：等第一条事件到了才开始找设备，
+  // 那条事件必然被丢掉（发现成功前的意图不补播）。
+  if (!options.config.get().deviceId.trim()) createDiscovering();
+  const robotNotifier = new ConfiguredRobotNotifier({
+    resolveDeviceId: () => options.config.get().deviceId,
+    createDirect: (deviceId) => new AgentRobotNotifier(
+      new RobotEventPushClient(fetch, resolveServerUrl, (error) => {
+        console.warn('推送工作事件到机器人失败', error);
+      }),
+      deviceId,
+      { onError: onRobotError },
+    ),
+    createDiscovering,
+  });
 
   return new AgentHooksRuntime({
     manager,
@@ -100,6 +109,6 @@ export const createAgentHooksRuntime = (
     tracker: new AgentTaskTracker(),
     statePath: path.join(rootPath, 'state/tasks.json'),
     ...(attentionMonitor ? { attentionMonitor } : {}),
-    ...(robotNotifier ? { robotNotifier } : {}),
+    robotNotifier,
   });
 };

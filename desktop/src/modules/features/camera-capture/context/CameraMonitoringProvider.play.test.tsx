@@ -46,6 +46,11 @@ describe('CameraMonitoringProvider 隐藏视频 play() 失败处理', () => {
     stop: vi.fn(async () => undefined),
     onEvent: vi.fn(() => vi.fn()),
   };
+  // OS 层权限闸门在本文件的用例里恒为放行,专注验证 play() 失败处理本身
+  const camera = {
+    getPermissionStatus: vi.fn(async () => 'granted' as const),
+    requestPermission: vi.fn(async () => 'granted' as const),
+  };
 
   function Probe() {
     current = useCameraMonitoring();
@@ -63,7 +68,7 @@ describe('CameraMonitoringProvider 隐藏视频 play() 失败处理', () => {
     });
     Object.defineProperty(window, 'xiaofei', {
       configurable: true,
-      value: { camera: { recognition } },
+      value: { camera: { ...camera, recognition } },
     });
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     container = document.createElement('div');

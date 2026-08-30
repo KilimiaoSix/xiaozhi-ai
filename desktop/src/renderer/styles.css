@@ -541,21 +541,6 @@ main {
   background: rgba(0, 122, 255, 0.09);
 }
 
-.connection-panel > label {
-  display: block;
-  margin: 22px 0 7px;
-  color: var(--muted-strong);
-  font-size: 10px;
-  font-weight: 550;
-}
-
-.url-control {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-}
-
-.url-control input,
 .camera-field input,
 .camera-device-select select {
   min-width: 0;
@@ -565,13 +550,6 @@ main {
   background: var(--panel-raised);
 }
 
-.url-control input {
-  width: 100%;
-  padding: 9px 10px;
-  font: 500 10px/1.4 var(--mono);
-}
-
-.url-control button,
 .primary-action,
 .agent-source-card button,
 .feishu-actions button,
@@ -585,7 +563,6 @@ main {
   font-weight: 600;
 }
 
-.url-control button,
 .primary-action {
   padding: 0 13px;
   border: 1px solid var(--cyan);
@@ -593,44 +570,128 @@ main {
   background: var(--cyan);
 }
 
-.url-control button:hover,
 .primary-action:hover {
   background: #006ee6;
 }
 
-.connection-meta {
+/* 连接工作台的配置字段：输入框写「配置文件」那一层，
+   下面两行说清当前生效值与它来自 env / 配置文件 / 默认值。 */
+.config-fields {
   display: grid;
-  margin: 18px 0 0;
-}
-
-.connection-meta div {
-  display: flex;
-  justify-content: space-between;
   gap: 16px;
-  padding: 8px 0;
-  border-top: 1px solid var(--line);
+  margin-top: 18px;
 }
 
-.connection-meta dt,
-.connection-meta dd {
-  margin: 0;
-  font-size: 9px;
+.config-field > label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 550;
 }
 
-.connection-meta dt {
+.config-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--paper);
+  background: var(--panel-raised);
+  font: 500 10px/1.4 var(--mono);
+}
+
+.config-field input:disabled {
   color: var(--muted);
 }
 
-.connection-meta dd {
+.config-effective {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 7px 0 0;
+  font-size: 9px;
+}
+
+.config-effective span {
+  color: var(--muted);
+}
+
+.config-effective strong {
   overflow: hidden;
   font-family: var(--mono);
-  text-align: right;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mock-value {
+.config-effective em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.config-override {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  border-radius: 6px;
   color: var(--amber);
+  background: rgba(255, 159, 10, 0.1);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.config-field small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.config-error {
+  margin: 14px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--coral);
+  background: rgba(255, 59, 48, 0.1);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.config-save {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 13px;
+  border: 1px solid var(--cyan);
+  border-radius: 6px;
+  color: #fff;
+  background: var(--cyan);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.config-save:hover:not(:disabled) {
+  background: #006ee6;
+}
+
+.config-save:disabled {
+  opacity: 0.55;
+}
+
+.config-saved {
+  color: var(--green);
+  font-size: 9px;
 }
 
 .panel-note {
@@ -1774,4 +1835,190 @@ main {
 .incident-timeline-detail {
   color: var(--paper);
   overflow-wrap: anywhere;
+}
+
+/* ── 返岗汇总面板（与告警管理同住 focus-shell，沿用其深色卡片语言）───────── */
+
+.away-panel {
+  --paper: #f5f7fa;
+  --muted: #91a0ad;
+  --line: rgba(93, 216, 255, 0.22);
+  --violet: #a88bff;
+  --cyan: #5dd8ff;
+  --amber: #ffbf69;
+  --coral: #ff766e;
+  --green: #55d6a0;
+  margin-top: 24px;
+  padding: 24px 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--paper);
+  background: #0d1721;
+  box-shadow: 0 18px 50px rgba(10, 20, 30, 0.16);
+}
+
+.away-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.away-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font: 500 11px/1 var(--mono);
+}
+
+.away-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.away-state.is-away i {
+  background: var(--amber);
+}
+
+.away-refresh {
+  padding: 8px 14px;
+  border: 1px solid rgba(168, 139, 255, 0.28);
+  border-radius: 6px;
+  color: var(--paper);
+  background: rgba(15, 26, 37, 0.76);
+  font: 700 10px/1 var(--mono);
+}
+
+.away-refresh:hover {
+  border-color: var(--violet);
+  color: var(--violet);
+}
+
+.away-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.away-headline strong {
+  color: var(--paper);
+  font: 700 22px/1 var(--mono);
+}
+
+.away-headline small {
+  color: var(--muted);
+  font: 500 10px/1 var(--mono);
+}
+
+/* 播报稿用服务端组好的那份，视觉上与逐条清单区分开：这是机器人念出去的原话 */
+.away-speech {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(93, 216, 255, 0.28);
+  border-radius: 6px;
+  color: #d8f4ff;
+  background: rgba(93, 216, 255, 0.07);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.away-empty {
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.away-offline {
+  padding-left: 12px;
+  border-left: 2px solid var(--coral);
+  color: #ffc0bb;
+}
+
+.away-bucket {
+  margin-top: 18px;
+}
+
+.away-bucket-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.away-bucket-title {
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: #0d1721;
+  background: var(--muted);
+  font: 700 10px/1 var(--mono);
+}
+
+.away-bucket-title.bucket-critical { background: var(--coral); }
+.away-bucket-title.bucket-needs_user { background: var(--amber); }
+.away-bucket-title.bucket-agent_result { background: var(--green); }
+.away-bucket-title.bucket-visitor { background: var(--cyan); }
+
+.away-bucket-count {
+  color: var(--muted);
+  font: 500 10px/1 var(--mono);
+}
+
+.away-bucket-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.away-event {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(145, 160, 173, 0.2);
+  border-radius: 7px;
+  background: rgba(15, 26, 37, 0.6);
+}
+
+.away-event-at {
+  flex-shrink: 0;
+  color: var(--muted);
+  font: 500 10px/1.5 var(--mono);
+}
+
+.away-event-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.away-event-repeat {
+  flex-shrink: 0;
+  color: var(--coral);
+  font: 700 10px/1.5 var(--mono);
+}
+
+.away-event-source {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(145, 160, 173, 0.45);
+  border-radius: 5px;
+  color: var(--muted);
+  font: 500 10px/1 var(--mono);
+}
+
+.away-note {
+  margin: 20px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
 }

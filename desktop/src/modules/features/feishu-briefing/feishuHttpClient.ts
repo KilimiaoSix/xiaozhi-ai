@@ -95,15 +95,12 @@ const parseBriefing = (value: unknown): FeishuBriefingSnapshot => {
 };
 
 export class FeishuHttpClient {
-  private readonly baseUrl: string;
-
   constructor(
-    private readonly fetcher: Fetcher = fetch,
-    baseUrl = 'http://127.0.0.1:8003',
-    private readonly authToken = '',
-  ) {
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
-  }
+    private readonly fetcher: Fetcher,
+    /** 地址与令牌按次向配置中心取，构造期不缓存。 */
+    private readonly resolveBaseUrl: () => string,
+    private readonly resolveAuthToken: () => string = () => '',
+  ) {}
 
   async getStatus(): Promise<FeishuConnectionStatus> {
     return parseStatus(await this.request('/xiaozhi/feishu/status'));
@@ -114,11 +111,15 @@ export class FeishuHttpClient {
   }
 
   private async request(path: string): Promise<unknown> {
+    // 末尾斜杠在这里归一：地址是用户在设置面板随手填的，
+    // http://host:8003/ 拼出来的 //xiaozhi/... 会被 aiohttp 判成 404。
+    const baseUrl = this.resolveBaseUrl().replace(/\/+$/, '');
+    const authToken = this.resolveAuthToken();
     const headers: Record<string, string> = {};
-    if (this.authToken) headers.Authorization = `Bearer ${this.authToken}`;
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
     let response: Response;
     try {
-      response = await this.fetcher(`${this.baseUrl}${path}`, {
+      response = await this.fetcher(`${baseUrl}${path}`, {
         method: 'GET',
         headers,
         signal: AbortSignal.timeout(20_000),

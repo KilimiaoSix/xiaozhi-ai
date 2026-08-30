@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { PomodoroHttpClient } from './pomodoroHttpClient';
 
+// 配置中心的默认地址；客户端自己不再留任何硬编码兜底。
+const BASE_URL = 'http://127.0.0.1:8003';
+
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -17,7 +20,7 @@ describe('PomodoroHttpClient', () => {
         { device_id: 'esp32-02', connected: false, active: false },
       ],
     }));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.listDevices()).resolves.toEqual({
       devices: [
@@ -44,7 +47,7 @@ describe('PomodoroHttpClient', () => {
       round: 2,
       total_rounds: 4,
     }));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.getStatus('esp32-01')).resolves.toEqual({
       deviceId: 'esp32-01',
@@ -76,7 +79,7 @@ describe('PomodoroHttpClient', () => {
       round: 1,
       total_rounds: 4,
     }));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await client.sendCommand({ deviceId: 'esp32-01', command: 'start', focusMinutes: 25 });
 
@@ -86,12 +89,30 @@ describe('PomodoroHttpClient', () => {
     expect(JSON.parse(init.body as string)).toEqual({ command: 'start', focus_minutes: 25 });
   });
 
+  it('地址按次向配置中心取，改完配置不用重启就打到新地址', async () => {
+    // 旧实现把 127.0.0.1:8003 硬编码在构造参数默认值里，设置面板改了也没用。
+    let baseUrl = BASE_URL;
+    // 每次现造一个 Response：同一个实例的 body 只能读一次。
+    const fetcher = vi.fn().mockImplementation(async () =>
+      jsonResponse({ success: true, devices: [] }));
+    const client = new PomodoroHttpClient(fetcher, () => baseUrl);
+
+    await client.listDevices();
+    baseUrl = 'http://192.168.1.20:8003';
+    await client.listDevices();
+
+    expect(fetcher.mock.calls.map((call) => String(call[0]))).toEqual([
+      'http://127.0.0.1:8003/xiaozhi/pomodoro/devices',
+      'http://192.168.1.20:8003/xiaozhi/pomodoro/devices',
+    ]);
+  });
+
   it('把未知命令的 400 响应转换成稳定的 HTTP 错误', async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({
       success: false,
       message: 'unknown command',
     }, 400));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.sendCommand({ deviceId: 'esp32-01', command: 'pause' }))
       .rejects.toMatchObject({
@@ -104,7 +125,7 @@ describe('PomodoroHttpClient', () => {
 
   it('把网络异常转换成离线错误', async () => {
     const fetcher = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.listDevices()).rejects.toMatchObject({
       name: 'PomodoroGatewayError',
@@ -114,7 +135,7 @@ describe('PomodoroHttpClient', () => {
 
   it('把超时异常转换成超时错误', async () => {
     const fetcher = vi.fn().mockRejectedValue(new DOMException('timeout', 'TimeoutError'));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.getStatus('esp32-01')).rejects.toMatchObject({
       name: 'PomodoroGatewayError',
@@ -127,7 +148,7 @@ describe('PomodoroHttpClient', () => {
       success: true,
       device_id: 'esp32-01',
     }));
-    const client = new PomodoroHttpClient(fetcher);
+    const client = new PomodoroHttpClient(fetcher, () => BASE_URL);
 
     await expect(client.getStatus('esp32-01')).rejects.toMatchObject({
       name: 'PomodoroGatewayError',

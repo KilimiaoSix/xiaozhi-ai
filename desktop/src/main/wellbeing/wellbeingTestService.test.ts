@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { WellbeingTestService } from './wellbeingTestService';
 
+// 配置中心的默认地址；服务自己不再读 DESKPET_SERVER。
+const BASE_URL = 'http://127.0.0.1:8003';
+
 describe('WellbeingTestService', () => {
   it('sends a labeled long-work test without speaking the test marker', async () => {
     const fetcher = vi.fn()
@@ -15,7 +18,7 @@ describe('WellbeingTestService', () => {
         delivered: true,
         spoke: false,
       }), { status: 200 }));
-    const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await expect(service.sendTest('long_work')).resolves.toEqual({
       deviceId: '30:30:f9:37:f5:6c',
@@ -48,7 +51,7 @@ describe('WellbeingTestService', () => {
       count: 2,
       devices: ['robot-1', 'robot-2'],
     }), { status: 200 }));
-    const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await expect(service.sendTest('long_work')).rejects.toThrow(
       '在线机器人有 2 台，需要恰好一台才能发送测试提醒',
@@ -60,7 +63,7 @@ describe('WellbeingTestService', () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ devices: ['robot-1'] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ delivered: true })));
-    const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await service.sendTest('commute_safety');
 
@@ -79,7 +82,7 @@ describe('WellbeingTestService', () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ devices: ['robot-1'] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ delivered: true })));
-    const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await service.sendTest('overtime');
 
@@ -97,7 +100,7 @@ describe('WellbeingTestService', () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ devices: ['robot-1'] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ delivered: true })));
-    const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await service.sendTest('frantic_overtime');
 
@@ -115,7 +118,7 @@ describe('WellbeingTestService', () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ devices: ['robot-1'] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ delivered: true })));
-    const service = new WellbeingTestService(fetcher, 'http://127.0.0.1:8003');
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await service.sendTest('warm_encouragement');
 
@@ -134,29 +137,27 @@ describe('WellbeingTestService', () => {
     // 两种失败都走 discoverRobotDeviceId 的 null 分支，旧实现一律报设备数问题，
     // 把「服务端没起」的排查方向引向机器人。
     const fetcher = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
-    const service = new WellbeingTestService(fetcher);
+    const service = new WellbeingTestService(fetcher, () => BASE_URL);
 
     await expect(service.sendTest('long_work')).rejects.toThrow(
       '本地 Server 当前不可用',
     );
   });
 
-  it('从 DESKPET_SERVER 读取服务端地址', async () => {
-    const previous = process.env.DESKPET_SERVER;
-    process.env.DESKPET_SERVER = 'http://10.0.0.9:8003';
-    try {
-      const fetcher = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ ok: true, devices: ['dc:da:0c:26:9a:60'] }), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
-      const service = new WellbeingTestService(fetcher);
-      await service.sendTest('long_work').catch(() => undefined);
+  it('地址按次向配置中心取，不再自己读 DESKPET_SERVER', async () => {
+    let baseUrl = BASE_URL;
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, devices: ['dc:da:0c:26:9a:60'] }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const service = new WellbeingTestService(fetcher, () => baseUrl);
 
-      expect(String(fetcher.mock.calls[0][0])).toContain('10.0.0.9:8003');
-    } finally {
-      if (previous === undefined) delete process.env.DESKPET_SERVER;
-      else process.env.DESKPET_SERVER = previous;
-    }
+    await service.sendTest('long_work').catch(() => undefined);
+    baseUrl = 'http://10.0.0.9:8003';
+    await service.sendTest('long_work').catch(() => undefined);
+
+    expect(String(fetcher.mock.calls[0][0])).toContain('127.0.0.1:8003');
+    expect(String(fetcher.mock.calls.at(-1)?.[0])).toContain('10.0.0.9:8003');
   });
 });

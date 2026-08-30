@@ -103,6 +103,24 @@ const recordValue = (value: unknown): Record<string, unknown> => (
     : {}
 );
 
+// OS 层权限闸门:macOS TCC 拒绝时 getUserMedia 有可能"正常"返回一条永远没有
+// 画面的 live 轨道(黑屏无报错)——不能只等 getUserMedia 自己抛错,必须先问一遍
+// 主进程记录的系统级权限状态。denied/restricted 直接判定失败;not-determined
+// 先走一次系统弹窗,弹窗后仍非 granted 同样判定失败。抛出的 DOMException 复用
+// 现有 cameraErrorMessage 的 NotAllowedError 分支,直接进入既有的权限错误横幅。
+const ensureCameraPermission = async (): Promise<void> => {
+  const status = await window.xiaofei.camera.getPermissionStatus();
+  if (status === 'denied' || status === 'restricted') {
+    throw new DOMException('摄像头权限未开启', 'NotAllowedError');
+  }
+  if (status === 'not-determined') {
+    const requested = await window.xiaofei.camera.requestPermission();
+    if (requested !== 'granted') {
+      throw new DOMException('摄像头权限未开启', 'NotAllowedError');
+    }
+  }
+};
+
 const cameraErrorMessage = (error: unknown): string => {
   if (error instanceof DOMException) {
     if (error.name === 'NotAllowedError') return '摄像头权限未开启';
@@ -144,6 +162,12 @@ export function CameraMonitoringProvider({ children }: PropsWithChildren) {
   }, []);
 
   const startCamera = useCallback(async (deviceId?: string): Promise<MediaStream> => {
+    // 闸门下沉到这里(唯一的 getUserMedia 调用点):此前只在 startMonitoring/
+    // startEnrollment 里显式调用,2 秒恢复定时器、track ended 恢复、
+    // selectDevice 都直接调本函数绕过了闸门——denied 状态下每 2 秒仍会
+    // 白调一次系统 getUserMedia。放在函数体最前面、getUserMedia 之前,
+    // 一次改动覆盖全部五个调用方。
+    await ensureCameraPermission();
     producerRef.current?.stop();
     producerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());

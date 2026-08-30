@@ -6,6 +6,8 @@ import {
   type CameraSocketLike,
   type CameraWebSocketFactory,
 } from './cameraStreamClient';
+import type { AppConfigReader } from '../config/appConfigStore';
+import type { AppConfig } from '../../shared/appConfig';
 
 
 class FakeSocket implements CameraSocketLike {
@@ -51,6 +53,31 @@ class FakeSocket implements CameraSocketLike {
 }
 
 
+/** 配置中心的最小替身：set() 既改值也通知订阅者，用来验热切换。 */
+class FakeConfig implements AppConfigReader {
+  private config: AppConfig;
+  private readonly listeners = new Set<(config: AppConfig) => void>();
+
+  constructor(config: AppConfig) {
+    this.config = config;
+  }
+
+  get(): AppConfig {
+    return this.config;
+  }
+
+  subscribe(listener: (config: AppConfig) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  set(patch: Partial<AppConfig>): void {
+    this.config = { ...this.config, ...patch };
+    for (const listener of [...this.listeners]) listener(this.config);
+  }
+}
+
+
 const makeHarness = (serverUrl = 'http://127.0.0.1:8003') => {
   const sockets: FakeSocket[] = [];
   const connections: Array<{ url: string; headers: Record<string, string> }> = [];
@@ -66,9 +93,13 @@ const makeHarness = (serverUrl = 'http://127.0.0.1:8003') => {
     cancelled: boolean;
   }> = [];
   const uuids = Array.from({ length: 10 }, (_, index) => `session-${index + 1}`);
-  const client = new CameraStreamClient({
+  const config = new FakeConfig({
     serverUrl,
+    deviceId: '',
     authToken: 'top-secret',
+  });
+  const client = new CameraStreamClient({
+    config,
     webSocketFactory: factory,
     randomUUID: () => uuids.shift() ?? 'session-overflow',
     setTimer: (callback, delay) => {
@@ -80,7 +111,7 @@ const makeHarness = (serverUrl = 'http://127.0.0.1:8003') => {
       (timer as typeof timers[number]).cancelled = true;
     },
   });
-  return { client, sockets, connections, timers };
+  return { client, config, sockets, connections, timers };
 };
 
 
@@ -190,6 +221,84 @@ describe('CameraStreamClient', () => {
     expect(client.active).toBe(false);
     pending.callback();
     expect(sockets).toHaveLength(1);
+  });
+
+  it('地址在配置中心被改掉时断开旧连接并连到新地址', () => {
+    const { client, config, sockets, connections } = makeHarness();
+    client.start({ mode: 'monitoring', workstationId: 'desk-local' });
+    sockets[0].open();
+    sockets[0].serverEvent({ type: 'ready', session_id: 'session-1', sequence: 0 });
+
+    config.set({ serverUrl: 'http://10.0.0.5:8003', authToken: 'new-secret' });
+
+    expect(sockets[0].closed).toBe(true);
+    expect(connections[1]).toEqual({
+      url: 'ws://10.0.0.5:8003/xiaozhi/presence/stream',
+      headers: { Authorization: 'Bearer new-secret' },
+    });
+    sockets[1].open();
+    expect(JSON.parse(String(sockets[1].sent[0]))).toMatchObject({
+      session_id: 'session-2',
+      workstation_id: 'desk-local',
+    });
+    expect(client.active).toBe(true);
+  });
+
+  it('切换地址时清掉待重连定时器，不会连出两条链路', () => {
+    const { client, config, sockets, timers } = makeHarness();
+    client.start({ mode: 'monitoring', workstationId: 'desk-local' });
+    sockets[0].open();
+    sockets[0].serverClose();
+    const pending = timers.at(-1)!;
+
+    config.set({ serverUrl: 'http://10.0.0.5:8003' });
+
+    expect(pending.cancelled).toBe(true);
+    expect(sockets).toHaveLength(2);
+    pending.callback();
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('监测没开启时配置变更不会自己建连接', () => {
+    const { client, config, sockets } = makeHarness();
+
+    config.set({ serverUrl: 'http://10.0.0.5:8003' });
+
+    expect(sockets).toHaveLength(0);
+    expect(client.active).toBe(false);
+  });
+
+  it('每次连接都现取地址，构造之后改的配置照样生效', () => {
+    const { client, config, sockets, connections } = makeHarness();
+    config.set({ serverUrl: 'http://10.0.0.9:8003' });
+
+    client.start({ mode: 'monitoring', workstationId: 'desk-local' });
+    sockets[0].open();
+
+    expect(connections[0].url).toBe('ws://10.0.0.9:8003/xiaozhi/presence/stream');
+  });
+
+  it('地址是已落盘的坏值（缺协议头）时不同步抛异常，改为发一条 error 事件兜底', () => {
+    const { client, config, sockets, connections } = makeHarness('localhost:8003');
+    const events: unknown[] = [];
+    client.subscribe((event) => events.push(event));
+
+    expect(() => client.start({ mode: 'monitoring', workstationId: 'desk-local' }))
+      .not.toThrow();
+
+    expect(sockets).toHaveLength(0);
+    expect(connections).toHaveLength(0);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      retryable: false,
+    }));
+    expect(events).toContainEqual({ type: 'connection', state: 'idle' });
+    expect(client.active).toBe(true);
+
+    // 配置热切换到合法地址后应当能正常连上，不会卡死在坏值状态
+    config.set({ serverUrl: 'http://10.0.0.5:8003' });
+    expect(sockets).toHaveLength(1);
+    expect(connections[0].url).toBe('ws://10.0.0.5:8003/xiaozhi/presence/stream');
   });
 
   it('includes a trimmed display name for enrollment', () => {
