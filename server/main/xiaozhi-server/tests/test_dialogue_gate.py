@@ -6,7 +6,7 @@
 主动推送的播报全被忙态吞掉。本模块就是那道准入门。
 """
 
-from core.dialogue_gate import DialogueGate, window_open
+from core.dialogue_gate import DialogueGate, window_open, _normalize, _effective_text
 
 
 class FakeMessage:
@@ -52,19 +52,22 @@ class Clock:
         self.now += seconds
 
 
-def make_config(**overrides):
+def make_config(exit_commands=None, **overrides):
     section = {"enabled": True, "window_seconds": 60}
     section.update(overrides)
-    return {
+    config = {
         "dialogue_gate": section,
         "wakeup_words": ["你好小智", "你好喵伴"],
         "wake_word": {"display": "你好喵伴"},
     }
+    if exit_commands is not None:
+        config["exit_commands"] = exit_commands
+    return config
 
 
-def make(**overrides):
+def make(exit_commands=None, **overrides):
     clock = Clock()
-    config = make_config(**overrides)
+    config = make_config(exit_commands=exit_commands, **overrides)
     return DialogueGate(config, clock=clock), FakeConn(config), clock
 
 
@@ -318,3 +321,141 @@ def test_window_open_follows_gate_lifecycle():
 
 def test_window_open_ignores_conn_without_window_attr():
     assert window_open(object()) is False
+
+
+# ---------------------------------------------------------------- 同音字归一（ASR 常见混淆）
+# 真机联调实测：设备停在聆听态（唤醒模型关闭）时唤醒只能靠 ASR 文本匹配唤醒词，
+# 而 ASR 把「你好小智」转成「你好，小治」、把「你好喵伴」转成「你好，苗办」——
+# 变体表怎么加都追不上，必须做同音/易混字归一后再比较。
+
+
+def test_homophone_confused_zhi_wake_word_opens_the_gate():
+    """ASR 把「你好小智」听成「你好，小治」：同音归一后仍要能开门。"""
+    gate, conn, clock = make()
+
+    assert gate.allow(conn, "你好，小治。") is True
+    clock.advance(3)
+    assert gate.allow(conn, "帮我看下这个报错") is True
+
+
+def test_homophone_confused_miaoban_wake_word_opens_the_gate():
+    """ASR 把「你好喵伴」听成「你好，苗办」：同音归一后仍要能开门。"""
+    gate, conn, clock = make()
+
+    assert gate.allow(conn, "你好，苗办。") is True
+
+
+def test_normalize_applies_the_confusable_char_mapping():
+    """归一表至少覆盖唤醒词高频混淆：治/志/只/纸→智，苗/妙/秒/描→喵，
+    办/拌/半/班→伴。"""
+    assert _normalize("你好，小治。") == "你好小智"
+    assert _normalize("你好志") == "你好智"
+    assert _normalize("你好只") == "你好智"
+    assert _normalize("你好纸") == "你好智"
+    assert _normalize("你好苗办") == "你好喵伴"
+    assert _normalize("你好妙伴") == "你好喵伴"
+    assert _normalize("你好秒伴") == "你好喵伴"
+    assert _normalize("你好描伴") == "你好喵伴"
+    assert _normalize("你好苗拌") == "你好喵伴"
+    assert _normalize("你好苗半") == "你好喵伴"
+    assert _normalize("你好苗班") == "你好喵伴"
+
+
+# ---------------------------------------------------------------- 退出命令逃生通道
+# 对话门关闭时，此前连「退出」都会被 allow() 当成无关人声丢弃——丢弃日志在前、
+# check_direct_exit 在后，语音层面完全没有逃生通道。
+
+
+def test_exit_command_escapes_the_closed_gate():
+    """门关闭时明确的退出词必须放行，让下游 check_direct_exit 正常关连接。"""
+    gate, conn, clock = make(exit_commands=["退出", "没事了"])
+
+    assert gate.allow(conn, "退出") is True
+
+
+def test_exit_phrase_embedded_in_a_sentence_does_not_escape_the_closed_gate():
+    """退出词必须是整句：「没事了退下吧」只是带着配置的退出词「没事了」，
+    不是整句相等，不该被子串放行——真机上「挺好，再见。」就是这样因含
+    「再见」被误放行进了 LLM，而 check_direct_exit 整句全等才关连接，
+    子串放行的句子既不会真的退出，又会让机器人对着环境人声开口，比不
+    放行还糟。"""
+    gate, conn, clock = make(exit_commands=["退出", "没事了"])
+
+    assert gate.allow(conn, "没事了退下吧") is False
+
+
+def test_casual_chat_containing_an_exit_word_is_dropped_not_escaped():
+    """真机 15:11:38 实锤：环境闲聊「挺好，再见。」因含退出词「再见」被
+    子串放行误闯 LLM。归一后必须整句等于退出词才放行；整句「再见」照常
+    放行，做对照。"""
+    gate, conn, clock = make(exit_commands=["再见"])
+
+    assert gate.allow(conn, "挺好，再见。") is False
+    assert gate.allow(conn, "再见") is True
+
+
+def test_exit_word_that_is_itself_a_full_sentence_still_escapes():
+    """退出词配的就是一句完整口令时，整句相等照常放行——收紧到整句匹配
+    不代表长退出词失效。"""
+    gate, conn, clock = make(exit_commands=["没事了退下吧"])
+
+    assert gate.allow(conn, "没事了退下吧") is True
+
+
+def test_closed_gate_with_exit_commands_configured_still_rejects_unrelated_speech():
+    """配置了退出词不代表放宽了门槛：普通无关语句照样被丢弃，不能误放。"""
+    gate, conn, clock = make(exit_commands=["退出", "没事了"])
+
+    assert gate.allow(conn, "没发你那边") is False
+    assert gate.allow(conn, "什么这个wifi") is False
+
+
+def test_exit_command_does_not_escape_an_open_gate_specially():
+    """开门状态行为不变：窗口开着时退出词照常走「本轮用掉即关窗」的老路径，
+    而不是被退出通道特殊处理绕过窗口状态变化。"""
+    gate, conn, clock = make(exit_commands=["退出"])
+
+    gate.open(conn, "唤醒词")
+    assert gate.allow(conn, "退出") is True
+    # 单次对话：本轮已被这句「退出」用掉，窗口应已关闭——
+    # 后续无关语音应恢复被丢弃，证明退出词没有跳过正常的关窗逻辑。
+    assert gate.allow(conn, "路人接着说的闲话") is False
+
+
+def test_no_exit_commands_configured_behaves_like_before():
+    """未配置 exit_commands 时不引入回归：关闭态照常丢弃一切文本。"""
+    gate, conn, clock = make()
+
+    assert gate.allow(conn, "退出") is False
+
+
+# ---------------------------------------------------------------- 无副作用：归一不改写传给下游的原文
+
+
+def test_normalize_does_not_mutate_its_input():
+    original = "你好，小治。帮我看下这个治理任务"
+    result = _normalize(original)
+
+    assert result != original  # 归一确实生效（否则下面的相等断言没有意义）
+    assert original == "你好，小治。帮我看下这个治理任务"
+
+
+def test_effective_text_does_not_mutate_its_input():
+    envelope = '{"content": "你好，小治。", "language": "zh"}'
+    result = _effective_text(envelope)
+
+    assert result == "你好，小治。"
+    assert envelope == '{"content": "你好，小治。", "language": "zh"}'
+
+
+def test_allow_only_returns_a_bool_and_leaves_the_caller_text_untouched():
+    """allow() 只返回布尔；同音归一只用于门内部的唤醒词/退出词匹配比较，
+    不能改写调用方持有的原始文本（放行给 LLM/check_direct_exit 的必须是原文）。"""
+    gate, conn, clock = make(exit_commands=["退出"])
+    original_text = "你好，小治，退出"
+
+    returned = gate.allow(conn, original_text)
+
+    assert returned is True
+    assert isinstance(returned, bool)
+    assert original_text == "你好，小治，退出"

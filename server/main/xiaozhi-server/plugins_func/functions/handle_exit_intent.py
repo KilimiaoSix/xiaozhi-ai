@@ -12,7 +12,7 @@ handle_exit_intent_function_desc = {
     "type": "function",
     "function": {
         "name": "handle_exit_intent",
-        "description": "当用户想结束对话或需要退出系统时调用",
+        "description": "当用户想结束对话或需要退出系统时调用。包括礼貌式、含蓄的收尾说法，例如：没事了、退下吧、先这样、去忙吧、你去休息吧、不用了、没什么事了——只要语义是'本轮交流到此为止'就应调用本函数，而不是继续闲聊。",
         "parameters": {
             "type": "object",
             "properties": {

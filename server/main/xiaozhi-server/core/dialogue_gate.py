@@ -26,11 +26,28 @@ device_busy_reason 全部吞掉。
 再说话必须重新唤醒。设 single_turn: false 回到连续对话：窗口内的后续轮次
 照常放行并把窗口往后滑，直到 window_seconds 内不再有新轮次。
 
-两个真机上摔过跤的细节：
+三个真机上摔过跤的细节：
   - ASR 到这里的文本可能是 {"content": ...} 说话人信封，唤醒词匹配必须用
     信封里的纯文本，否则纯唤醒词永远不等于唤醒词、被误判成「带问题」当场关窗；
   - 机器人上一句以问号收尾是在追问（「你是想问哪个？」），关窗后的
-    window_seconds 内放这一条回答进来，不然对话被腰斩在机器人自己的问题上。
+    window_seconds 内放这一条回答进来，不然对话被腰斩在机器人自己的问题上；
+  - 设备停在聆听态时（唤醒模型关闭）唤醒只能靠这里的文本匹配，而 ASR 把
+    「你好小智」转成「你好，小治」、「你好喵伴」转成「你好，苗办」——变体表
+    怎么加都追不上，所以 _normalize 里额外做一次同音/易混字归一
+    （_CONFUSABLE_CHARS）再比较。
+
+对话门关闭时，语音层面必须留一条逃生通道：不然设备卡在忙态又没人在旁边按键，
+连「退出」都会被这道门当无关人声丢弃，用户没有任何办法让它闭嘴。allow() 在
+判定丢弃之前会额外检查一次归一后的整句文本是否等于配置的某个 exit_commands
+词条（归一口径与唤醒词一致，含同音映射），整句相等就放行，交给下游
+check_direct_exit 走正常的关连接流程；窗口已经开着时退出词仍然走原来的
+「本轮用掉即关窗」路径，不受这条通道影响。
+
+这里必须是整句相等，不能是子串包含：真机 15:11:38 实锤过反例——环境闲聊
+「挺好，再见。」因为子串包含配置的退出词「再见」被这道逃生通道放行进了
+LLM，而下游 check_direct_exit 本来就是整句全等才关连接，子串放行的句子既
+不会让设备真的退出，又会让机器人对着环境人声开口，比不放行还糟。所以判定
+口径收紧成与 check_direct_exit 一致的整句相等。
 
 被拒的文本不会续窗，否则房间里一直有人说话就等于门没关。
 
@@ -46,6 +63,25 @@ TAG = __name__
 DEFAULT_WINDOW_SECONDS = 60.0
 _WINDOW_ATTR = "_dialogue_window_until"
 _FOLLOWUP_ATTR = "_dialogue_followup_until"
+
+# ASR 对唤醒词高频出现的同音/易混字混淆——真机实测「你好小智」被转写成
+# 「你好，小治」、「你好喵伴」被转写成「你好，苗办」。只作用于本模块内部
+# 的唤醒词/退出词归一比较，不改写传给下游 LLM 或 check_direct_exit 的原文。
+_CONFUSABLE_CHARS = {
+    "治": "智",
+    "志": "智",
+    "只": "智",
+    "纸": "智",
+    "苗": "喵",
+    "妙": "喵",
+    "秒": "喵",
+    "描": "喵",
+    "办": "伴",
+    "拌": "伴",
+    "半": "伴",
+    "班": "伴",
+    "伴": "伴",
+}
 
 
 def window_open(conn, clock: Optional[Callable[[], float]] = None) -> bool:
@@ -77,9 +113,11 @@ def _effective_text(text: str) -> str:
 
 
 def _normalize(text: str) -> str:
-    """去标点去空白后比较，口径与 remove_punctuation_and_length 一致。
+    """去标点去空白、同音字归一后比较，口径与 remove_punctuation_and_length 一致。
 
-    否则配置里的「你好，喵伴」永远匹配不上 ASR 出的「你好喵伴」。
+    否则配置里的「你好，喵伴」永远匹配不上 ASR 出的「你好喵伴」；同音归一
+    进一步兜底 ASR 把「小智」听成「小治」这类高频混淆（_CONFUSABLE_CHARS）。
+    只用于本模块内部的唤醒词/退出词匹配比较，纯函数、不修改入参。
     """
     from core.utils.util import remove_punctuation_and_length
 
@@ -87,7 +125,8 @@ def _normalize(text: str) -> str:
         _, stripped = remove_punctuation_and_length(text or "")
     except Exception:
         stripped = (text or "").strip()
-    return stripped.replace(" ", "")
+    stripped = stripped.replace(" ", "")
+    return "".join(_CONFUSABLE_CHARS.get(ch, ch) for ch in stripped)
 
 
 class DialogueGate:
@@ -108,6 +147,7 @@ class DialogueGate:
         self._clock = clock or time.monotonic
         self._logger = logger
         self._wake_words = self._collect_wake_words(config or {})
+        self._exit_words = self._collect_exit_words(config or {})
 
     @property
     def enabled(self) -> bool:
@@ -131,6 +171,16 @@ class DialogueGate:
         section = config.get("wake_word") or {}
         if isinstance(section, dict):
             normalized = _normalize(str(section.get("display") or ""))
+            if normalized:
+                words.add(normalized)
+        return words
+
+    @staticmethod
+    def _collect_exit_words(config: dict) -> set:
+        """退出命令逃生通道用的词表，归一口径与唤醒词一致（同音映射同样兜底）。"""
+        words = set()
+        for word in config.get("exit_commands") or []:
+            normalized = _normalize(str(word))
             if normalized:
                 words.add(normalized)
         return words
@@ -175,6 +225,14 @@ class DialogueGate:
             self._close(conn, "追问的回答，本轮已用掉")
             return True
 
+        if self._is_exit_word(stripped):
+            # 逃生通道：窗口已经打开时不会走到这里（上面的分支早已 return），
+            # 所以不影响「开门状态」的既有行为；只在原本要被丢弃时放行，
+            # 交给下游 check_direct_exit 正常关连接。整句相等，不是子串包含
+            # ——子串包含会把「挺好，再见。」这类闲聊误放行（见模块顶部说明）。
+            self._log(conn, "退出命令放行（对话门关闭中）")
+            return True
+
         self._log(conn, f"对话窗口未打开，丢弃这段语音: {_effective_text(text)}")
         return False
 
@@ -204,6 +262,10 @@ class DialogueGate:
 
     def _contains_wake_word(self, normalized_text: str) -> bool:
         return any(word in normalized_text for word in self._wake_words)
+
+    def _is_exit_word(self, normalized_text: str) -> bool:
+        """整句相等才算命中，口径与 check_direct_exit 的 `text == cmd` 一致。"""
+        return normalized_text in self._exit_words
 
     def _log(self, conn, message: str) -> None:
         logger = self._logger or getattr(conn, "logger", None)
