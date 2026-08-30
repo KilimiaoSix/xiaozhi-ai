@@ -6,10 +6,11 @@ fake conn 带 config/device_id（同 tests/test_pomodoro_handler.py 的 FakeConn
 钉死，不依赖真实系统时间、真实 LLM 或设备。
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
+import core.owner_status as core_owner_status
 import plugins_func.functions.owner_status as owner_status_module
 from core.owner_status import (
     STATUS_AVAILABLE,
@@ -44,7 +45,22 @@ def _reset_singleton():
 
 @pytest.fixture
 def fixed_now(monkeypatch):
+    """冻结插件模块的 _now，并让 get_owner_status_store 拿到同一个冻结时钟。
+
+    单独 patch _now 只覆盖了参数归一化（"today"/"tomorrow"/"HH:MM"）；
+    store 自身请假到期的惰性回落判定用的是它自己的 clock（真实
+    datetime.now），两个时钟不一致时，写死在过去的请假日期一到真实
+    系统时间就会被 get() 冲回 available（日期炸弹）。这里让
+    get_owner_status_store 在创建单例时也注入同一个冻结 clock，
+    使二者读到的"现在"永远一致。
+    """
     monkeypatch.setattr(owner_status_module, "_now", lambda: FIXED_NOW)
+    real_get_store = core_owner_status.get_owner_status_store
+    monkeypatch.setattr(
+        owner_status_module,
+        "get_owner_status_store",
+        lambda config=None: real_get_store(config, clock=lambda: FIXED_NOW),
+    )
     return FIXED_NOW
 
 
@@ -159,14 +175,17 @@ async def test_leave_without_leave_start_defaults_to_today(tmp_path, fixed_now):
 @pytest.mark.asyncio
 async def test_leave_accepts_explicit_date_range(tmp_path, fixed_now):
     conn = make_conn(tmp_path)
+    # 相对冻结时钟推导，而非写死绝对日期，避免用例随真实系统时间推移过期。
+    leave_start = (fixed_now.date() + timedelta(days=2)).isoformat()
+    leave_end = (fixed_now.date() + timedelta(days=3)).isoformat()
 
     response = await set_owner_status(
-        conn, STATUS_LEAVE, leave_start="2026-08-21", leave_end="2026-08-22"
+        conn, STATUS_LEAVE, leave_start=leave_start, leave_end=leave_end
     )
 
     status = read_status(conn)
-    assert status["leave_start"] == "2026-08-21"
-    assert status["leave_end"] == "2026-08-22"
+    assert status["leave_start"] == leave_start
+    assert status["leave_end"] == leave_end
     assert response.result == "ok"
 
 
@@ -249,10 +268,8 @@ async def test_query_reports_meeting_with_return_time(tmp_path, fixed_now):
 @pytest.mark.asyncio
 async def test_query_reports_overdue_meeting(tmp_path, fixed_now):
     conn = make_conn(tmp_path)
-    # store 的 overdue 判定走 core.owner_status.OwnerStatusStore 自己的真实时钟
-    # （get_owner_status_store 不接受注入），这里没法用 monkeypatch 假时钟让它
-    # "刚好过期"；改用一个绝对早于任何真实运行时刻的 ISO 时间，
-    # 保证不依赖系统当前时钟就必然过期，测试才是确定性的。
+    # store 的 overdue 判定现在也走 fixed_now 注入的冻结 clock（见 fixture），
+    # 这里仍用一个绝对早于 FIXED_NOW 的 ISO 时间，保证必然过期、测试确定性。
     await set_owner_status(conn, STATUS_MEETING, expected_return="2020-01-01T00:00:00")
 
     response = await query_owner_status(conn)
@@ -263,8 +280,11 @@ async def test_query_reports_overdue_meeting(tmp_path, fixed_now):
 @pytest.mark.asyncio
 async def test_query_reports_leave_range(tmp_path, fixed_now):
     conn = make_conn(tmp_path)
+    # 相对冻结时钟推导，而非写死绝对日期，避免用例随真实系统时间推移过期。
+    leave_start = (fixed_now.date() + timedelta(days=2)).isoformat()
+    leave_end = (fixed_now.date() + timedelta(days=3)).isoformat()
     await set_owner_status(
-        conn, STATUS_LEAVE, leave_start="2026-08-21", leave_end="2026-08-22"
+        conn, STATUS_LEAVE, leave_start=leave_start, leave_end=leave_end
     )
 
     response = await query_owner_status(conn)

@@ -4,12 +4,19 @@
 （字段、状态码、鉴权、CORS），不碰真机、不碰语音链路。
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 from aiohttp import web
 
 from core.api.owner_status_handler import OwnerStatusHandler
 from core.owner_status import OwnerStatusStore, STATUS_AVAILABLE, STATUS_LEAVE, STATUS_MEETING
 from core.owner_status_routes import add_owner_status_routes
+
+# 冻结时钟：store 的请假到期惰性回落用它判定，避免用例里写死的日期
+# 随真实系统时间推移变成"日期炸弹"（到了 leave_end 次日，get() 会把
+# leave 状态冲回 available）。
+FIXED_NOW = datetime(2026, 8, 19, 9, 0, 0)
 
 
 def build_app(tmp_path, *, auth=False):
@@ -19,7 +26,7 @@ def build_app(tmp_path, *, auth=False):
             "auth_key": "test-secret" if auth else "",
         }
     }
-    store = OwnerStatusStore(tmp_path / "owner_status.json")
+    store = OwnerStatusStore(tmp_path / "owner_status.json", clock=lambda: FIXED_NOW)
     app = web.Application()
     handler = OwnerStatusHandler(config, store)
     add_owner_status_routes(app, handler)
@@ -66,20 +73,24 @@ async def test_post_sets_meeting_state_and_get_reflects_it(aiohttp_client, tmp_p
 @pytest.mark.asyncio
 async def test_post_sets_leave_range(aiohttp_client, tmp_path):
     client = await make_client(aiohttp_client, tmp_path)
+    # 相对冻结时钟推导，而非写死绝对日期：这样请假区间始终在 FIXED_NOW
+    # 之后，不会被 store 的惰性过期逻辑在断言前就冲回 available。
+    leave_start = (FIXED_NOW.date() + timedelta(days=1)).isoformat()
+    leave_end = (FIXED_NOW.date() + timedelta(days=2)).isoformat()
 
     response = await client.post(
         "/xiaozhi/status",
         json={
             "state": STATUS_LEAVE,
-            "leave_start": "2026-08-20",
-            "leave_end": "2026-08-21",
+            "leave_start": leave_start,
+            "leave_end": leave_end,
         },
     )
 
     body = await response.json()
     assert body["state"] == STATUS_LEAVE
-    assert body["leave_start"] == "2026-08-20"
-    assert body["leave_end"] == "2026-08-21"
+    assert body["leave_start"] == leave_start
+    assert body["leave_end"] == leave_end
 
 
 @pytest.mark.asyncio

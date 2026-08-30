@@ -235,12 +235,21 @@ _store: Optional[OwnerStatusStore] = None
 _store_lock = threading.Lock()
 
 
-def get_owner_status_store(config: Optional[dict] = None) -> OwnerStatusStore:
-    """进程级单例。语音函数与 HTTP 各自入口都从这里拿，保证看到同一份状态。"""
+def get_owner_status_store(
+    config: Optional[dict] = None,
+    *,
+    clock: Optional[Callable[[], datetime]] = None,
+) -> OwnerStatusStore:
+    """进程级单例。语音函数与 HTTP 各自入口都从这里拿，保证看到同一份状态。
+
+    clock 仅在单例首次创建时生效，供测试注入固定时钟；生产路径不传，
+    行为与之前完全一致（真实 datetime.now）。单例已存在时不会用新 clock
+    替换旧实例。
+    """
     global _store
     with _store_lock:
         if _store is None:
-            _store = OwnerStatusStore(_read_persist_path(config or {}))
+            _store = OwnerStatusStore(_read_persist_path(config or {}), clock=clock)
         return _store
 
 
