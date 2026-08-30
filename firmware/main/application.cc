@@ -677,6 +677,19 @@ void Application::OnWakeWordDetected() {
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
+        // AbortSpeaking 只发 abort，本地要等服务端回 tts stop 才真正切回
+        // Listening（异步）。但紧接着同步补发 SendWakeWordDetected 是安全的：
+        // 两条消息复用同一条已开的 protocol_ 连接顺序发出，不依赖 device_state_
+        // 是否已经跳到 Listening——上面 Idle 分支同样是在 SetListeningMode 把状态
+        // 切到 Listening 之前就发 SendWakeWordDetected（663/671 行），本地 FSM 状态
+        // 只是客户端记账，从不是发这条消息的前置条件。服务端一侧
+        // core/handle/abortHandle.py 的 handleAbortMessage 会被完整 await 完才处理
+        // 下一条消息，detect 到达时 client_is_speaking 已清；即便偶发提前到达，
+        // core/handle/receiveAudioHandle.py 的 startToChat 还会按 client_is_speaking
+        // 再兜底一次 abort，重复的 tts stop 客户端也会因为已不在 Speaking 态而忽略。
+        auto wake_word = audio_service_.GetLastWakeWord();
+        ESP_LOGI(TAG, "Wake word detected while speaking: %s", wake_word.c_str());
+        protocol_->SendWakeWordDetected(wake_word);
     } else if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
     }
