@@ -25,6 +25,10 @@ from core.alert_relay.service import AlertRelayService
 # server/main/xiaozhi-server/core/alert_relay/factory.py → 仓库根
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
+# 中继记录的默认落盘位置（同 data/ 下的 away_ledger.json / owner_status.json）。
+# 生产必须带上它：不落盘的话，重启后飞书里的卡片就成了孤儿。
+DEFAULT_PERSIST_PATH = "data/alert_relay_records.json"
+
 
 def default_diagnosis_cwd() -> str:
     """诊断子进程的默认工作目录：仓库根。
@@ -127,5 +131,6 @@ def create_alert_relay_service(
         auto_diagnose_on_timeout=bool(relay.get("auto_diagnose_on_timeout", False)),
         cluster_map=_cluster_map(relay.get("cluster_map")),
         max_records=int(relay.get("max_records", 200)),
+        persist_path=str(relay.get("persist_path") or DEFAULT_PERSIST_PATH),
         logger=logger,
     )

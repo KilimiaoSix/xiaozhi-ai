@@ -7,9 +7,11 @@ presence 编排回调、观察者注册、日终总结数据源、告警台账�
 """
 
 import asyncio
+import json
 
 import pytest
 
+from core import pomodoro_manager as pomodoro_module
 from core.away_ledger import (
     SEVERITY_CRITICAL,
     SEVERITY_NORMAL,
@@ -38,6 +40,20 @@ class FakeRegistry:
 class FakeWsServer:
     def __init__(self):
         self.device_registry = FakeRegistry()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pomodoro_store(tmp_path, monkeypatch):
+    """番茄钟会话落盘的缺省路径挪到 tmp。
+
+    装配走的是模块级单例,它的 config 只在第一次 bind 时定下来,
+    因此不能靠往 config 里塞路径来隔离——只能压掉模块缺省值。
+    """
+    monkeypatch.setattr(
+        pomodoro_module,
+        "DEFAULT_PERSIST_PATH",
+        str(tmp_path / "pomodoro_sessions.json"),
+    )
 
 
 @pytest.fixture
@@ -72,6 +88,10 @@ def assembled(tmp_path):
         "approval": {"gesture": {"model_path": str(tmp_path / "no-gesture.task")}},
         "wellbeing": {"enabled": False},
         "morning_brief": {"enabled": False},
+        "alert_relay": {
+            "enabled": True,
+            "persist_path": str(tmp_path / "alert_relay.json"),
+        },
     }
 
     async def build():
@@ -187,3 +207,64 @@ def test_reminder_and_timed_prompts_constructed(assembled):
     server, _ = assembled
     assert server.owner_status_reminder is not None
     assert server.timed_prompt_scheduler is not None
+
+
+@pytest.mark.asyncio
+async def test_alert_relay_stop_is_registered_on_cleanup(assembled):
+    """告警中继起了巡检任务却没人停:生命周期不对称,停机时任务被留在原地。
+
+    wellbeing / morning_brief 都是 on_startup + on_cleanup 成对注册的,
+    中继必须对齐同一套做法。
+    """
+    server, _ = assembled
+    app = server.create_app()
+    await server.alert_relay_service.start(interval_seconds=60)
+    assert server.alert_relay_service._sweeper is not None
+
+    for callback in app.on_cleanup:
+        await callback(app)
+
+    assert server.alert_relay_service._sweeper is None
+
+
+@pytest.mark.asyncio
+async def test_pomodoro_sessions_are_restored_on_startup(assembled, tmp_path):
+    """上个进程留下的番茄钟会话要在服务起来时装回内存,而不是等用户手动 stop。"""
+    server, _ = assembled
+    device_id = "aa:bb:cc:dd:ee:99"
+    store = tmp_path / "pomodoro_sessions.json"
+    store.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sessions": [
+                    {
+                        "device_id": device_id,
+                        "phase": "focus",
+                        "round": 1,
+                        "total_s": 1500,
+                        "remaining_s": 900,
+                        "paused": True,
+                        "deadline_at": None,
+                        "focus_minutes": 25,
+                        "settings": {
+                            "focus_minutes": 25,
+                            "short_break_minutes": 5,
+                            "long_break_minutes": 15,
+                            "long_break_interval": 4,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = server.create_app()
+    for callback in app.on_startup:
+        await callback(app)
+
+    try:
+        assert device_id in pomodoro_module.pomodoro_manager.active_device_ids()
+    finally:
+        await pomodoro_module.pomodoro_manager.stop(device_id)

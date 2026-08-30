@@ -17,6 +17,18 @@ from core.pomodoro_manager import POMODORO_SHOW_TOOL, PomodoroManager
 DEVICE_ID = "dc:da:0c:26:9a:60"
 OTHER_DEVICE_ID = "dc:da:0c:26:9a:61"
 
+
+@pytest.fixture(autouse=True)
+def _isolate_session_store(tmp_path, monkeypatch):
+    """会话现在每次相位变迁都落盘，缺省路径在仓库 data/ 下。
+
+    本文件的用例不验恢复（那是 test_pomodoro_restore.py 的事），
+    但也不该往仓库里写文件，统一把缺省路径挪到 tmp。
+    """
+    monkeypatch.setattr(
+        pomodoro_module, "DEFAULT_PERSIST_PATH", str(tmp_path / "pomodoro_sessions.json")
+    )
+
 # 0.01 分钟 = 0.6 秒。真机语义不变，只是把相位压短到测试跑得完。
 TINY_MINUTES = 0.01
 PHASE_SECONDS = 0.6

@@ -829,10 +829,15 @@ async def test_without_injections_behaviour_is_unchanged(env):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_base_states():
-    """构造器缺省时走真实 pushHandle 的模块级基态存储,测试间必须清空。"""
-    pushHandle._base_states.clear()
+def _isolate_base_states(tmp_path):
+    """构造器缺省时走真实 pushHandle 的模块级基态存储,测试间必须清空。
+
+    基态现在还会落盘,存储位置也要一并隔离到 tmp,
+    否则用例会写进仓库的 data/ 并互相读到对方的基态。
+    """
+    pushHandle.set_base_state_store(tmp_path / "base_states.json")
     yield
+    pushHandle.set_base_state_store(pushHandle.DEFAULT_BASE_STATE_PATH)
     pushHandle._base_states.clear()
     for task in list(pushHandle._restore_tasks.values()):
         try:

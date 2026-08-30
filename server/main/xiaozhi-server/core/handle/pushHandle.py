@@ -9,7 +9,10 @@ kListeningModeManualStop 会切到 Listening（麦克风打开等待回话），
 """
 import asyncio
 import json
+import logging
+import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 TAG = __name__
@@ -22,33 +25,120 @@ DEFAULT_STATUS = "通知"
 # 任何路过的瞬时事件都会把它永久冲掉，所以事件播完要能自动恢复。
 DEFAULT_BASE_STATE = {"status": "待机", "message": "", "emotion": "neutral"}
 
+# 基态要活过进程重启：只放内存的话，重启后 get_base_state 会回落默认「待机」，
+# 人明明在工位，下一条带 restore_after 的提醒播完就把「待机」钉到屏上，
+# 只能等摄像头链路下一次纠偏才改回来。落盘沿用 away_ledger / incident_manager
+# 的「先写 .tmp 再 rename」原子替换，进程被 kill 也不会留半截 JSON。
+DEFAULT_BASE_STATE_PATH = "data/base_states.json"
+
 # 按 device_id 存，不挂在 conn 上：固件断线 10s 就重连、conn 会被换掉，
 # 挂 conn 上的状态在 WiFi 抖动时会静默丢失。
 _base_states: Dict[str, Dict[str, str]] = {}
 _restore_tasks: Dict[str, Any] = {}
 
+# 读写来自三条线：HTTP 推送在事件循环、在岗编排在摄像头推理线程、
+# 语音函数在会话线程，因此落盘全程持锁（同 away_ledger）。
+_base_state_lock = threading.RLock()
+_base_state_path = Path(DEFAULT_BASE_STATE_PATH)
+_base_states_loaded = False
+# 本模块的日志一向挂在 conn 上，落盘却发生在没有 conn 的路径里，
+# 只好另挂一个标准库 logger（同 pomodoro_manager 模块级实例的理由）。
+_logger = logging.getLogger(__name__)
+
+
+def set_base_state_store(path) -> None:
+    """切换基态落盘位置并立即重载。
+
+    装配与测试用；重复用同一路径调用即可模拟「进程重启后重新装载」。
+    """
+    global _base_state_path, _base_states_loaded
+    with _base_state_lock:
+        _base_state_path = Path(path)
+        _base_states.clear()
+        _base_states_loaded = False
+        _load_base_state_store()
+
+
+def _load_base_state_store() -> None:
+    """从盘上装载基态。文件不在或损坏都按空存储处理。"""
+    global _base_states_loaded
+    _base_states_loaded = True
+    try:
+        data = json.loads(_base_state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception:
+        # 损坏的落盘文件当作没有：宁可丢基态，也不要崩在启动路径上。
+        # 后续写入会把文件整体覆盖掉，坏文件不会一直卡着（同 away_ledger）。
+        _logger.warning(f"读取设备基态失败，按空存储处理: {_base_state_path}")
+        return
+    devices = (data or {}).get("devices") if isinstance(data, dict) else None
+    if not isinstance(devices, dict):
+        return
+    for device_id, state in devices.items():
+        if not device_id or not isinstance(state, dict):
+            continue
+        _base_states[str(device_id)] = {
+            "status": str(state.get("status") or DEFAULT_BASE_STATE["status"]),
+            "message": str(state.get("message") or ""),
+            "emotion": str(state.get("emotion") or DEFAULT_BASE_STATE["emotion"]),
+        }
+
+
+def _write_base_state_store() -> None:
+    """原子写：先写 .tmp 再 rename。落盘失败只影响重启后的恢复，不抛给调用方。"""
+    payload = {"version": 1, "devices": dict(_base_states)}
+    try:
+        _base_state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _base_state_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp.replace(_base_state_path)
+    except Exception:
+        _logger.warning(f"设备基态落盘失败: {_base_state_path}")
+
+
+def _ensure_base_states_loaded() -> None:
+    """首次读写时才碰盘：导入期做文件 IO 会把离线单测也拖下水。"""
+    if not _base_states_loaded:
+        _load_base_state_store()
+
 
 def set_base_state(device_id: str, status: str, message: str, emotion: str) -> None:
-    """设定设备的常驻基态。"""
+    """设定设备的常驻基态，并落盘。"""
     if not device_id:
         return
-    _base_states[device_id] = {
+    state = {
         "status": str(status or DEFAULT_BASE_STATE["status"]),
         "message": str(message or ""),
         "emotion": str(emotion or DEFAULT_BASE_STATE["emotion"]),
     }
+    with _base_state_lock:
+        _ensure_base_states_loaded()
+        # 离席判定挂在每条 presence 心跳上（15 秒一条），基态是幂等写，
+        # 值没变就别重写文件——这条路径一天能走几千次。
+        if _base_states.get(device_id) == state:
+            return
+        _base_states[device_id] = state
+        _write_base_state_store()
 
 
 def get_base_state(device_id: str) -> Dict[str, str]:
     """读取基态，没设过就是默认待机态。"""
-    return dict(_base_states.get(device_id) or DEFAULT_BASE_STATE)
+    with _base_state_lock:
+        _ensure_base_states_loaded()
+        return dict(_base_states.get(device_id) or DEFAULT_BASE_STATE)
 
 
 def clear_base_state(device_id: str) -> None:
     """清除自定义基态，回落到默认待机态。"""
     if not device_id:
         return
-    _base_states.pop(device_id, None)
+    with _base_state_lock:
+        _ensure_base_states_loaded()
+        if _base_states.pop(device_id, None) is not None:
+            _write_base_state_store()
     _cancel_pending_restore(device_id)
 
 

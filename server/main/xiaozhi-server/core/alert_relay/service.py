@@ -6,6 +6,11 @@ Claude Code 诊断 → 回帖结论。三条铁律：
 1. **人不点头就不开跑。** 状态机不给 AWAITING_REPLY → DIAGNOSING 的边。
 2. **一路通知挂了不能吞掉告警。** 机器人和飞书互不阻塞，失败只记 warning。
 3. **查不出来就说查不出来。** 诊断失败回失败卡片，绝不编根因。
+
+记录落盘（persist_path，生产由 factory 从 alert_relay.persist_path 注入）：
+每次状态变迁写一次，启动时把上个进程的记录全部装回来，非终态的连同
+去重指纹与超时基线一起重建——否则重启后飞书里那张卡片就成了孤儿，
+人回「帮我查」只会撞 ALERT_NOT_FOUND。不注入路径就是纯内存（离线单测用）。
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from core.alert_relay.cards import (
@@ -24,6 +30,7 @@ from core.alert_relay.cards import (
 )
 from core.alert_relay.models import AlertEvent, RelayRecord, RelayState
 from core.alert_relay.parser import parse_alert
+from core.alert_relay.store import RelayRecordStore
 
 
 DEFAULT_DEDUPE_WINDOW_SECONDS = 300.0
@@ -42,6 +49,9 @@ DECLINE_KEYWORDS = (
 )
 
 REPLY_HINT = "回「帮我查」我就调起本机 Claude Code 做只读排查；回「我自己看」我就不打扰了。"
+
+# 认领后、结论前被重启打断的诊断。子进程随进程一起死了，没人会再回调它
+DIAGNOSIS_INTERRUPTED = "服务重启，诊断已中断"
 
 
 def _match_intent(text: str) -> str:
@@ -74,6 +84,7 @@ class AlertRelayService:
         cluster_map: Mapping[str, tuple[str, str]] | None = None,
         max_records: int = DEFAULT_MAX_RECORDS,
         clock: Callable[[], float] = time.time,
+        persist_path: str | Path | None = None,
         logger: Any = None,
     ) -> None:
         self._robot = robot
@@ -93,6 +104,56 @@ class AlertRelayService:
         self._active_by_fingerprint: dict[str, str] = {}
         self._tasks: set[asyncio.Task] = set()
         self._sweeper: Optional[asyncio.Task] = None
+        self._store = (
+            RelayRecordStore(persist_path, logger=self._logger)
+            if persist_path
+            else None
+        )
+        self._load()
+
+    # ---------------------------------------------------------------- 持久化
+
+    @property
+    def _store_path(self) -> Optional[Path]:
+        return self._store.path if self._store else None
+
+    def _load(self) -> None:
+        """把上个进程的记录装回来。
+
+        只有非终态记录重建去重指纹：已经 DIAGNOSED / DECLINED / FAILED 的
+        还占着指纹的话，同一条规则再烧起来会被当成重复上报，机器人一声不吭。
+        超时巡检不需要额外的基线——updated_at 存的就是同一个 clock 的时间戳，
+        check_timeouts 直接拿它跟当下比，重启前已经等掉的那几分钟照样算数。
+
+        认领后、结论前被打断的记录（CLAIMED / DIAGNOSING）直接判失败：
+        跑诊断的子进程随上个进程一起死了，不会再有回调，挂着不动的话
+        这条记录既等不到结论、又一直占着非终态。「查不出来就说查不出来」。
+        """
+        if self._store is None:
+            return
+        interrupted = 0
+        for record in self._store.load():
+            if record.state in (RelayState.CLAIMED, RelayState.DIAGNOSING):
+                record.error = DIAGNOSIS_INTERRUPTED
+                record.transition(
+                    RelayState.FAILED, at=self._clock(), note=DIAGNOSIS_INTERRUPTED
+                )
+                interrupted += 1
+            self._records[record.alert_id] = record
+            if not record.is_terminal():
+                self._active_by_fingerprint[record.event.fingerprint()] = record.alert_id
+        if self._records:
+            self._logger.info(
+                f"告警中继记录已恢复 {len(self._records)} 条"
+                + (f"，其中 {interrupted} 条诊断被重启打断" if interrupted else "")
+            )
+        if interrupted:
+            self._persist()
+
+    def _persist(self) -> None:
+        if self._store is None:
+            return
+        self._store.save(self._records.values())
 
     # ---------------------------------------------------------------- 查询
 
@@ -147,10 +208,12 @@ class AlertRelayService:
 
         merged = self._merge_repeat(event, now)
         if merged is not None:
+            self._persist()
             return {"code": "OK", "deduped": True, **merged.to_dict()}
 
         record = self._create_record(event, now)
         await self._notify(record)
+        self._persist()
         return {"code": "OK", "deduped": False, **record.to_dict()}
 
     def _merge_repeat(self, event: AlertEvent, now: float) -> Optional[RelayRecord]:
@@ -253,6 +316,9 @@ class AlertRelayService:
         record.claimed_by = user or record.claimed_by
         target = RelayState.DECLINED if resolved == INTENT_DECLINE else RelayState.CLAIMED
         record.transition(target, at=self._clock(), note=user)
+        # 认领同样在 await 之前落盘：诊断要跑几分钟，这期间进程被重启的话，
+        # 盘上必须已经是 CLAIMED，否则恢复出来的记录还停在等回复。
+        self._persist()
 
         # 回执先于诊断：诊断要跑几分钟，人得先知道「收到了」。
         if message_id:
@@ -260,6 +326,7 @@ class AlertRelayService:
 
         if target is RelayState.DECLINED:
             self._release_fingerprint(record)
+            self._persist()
             await self._safe_robot(self._robot.declined)
             await self._safe_reply_text(record, "好，这条交给你，我不打扰了。")
             return {"code": "OK", "alert_id": record.alert_id, "state": record.state.value}
@@ -283,6 +350,7 @@ class AlertRelayService:
 
     async def _diagnose(self, record: RelayRecord) -> None:
         record.transition(RelayState.DIAGNOSING, at=self._clock())
+        self._persist()
         await self._safe_robot(self._robot.diagnosing, record.event)
 
         try:
@@ -304,6 +372,7 @@ class AlertRelayService:
         record.diagnosis = result.diagnosis
         record.transition(RelayState.DIAGNOSED, at=self._clock())
         self._release_fingerprint(record)
+        self._persist()
         await self._safe_reply_card(record, build_diagnosis_card(record, result.diagnosis))
         await self._safe_robot(self._robot.diagnosed, result.diagnosis)
 
@@ -313,6 +382,7 @@ class AlertRelayService:
         record.error = reason
         record.transition(RelayState.FAILED, at=self._clock(), note=reason)
         self._release_fingerprint(record)
+        self._persist()
         await self._safe_reply_card(
             record, build_failure_card(record, reason, detail, retry_hint=retry_hint)
         )
@@ -337,6 +407,7 @@ class AlertRelayService:
                 record.claimed_by = "自动（超时未响应）"
                 record.transition(RelayState.CLAIMED, at=now, note="超时自动认领")
                 self._spawn(self._diagnose(record))
+            self._persist()
             timed_out.append(record.to_dict())
         return timed_out
 
