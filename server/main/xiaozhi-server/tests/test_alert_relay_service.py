@@ -214,6 +214,43 @@ async def test_declining_stops_the_flow_without_burning_tokens():
 
 
 @pytest.mark.asyncio
+async def test_declining_silences_the_same_alert_for_the_dedupe_window():
+    """「我不打扰了」得当真：拒绝后监控原样重发，不能再叫一遍人。
+
+    记录是按指纹归并的，拒绝只对这一条记录生效的话，60 秒后的同一条重发
+    就是一条全新告警——机器人再响、飞书再发一张卡片，10 分钟后还会再升级。
+    """
+    service, robot, bot, _, clock = make_service(dedupe_window_seconds=300)
+    ingested = await service.ingest({"raw_text": ALERT_TEXT})
+    await service.handle_reply(alert_id=ingested["alert_id"], text="我自己看")
+
+    clock.now += 60
+    repeated = await service.ingest({"raw_text": ALERT_TEXT})
+
+    assert repeated["deduped"] is True
+    assert repeated["alert_id"] == ingested["alert_id"]
+    assert repeated["state"] == RelayState.DECLINED.value
+    assert robot.calls == ["alert", "declined"]
+    assert len(bot.cards) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_same_alert_long_after_a_decline_is_a_new_incident():
+    """静默窗只有去重窗那么长：熄火之后再烧起来是新的一条，照样叫人。"""
+    service, robot, _, _, clock = make_service(dedupe_window_seconds=300)
+    ingested = await service.ingest({"raw_text": ALERT_TEXT})
+    await service.handle_reply(alert_id=ingested["alert_id"], text="我自己看")
+
+    clock.now += 301
+    again = await service.ingest({"raw_text": ALERT_TEXT})
+
+    assert again["deduped"] is False
+    assert again["alert_id"] != ingested["alert_id"]
+    assert again["state"] == RelayState.AWAITING_REPLY.value
+    assert robot.calls == ["alert", "declined", "alert"]
+
+
+@pytest.mark.asyncio
 async def test_unrecognized_reply_asks_again_instead_of_guessing():
     """猜错方向要么白烧一次诊断，要么把该查的吞掉，不如问一句。"""
     service, _, bot, runner, _ = make_service()
@@ -399,6 +436,7 @@ async def test_a_late_reply_after_timeout_still_starts_the_diagnosis():
 
 @pytest.mark.asyncio
 async def test_timeouts_only_fire_once_per_alert():
+    """烧完就熄火的告警只升级一次：没人接也别没完没了地喊。"""
     service, robot, _, _, clock = make_service(reply_timeout_seconds=600)
     await service.ingest({"raw_text": ALERT_TEXT})
     clock.now += 601
@@ -406,6 +444,75 @@ async def test_timeouts_only_fire_once_per_alert():
     clock.now += 601
     assert await service.check_timeouts() == []
     assert robot.calls.count("escalate") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_still_burning_timeout_is_escalated_again():
+    """TIMEOUT 不是终点：告警还在烧、还没人接，就得按同样的节奏再喊一次。
+
+    去重窗是滑动的（每次重复上报都把 last_seen_at 推到当下），监控每 60 秒
+    重发一次的 P0 永远出不了窗口，指纹也就一直被这条 TIMEOUT 记录占着。
+    没有再升级的话，服务端在两次通知之后就对这条告警彻底哑掉了。
+    """
+    service, robot, bot, _, clock = make_service(
+        reply_timeout_seconds=600, dedupe_window_seconds=300
+    )
+    ingested = await service.ingest({"raw_text": ALERT_TEXT})
+
+    escalated = []
+    for _ in range(40):  # 监控每 60 秒重发一次，连烧 40 分钟没人接
+        clock.now += 60
+        assert (await service.ingest({"raw_text": ALERT_TEXT}))["deduped"] is True
+        escalated.extend(await service.check_timeouts())
+
+    assert service.get(ingested["alert_id"])["state"] == RelayState.TIMEOUT.value
+    # 每过一个回复超时催一次，而不是第一次之后就再也不吭声
+    assert robot.calls.count("escalate") == 4
+    assert [item["alert_id"] for item in escalated] == [ingested["alert_id"]] * 4
+    # 不新开卡片、不新建记录：还是那条告警，只是在原话题下再催一次
+    assert len(bot.cards) == 1
+    assert len(bot.texts) == 4
+    assert len(service.recent()) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_human_claim_during_the_escalation_beats_the_auto_claim():
+    """升级提醒正是催人去点卡片的那一下，人在这个 await 里认领最自然。
+
+    巡检回来必须复核状态：既不能把认领人覆盖成「自动」，也不能拿
+    TIMEOUT→CLAIMED 去撞一条已经离开 TIMEOUT 的记录（非法流转会抛异常，
+    把本轮剩下的超时告警全部带走）。
+    """
+    robot = FakeRobot()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hanging_escalate(event):
+        entered.set()
+        await release.wait()
+        return await robot._record("escalate")
+
+    robot.escalate = hanging_escalate
+    service, _, _, runner, clock = make_service(
+        robot=robot, reply_timeout_seconds=600, auto_diagnose_on_timeout=True
+    )
+    ingested = await service.ingest({"raw_text": ALERT_TEXT})
+    clock.now += 601
+
+    sweeping = asyncio.ensure_future(service.check_timeouts())
+    await entered.wait()
+    replied = await service.handle_reply(
+        alert_id=ingested["alert_id"], text="帮我查", user="张三"
+    )
+    assert replied["code"] == "OK"
+    release.set()
+    await sweeping  # 人抢先认领不该让整轮巡检抛异常
+    await service.wait_for_idle()
+
+    record = service.get(ingested["alert_id"])
+    assert record["claimed_by"] == "张三"
+    assert record["state"] == RelayState.DIAGNOSED.value
+    assert len(runner.events) == 1
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,15 @@ REPLY_HINT = "回「帮我查」我就调起本机 Claude Code 做只读排查�
 
 # 认领后、结论前被重启打断的诊断。子进程随进程一起死了，没人会再回调它
 DIAGNOSIS_INTERRUPTED = "服务重启，诊断已中断"
+# 叫人叫到一半被重启打断的通知。RECEIVED / NOTIFIED 的出边全靠 _notify 驱动，
+# 上个进程的那半程随进程一起没了，装回来也没有任何代码会接着跑
+NOTIFY_INTERRUPTED = "服务重启，通知已中断"
+_INTERRUPTED_STATES = {
+    RelayState.RECEIVED: NOTIFY_INTERRUPTED,
+    RelayState.NOTIFIED: NOTIFY_INTERRUPTED,
+    RelayState.CLAIMED: DIAGNOSIS_INTERRUPTED,
+    RelayState.DIAGNOSING: DIAGNOSIS_INTERRUPTED,
+}
 
 
 def _match_intent(text: str) -> str:
@@ -125,19 +134,26 @@ class AlertRelayService:
         超时巡检不需要额外的基线——updated_at 存的就是同一个 clock 的时间戳，
         check_timeouts 直接拿它跟当下比，重启前已经等掉的那几分钟照样算数。
 
-        认领后、结论前被打断的记录（CLAIMED / DIAGNOSING）直接判失败：
-        跑诊断的子进程随上个进程一起死了，不会再有回调，挂着不动的话
-        这条记录既等不到结论、又一直占着非终态。「查不出来就说查不出来」。
+        叫人叫到一半（RECEIVED / NOTIFIED）、认领后结论前（CLAIMED / DIAGNOSING）
+        被打断的记录一律判失败：这四个状态的出边全靠上个进程里那半程代码驱动
+        （_notify 的两个 await、诊断子进程的回调），进程一死就没人会再驱动它们，
+        而 check_timeouts 只扫 AWAITING_REPLY。原样装回来的话，这条记录既等不到
+        任何结果、又因为非终态一直占着去重指纹——同一条规则再烧起来会被当成
+        重复上报静默吞掉，机器人一声不吭。「查不出来就说查不出来」在这里同样适用：
+        判成 FAILED（终态）就不再占指纹，下一次上报正常新建、正常叫人。
+
+        RECEIVED 的快照是真会落到盘上的：_create_record 在两个 await 之前就把
+        记录挂进了 _records，此时任何一次 _persist（别的告警去重、认领、超时巡检）
+        都会把这条中途状态整份写下去。
         """
         if self._store is None:
             return
         interrupted = 0
         for record in self._store.load():
-            if record.state in (RelayState.CLAIMED, RelayState.DIAGNOSING):
-                record.error = DIAGNOSIS_INTERRUPTED
-                record.transition(
-                    RelayState.FAILED, at=self._clock(), note=DIAGNOSIS_INTERRUPTED
-                )
+            reason = _INTERRUPTED_STATES.get(record.state)
+            if reason:
+                record.error = reason
+                record.transition(RelayState.FAILED, at=self._clock(), note=reason)
                 interrupted += 1
             self._records[record.alert_id] = record
             if not record.is_terminal():
@@ -145,7 +161,7 @@ class AlertRelayService:
         if self._records:
             self._logger.info(
                 f"告警中继记录已恢复 {len(self._records)} 条"
-                + (f"，其中 {interrupted} 条诊断被重启打断" if interrupted else "")
+                + (f"，其中 {interrupted} 条通知/诊断被重启打断" if interrupted else "")
             )
         if interrupted:
             self._persist()
@@ -217,12 +233,24 @@ class AlertRelayService:
         return {"code": "OK", "deduped": False, **record.to_dict()}
 
     def _merge_repeat(self, event: AlertEvent, now: float) -> Optional[RelayRecord]:
-        """窗口内的同一条规则只累加计数，不再打扰机器人。"""
+        """窗口内的同一条规则只累加计数，不再打扰机器人。
+
+        去重窗是滑动的：每次合并都把 last_seen_at 推到当下，所以只要监控还在
+        按小于 dedupe_window 的间隔重发，这条告警就一直算「同一次」——它就是
+        「这条规则现在还在烧」的判据，别处（超时再升级）也照这个口径用。
+
+        DECLINED 是唯一继续占着指纹的终态，占的就是「我自己看」承诺的那段
+        静默期：人已经接手了，同一条规则在窗口内再烧只记数，绝不再叫一遍。
+        熄火超过一个窗口再复燃就不算同一次了，弹掉指纹当新告警重新叫人。
+        其余终态（DIAGNOSED / FAILED）已经有结论，同规则再烧一律当新告警。
+        """
         alert_id = self._active_by_fingerprint.get(event.fingerprint())
         if not alert_id:
             return None
         record = self._records.get(alert_id)
-        if record is None or record.is_terminal():
+        if record is None or (
+            record.is_terminal() and record.state is not RelayState.DECLINED
+        ):
             self._active_by_fingerprint.pop(event.fingerprint(), None)
             return None
         if now - record.last_seen_at > self._dedupe_window:
@@ -325,7 +353,9 @@ class AlertRelayService:
             await self._safe_reaction(message_id)
 
         if target is RelayState.DECLINED:
-            self._release_fingerprint(record)
+            # 指纹刻意不释放：拒绝要能挡住监控接下来的重发，否则「我不打扰了」
+            # 只对这一条记录生效，60 秒后的同一条重发又是一次全新的叫人。
+            # 静默期就是去重窗，到期由 _merge_repeat 自己弹掉指纹（见那里的注释）。
             self._persist()
             await self._safe_robot(self._robot.declined)
             await self._safe_reply_text(record, "好，这条交给你，我不打扰了。")
@@ -391,25 +421,66 @@ class AlertRelayService:
     # ---------------------------------------------------------------- 超时
 
     async def check_timeouts(self) -> list[dict[str, Any]]:
+        """把等不到回复的告警升级提醒，还在烧的就按同样的节奏继续催。
+
+        TIMEOUT 不是终点，也不是终态：状态机给它的出边只有人工的 CLAIMED /
+        DECLINED，指纹又一直被它占着。只升级一次的话，持续燃烧的告警在两次
+        通知之后就对所有人静默了——唯一的出口是人去点那张已经被刷到聊天记录
+        深处的老卡片。所以每过一个 reply_timeout 就再催一次，直到有人接。
+
+        再催的前提是「这条还在烧」：判据用 last_seen_at 与去重窗，跟
+        _merge_repeat 同一个口径。监控已经不再重发（超过一个去重窗没动静）的
+        陈年 TIMEOUT 记录不再打扰任何人——机器人被刷屏比漏一次催办更糟。
+        """
         now = self._clock()
         timed_out: list[dict[str, Any]] = []
         for record in list(self._records.values()):
+            if record.state is RelayState.TIMEOUT:
+                if now - record.updated_at < self._reply_timeout:
+                    continue
+                if now - record.last_seen_at > self._dedupe_window:
+                    continue
+                await self._escalate(record, now, again=True)
+                timed_out.append(record.to_dict())
+                continue
             if record.state is not RelayState.AWAITING_REPLY:
                 continue
             if now - record.updated_at < self._reply_timeout:
                 continue
             record.transition(RelayState.TIMEOUT, at=now, note="无人认领")
-            await self._safe_robot(self._robot.escalate, record.event)
-            await self._safe_reply_text(
-                record, f"这条告警 {int(self._reply_timeout // 60)} 分钟没人接。{REPLY_HINT}"
-            )
-            if self._auto_diagnose_on_timeout:
+            await self._escalate(record, now)
+            # 状态必须在 await 之后复核：升级提醒正是催人去点卡片的那一下，
+            # 值班人在推送/回帖这两个 await 里认领（TIMEOUT→CLAIMED 合法）是
+            # 最自然的时序。不复核就会把认领人覆盖成「自动」，还会拿
+            # TIMEOUT→CLAIMED 去撞一条已经在跑诊断的记录，抛出的非法流转异常
+            # 会把本轮剩下的超时告警和末尾的落盘一起带走。
+            if self._auto_diagnose_on_timeout and record.state is RelayState.TIMEOUT:
                 record.claimed_by = "自动（超时未响应）"
                 record.transition(RelayState.CLAIMED, at=now, note="超时自动认领")
                 self._spawn(self._diagnose(record))
             self._persist()
             timed_out.append(record.to_dict())
         return timed_out
+
+    async def _escalate(
+        self, record: RelayRecord, now: float, *, again: bool = False
+    ) -> None:
+        """催一次：机器人喊人 + 在原卡片下回帖。不新开卡片、不新建记录。"""
+        await self._safe_robot(self._robot.escalate, record.event)
+        if again:
+            text = f"这条告警还是没人接，已经重复 {record.repeat_count} 次。{REPLY_HINT}"
+        else:
+            text = f"这条告警 {int(self._reply_timeout // 60)} 分钟没人接。{REPLY_HINT}"
+        await self._safe_reply_text(record, text)
+        # 再次升级不换状态，但要把计时基线推到当下、在 history 里留一条，
+        # 否则催了几次无从查起，下一轮巡检也会立刻再催一次。
+        # 同样在 await 之后复核：人在这两下里认领了，就不该再记「仍无人认领」。
+        if again and record.state is RelayState.TIMEOUT:
+            record.updated_at = now
+            record.history.append(
+                {"state": record.state.value, "at": now, "note": "仍无人认领"}
+            )
+            self._persist()
 
     async def start(self, interval_seconds: float = 60.0) -> None:
         """起一个后台巡检，把超时未认领的告警升级提醒。"""

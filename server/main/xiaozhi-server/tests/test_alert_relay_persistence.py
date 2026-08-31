@@ -9,9 +9,11 @@
 - 非终态记录连同 alert_id / feishu_message_id / 事件原文一起回来
 - 超时巡检基线用落盘的时间戳，不是进程启动时刻
 - 终态记录不再占着去重指纹，同一条规则再来要能重新叫人
+- 通知或诊断做到一半被打断的记录不能原样装回来（没人会再驱动它们）
 - 坏文件按空存储处理，不崩在启动路径上
 """
 
+import asyncio
 import json
 
 import pytest
@@ -105,6 +107,20 @@ class FakeBot:
     async def add_reaction(self, message_id, emoji_type="OK"):
         self.reactions.append(message_id)
         return True
+
+
+class HangingBot(FakeBot):
+    """卡在发卡片那一步的飞书，用来撑开 _notify 两个 await 之间的窗口。"""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_card(self, receive_id, card):
+        self.entered.set()
+        await self.release.wait()
+        return await super().send_card(receive_id, card)
 
 
 class FakeRunner:
@@ -318,6 +334,44 @@ async def test_interrupted_diagnosis_is_reported_as_failed(store):
     # 终态了就不该再占着去重指纹
     again = await service.ingest({"raw_text": ALERT_TEXT})
     assert again["deduped"] is False
+
+
+@pytest.mark.asyncio
+async def test_interrupted_notification_is_not_restored_as_a_zombie(store):
+    """通知做到一半被落盘的 RECEIVED 记录，重启后不能继续占着去重指纹。
+
+    _notify 的两个 await（机器人推送 / 飞书发卡片）之间，另一条同指纹的上报
+    走去重分支就会 _persist，把 state=RECEIVED 的中途快照写进盘里。而
+    RECEIVED 的唯一出边靠 _notify 驱动，重启后没有任何代码会再驱动它，
+    超时巡检又只扫 AWAITING_REPLY——原样装回来就等于把这条规则永久静默：
+    机器人一声不吭、飞书一张卡片没有，人点老卡片只会撞 ALREADY_HANDLED。
+    """
+    clock = Clock()
+    bot = HangingBot()
+    service, _, _, _ = make_service(store, clock=clock, bot=bot)
+    notifying = asyncio.ensure_future(service.ingest({"raw_text": ALERT_TEXT}))
+    await bot.entered.wait()
+
+    clock.advance(60)  # 监控 60 秒后重发同一条：去重分支把中途快照写进盘
+    repeated = await service.ingest({"raw_text": ALERT_TEXT})
+    assert repeated["deduped"] is True
+    saved = json.loads(store.read_text(encoding="utf-8"))["records"][0]
+    assert saved["state"] == RelayState.RECEIVED.value
+
+    notifying.cancel()  # 进程没了：卡在推送上的那半程不会再有人接着跑
+    await asyncio.gather(notifying, return_exceptions=True)
+
+    clock.advance(60)
+    restarted, robot, restarted_bot, _ = make_service(store, clock=clock)
+    zombie = restarted.get(saved["alert_id"])
+    assert zombie["state"] == RelayState.FAILED.value
+    assert "重启" in zombie["error"]
+
+    again = await restarted.ingest({"raw_text": ALERT_TEXT})
+    assert again["deduped"] is False
+    assert again["alert_id"] != saved["alert_id"]
+    assert robot.calls == ["alert"]
+    assert len(restarted_bot.cards) == 1
 
 
 # ------------------------------------------------------------ 坏文件 / 缺省
