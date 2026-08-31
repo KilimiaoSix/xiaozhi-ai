@@ -295,7 +295,7 @@ private:
 
         volume_up_button_.OnLongPress([this]() {
             // 无论在哪种模式下，长按音量+按钮都将音量设为最大
-            GetAudioCodec()->SetOutputVolume(100);
+            GetAudioCodec()->SetOutputVolume(40);  // 40 兼顾可听清与打断可用性（满音量下单麦无AEC导致语音打断物理不可用），用户可用音量键随时调
             GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
         });
 
