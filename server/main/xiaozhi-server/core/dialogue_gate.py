@@ -62,7 +62,15 @@ TAG = __name__
 
 DEFAULT_WINDOW_SECONDS = 60.0
 _WINDOW_ATTR = "_dialogue_window_until"
+_WINDOW_REASON_ATTR = "_dialogue_window_reason"
 _FOLLOWUP_ATTR = "_dialogue_followup_until"
+# 推送写进对话历史的 assistant 文案上打的记号，见 mark_push_authored。
+_PUSH_AUTHORED_ATTR = "_dialogue_push_authored"
+
+# 机器人自己播报完开的那扇窗（pushHandle 播报后调 open 的理由）。门要认它
+# ——用户顺口的应答得进得来；但它不能冒充「工位上有人」，休眠链路必须分得清，
+# 见 user_window_open。
+ROBOT_SPOKE_FIRST_REASON = "robot_spoke_first"
 
 # ASR 对唤醒词高频出现的同音/易混字混淆——真机实测「你好小智」被转写成
 # 「你好，小治」、「你好喵伴」被转写成「你好，苗办」。只作用于本模块内部
@@ -94,6 +102,31 @@ def window_open(conn, clock: Optional[Callable[[], float]] = None) -> bool:
     if deadline is None:
         return False
     return (clock or time.monotonic)() < deadline
+
+
+def user_window_open(conn, clock: Optional[Callable[[], float]] = None) -> bool:
+    """窗口开着，且开它的是用户（唤醒词 / 手势 / 按键 / 打断），不是机器人自己。
+
+    休眠链路把「窗口开着」当成人还在工位的证据，可这扇窗也可能是机器人播报完
+    自己开的（ROBOT_SPOKE_FIRST_REASON）：告警风暴期间每条播报都续 60 秒，
+    摄像头的离席判定会被一路推迟——离席台账永不开窗，那段真实离席期间的告警
+    一条都进不了返岗汇总，设备也永远不进休眠。机器人开的窗里用户若真的应答了，
+    正在拾音 / 最近说过话这两条判据自然会命中，在场证据并不会因此丢掉。
+    """
+    if not window_open(conn, clock):
+        return False
+    return getattr(conn, _WINDOW_REASON_ATTR, "") != ROBOT_SPOKE_FIRST_REASON
+
+
+def mark_push_authored(message) -> None:
+    """标记这条 assistant 消息是主动推送写进历史的，不是对话里的一轮回答。
+
+    追问通道认的是「机器人上一句在追问」，而推送的文案同样以 assistant 身份
+    进历史（pushHandle 要给「刚才那个告警怎么回事」留上下文）。不加区分的话，
+    一条以问号收尾的通知型推送就能借追问通道把环境人声放进 LLM，绕过它自己
+    的 open_dialogue=False。
+    """
+    setattr(message, _PUSH_AUTHORED_ATTR, True)
 
 
 def _effective_text(text: str) -> str:
@@ -186,8 +219,14 @@ class DialogueGate:
         return words
 
     def open(self, conn, reason: str = "") -> None:
-        """用户确实主动发起了一轮：开窗。"""
+        """用户确实主动发起了一轮：开窗。
+
+        开窗理由一并记在 conn 上：机器人自己播报后开的窗（见
+        ROBOT_SPOKE_FIRST_REASON）在门这里与用户开的等价，但对休眠链路不是
+        在场证据，user_window_open 靠这条记录区分。
+        """
         setattr(conn, _WINDOW_ATTR, self._clock() + self._window_seconds)
+        setattr(conn, _WINDOW_REASON_ATTR, reason)
         self._log(conn, f"对话窗口已打开（{reason or '主动发起'}）")
 
     def allow(self, conn, text: str) -> bool:
@@ -221,8 +260,9 @@ class DialogueGate:
             return True
 
         if self._single_turn and self._followup_pending(conn, now):
-            # 机器人上一句在追问，这条是它等的回答；答完继续单次规则
-            self._close(conn, "追问的回答，本轮已用掉")
+            # 机器人上一句在追问，这条是它等的回答；答完追问通道就此关死，
+            # 不再续期（arm_followup=False，理由见 _close）
+            self._close(conn, "追问的回答，本轮已用掉", arm_followup=False)
             return True
 
         if self._is_exit_word(stripped):
@@ -236,11 +276,18 @@ class DialogueGate:
         self._log(conn, f"对话窗口未打开，丢弃这段语音: {_effective_text(text)}")
         return False
 
-    def _close(self, conn, reason: str = "") -> None:
+    def _close(self, conn, reason: str = "", arm_followup: bool = True) -> None:
         setattr(conn, _WINDOW_ATTR, None)
         # 关窗时间同时是追问续窗的起点：机器人若以问号收尾，
-        # window_seconds 内允许用户把回答补进来
-        setattr(conn, _FOLLOWUP_ATTR, self._clock() + self._window_seconds)
+        # window_seconds 内允许用户把回答补进来。
+        #
+        # arm_followup=False 只给「这一条本来就是追问的回答」用：追问通道放行
+        # 一条即终结。否则消费追问的那次 _close 反手又续满 window_seconds，而
+        # LLM 结尾反问是常态，等于「每放行一条再续 60 秒」——房间里一直有人
+        # 说话，门就再也关不上，自激循环原样复活。
+        deadline = self._clock() + self._window_seconds if arm_followup else None
+        setattr(conn, _FOLLOWUP_ATTR, deadline)
+        setattr(conn, _WINDOW_REASON_ATTR, "")
         self._log(conn, f"对话窗口已关闭（{reason}）")
 
     def _followup_pending(self, conn, now: float) -> bool:
@@ -256,6 +303,9 @@ class DialogueGate:
             return False
         last = messages[-1]
         if getattr(last, "role", None) != "assistant":
+            return False
+        if getattr(last, _PUSH_AUTHORED_ATTR, False):
+            # 主动推送的文案不是对话里的一轮追问（见 mark_push_authored）
             return False
         content = (getattr(last, "content", None) or "").strip()
         return content.endswith(("？", "?"))

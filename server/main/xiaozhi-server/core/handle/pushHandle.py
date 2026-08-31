@@ -190,7 +190,11 @@ def _schedule_base_state_restore(conn, device_id: str, delay: float) -> None:
         except Exception as e:
             conn.logger.bind(tag=TAG).warning(f"恢复设备基态失败: {e}")
         finally:
-            if _restore_tasks.get(device_id) is not None:
+            # 只摘自己：被新推送取消的旧任务，CancelledError 要等事件循环下次
+            # 恢复它才投递，那时登记的已经是新任务了。只判「有没有条目」就 pop
+            # 会把新任务摘成孤儿——它照常睡着，却再没人取消得了（取消的唯一
+            # 入口就是这张表），到点用基态覆盖此刻屏上的画面。
+            if _restore_tasks.get(device_id) is asyncio.current_task():
                 _restore_tasks.pop(device_id, None)
 
     _restore_tasks[device_id] = asyncio.create_task(_restore())
@@ -213,12 +217,14 @@ def device_busy_reason(conn) -> Optional[str]:
 
 def voice_session_active(conn, within_seconds: float, clock=None) -> bool:
     """设备上的语音对话是否活跃：正在播报、正在拾到人声、最近 within_seconds
-    秒内说过话，或对话窗口开着（唤醒词刚喊过、还在等问题）。
+    秒内说过话，或用户开的对话窗口还开着（唤醒词刚喊过、还在等问题）。
 
     presence 休眠链路用它判断「摄像头说没人，但语音说明人还在」。刻意不看
     last_activity_time——那个时间戳被设备 30 秒一条的 ping 心跳刷新，
-    安静挂机也永远“活跃”。clock 返回秒（time.time 口径），与
-    vad_last_voice_time 的毫秒对齐后比较。
+    安静挂机也永远“活跃”；同理刻意不认机器人自己播报后开的那扇窗
+    （user_window_open），否则告警风暴期间每条播报都把离席判定往后推
+    一整扇窗，空工位永远睡不着、离席台账永远不开窗。clock 返回秒
+    （time.time 口径），与 vad_last_voice_time 的毫秒对齐后比较。
     """
     import time as _time
 
@@ -233,9 +239,9 @@ def voice_session_active(conn, within_seconds: float, clock=None) -> bool:
         if now_ms - last_voice_ms < within_seconds * 1000:
             return True
 
-    from core.dialogue_gate import window_open
+    from core.dialogue_gate import user_window_open
 
-    return window_open(conn)
+    return user_window_open(conn)
 
 
 # 推送要出声时的等待策略。默认 3 秒：桌面端推送客户端的 HTTP 超时是 5 秒，
@@ -297,7 +303,15 @@ async def ensure_speakable(conn, busy_probe=None, sleep=None, clock=None, abort=
     while busy:
         if preempt and busy == BUSY_SPEAKING:
             conn.logger.bind(tag=TAG).info("打断设备当前播报，让位给本次推送")
+            # handleAbortMessage 无条件清零 close_after_chat，那是给「用户主动
+            # 打断」用的语义（打断告别就等于不走了）。抢播是服务端自己发起的，
+            # 不该顺带把「声明离开 → 收会话」这类待办收场吃掉：确认语「知道了，
+            # 我帮你看着工位」被抢播后，owner_status 已经落盘成 meeting，会话却
+            # 继续挂着。标记原样还回去，交给本次推送自己的 LAST 句去执行收场。
+            keep_close = bool(getattr(conn, "close_after_chat", False))
             await abort(conn)
+            if keep_close:
+                conn.close_after_chat = True
             busy = probe(conn)
             if not busy:
                 return None
@@ -473,9 +487,14 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
     # 把推送内容写进对话历史，否则用户追问"刚才那个告警怎么回事"时 LLM 毫无上下文。
     # 历史已有截断（dialogue.py DEFAULT_MAX_HISTORY_MESSAGES），不怕撑爆。
     try:
+        from core.dialogue_gate import mark_push_authored
         from core.utils.dialogue import Message
 
-        conn.dialogue.put(Message(role="assistant", content=text))
+        message = Message(role="assistant", content=text)
+        # 打上「推送写的」记号：这条不是对话里的一轮回答，以问号收尾也不该被
+        # 对话门当成机器人在追问（否则通知型推送能借追问通道放行环境人声）
+        mark_push_authored(message)
+        conn.dialogue.put(message)
     except Exception as e:
         conn.logger.bind(tag=TAG).warning(f"推送内容写入对话历史失败: {e}")
 
@@ -507,9 +526,14 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
         # 迎接后的吩咐)必须能进对话窗口门——门默认只认用户主动唤醒,
         # 这里补上"机器人发起对话"的另一半,真机上告警应答曾被门整句丢弃。
         try:
-            from core.dialogue_gate import DialogueGate
+            from core.dialogue_gate import ROBOT_SPOKE_FIRST_REASON, DialogueGate
 
-            DialogueGate(conn.config).open(conn, reason="robot_spoke_first")
+            # 先判 enabled 再开窗,口径与 abortHandle / receiveAudioHandle 的
+            # 两处调用点一致:open() 是无条件 setattr,门没启用时开出来的窗口
+            # 属性没有任何写者认领,却会被旁观者读成「对话正开着」。
+            gate = DialogueGate(conn.config)
+            if gate.enabled:
+                gate.open(conn, reason=ROBOT_SPOKE_FIRST_REASON)
         except Exception as e:
             conn.logger.bind(tag=TAG).warning(f"播报后开对话窗口失败: {e}")
     return spoke

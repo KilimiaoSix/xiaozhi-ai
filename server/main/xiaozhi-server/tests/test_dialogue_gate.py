@@ -255,6 +255,41 @@ def test_followup_answer_must_arrive_within_the_window():
     assert gate.allow(conn, "太晚才给的回答") is False
 
 
+def test_followup_answer_is_terminal_and_does_not_rearm_itself():
+    """一次追问只放行一条回答，答完追问通道就关死。
+
+    「用掉追问」时若反手把追问窗续满 window_seconds，就成了「每放行一条再续
+    60 秒」的自举：LLM 结尾反问是常态（「需要我帮你记下来吗？」），房间里只要
+    一直有人说话，门就再也关不上——正是模块顶部要切断的那个自激循环。
+    """
+    gate, conn, clock = make(window_seconds=60)
+
+    gate.open(conn, "唤醒词")
+    assert gate.allow(conn, "帮我看下这个告警") is True  # 本轮已用掉
+    conn.dialogue.dialogue.append(
+        FakeMessage("assistant", "你是说刚才那条 CI 失败吗？")
+    )
+    clock.advance(10)
+    assert gate.allow(conn, "对，就是那条") is True  # 追问的回答，放行这一条
+    conn.dialogue.dialogue.append(FakeMessage("assistant", "需要我帮你记下来吗？"))
+    clock.advance(5)
+    assert gate.allow(conn, "那我们下午再对一下") is False  # 环境人声，不该再进
+
+
+def test_consumed_followup_never_outlives_the_original_deadline():
+    """追问窗的截止时刻由「关窗那一刻」定死，放行回答不会把它往后推。"""
+    gate, conn, clock = make(window_seconds=60)
+
+    gate.open(conn, "唤醒词")
+    assert gate.allow(conn, "问一句") is True  # 关窗，追问窗到 +60 秒为止
+    conn.dialogue.dialogue.append(FakeMessage("assistant", "要不要继续？"))
+    clock.advance(30)
+    assert gate.allow(conn, "要") is True
+    conn.dialogue.dialogue.append(FakeMessage("assistant", "还要别的吗？"))
+    clock.advance(31)  # 已越过最初那扇追问窗的截止时刻
+    assert gate.allow(conn, "越过截止时刻的房间人声") is False
+
+
 def test_rejected_text_does_not_slide_the_window():
     """被拒的无关人声不能把窗口续命，否则房间一直有人说话就等于门没关。"""
     gate, conn, clock = make(window_seconds=60)
