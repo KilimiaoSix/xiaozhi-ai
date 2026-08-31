@@ -228,6 +228,47 @@ async def test_alert_relay_stop_is_registered_on_cleanup(assembled):
 
 
 @pytest.mark.asyncio
+async def test_incidents_are_restored_on_startup(assembled, tmp_path):
+    """重启前留在恢复观察窗里的故障要在服务起来时装回内存并定稿。
+
+    定稿只有内存里的观察任务能触发,没有这根启动钩子的话盘上那条永远停在
+    observing,桌面端列表会一直挂着一条「恢复观察中」。
+    """
+    server, config = assembled
+    manager = get_incident_manager(config)
+    store = tmp_path / "incidents"
+    store.mkdir(parents=True, exist_ok=True)
+    day = manager.current_day()
+    (store / f"{day}-inc-restart.json").write_text(
+        json.dumps(
+            {
+                "incident_id": "inc-restart",
+                "service": "demo",
+                "severity": "P1",
+                "title": "重启前没定稿的故障",
+                "state": "observing",
+                "announced": True,
+                "first_seen_at": f"{day}T00:00:01",
+                "resolved_at": f"{day}T00:00:02",
+                "observe_seconds": 1,
+                "timeline": [{"at": f"{day}T00:00:01", "event": "received", "detail": ""}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    app = server.create_app()
+    for callback in app.on_startup:
+        await callback(app)
+    await manager.wait_idle()
+
+    data = json.loads((store / f"{day}-inc-restart.json").read_text(encoding="utf-8"))
+    assert data["state"] == "recovered"
+    assert [event["event"] for event in data["timeline"]][-1] == "recovered"
+
+
+@pytest.mark.asyncio
 async def test_pomodoro_sessions_are_restored_on_startup(assembled, tmp_path):
     """上个进程留下的番茄钟会话要在服务起来时装回内存,而不是等用户手动 stop。"""
     server, _ = assembled

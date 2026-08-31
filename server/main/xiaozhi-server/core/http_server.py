@@ -425,6 +425,16 @@ class SimpleHttpServer:
 
         app.on_startup.append(restore_pomodoro)
 
+        # 告警状态同样跨重启：恢复观察窗的定稿只有内存里的观察任务能触发，
+        # 不装回来的话重启前正在观察的故障盘上永远停在 observing，桌面端
+        # 列表一直挂着一条「恢复观察中」，当天再次告警还会覆盖掉旧时间线。
+        if self.incident_handler:
+
+            async def restore_incidents(_app):
+                await get_incident_manager(self.config).restore()
+
+            app.on_startup.append(restore_incidents)
+
         # 告警中继的巡检任务起在 start() 里，却一直没人停：wellbeing 与
         # morning_brief 都是 on_startup + on_cleanup 成对注册的，这里补齐同款。
         async def stop_alert_relay(_app):
