@@ -12,6 +12,7 @@ from config.config_loader import get_project_dir, read_config
 from config.logger import setup_logging
 from core.utils.cache.manager import CacheType, cache_manager
 from core.api.pomodoro_handler import PomodoroHandler
+from core import pomodoro_manager as pomodoro_module
 from core.pomodoro_manager import PomodoroManager
 from core.pomodoro_routes import add_pomodoro_routes
 
@@ -28,6 +29,14 @@ setup_logging(_repo_config)
 
 DEVICE_ID = "dc:da:0c:26:9a:60"
 OFFLINE_DEVICE_ID = "dc:da:0c:26:9a:61"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_store(tmp_path, monkeypatch):
+    """会话每次相位变迁都落盘，接口测试不该往仓库 data/ 里写文件。"""
+    monkeypatch.setattr(
+        pomodoro_module, "DEFAULT_PERSIST_PATH", str(tmp_path / "pomodoro_sessions.json")
+    )
 
 
 class FakeConn:
@@ -98,6 +107,9 @@ async def shutdown(client):
     manager = client.app["pomodoro_manager"]
     for device_id in list(manager.active_device_ids()):
         await manager.stop(device_id)
+    # 离线设备的补帧任务会一直等回连（生产上正是要这样），测试收尾直接取消掉
+    for task in list(manager._push_tasks):
+        task.cancel()
 
 
 @pytest.mark.asyncio

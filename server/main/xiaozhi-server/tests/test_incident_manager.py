@@ -31,6 +31,7 @@ from core.incident_manager import (  # noqa: E402
     STATUS_FIRING,
     STATUS_OBSERVING,
     STATUS_RECOVERED,
+    _safe_id,
     get_incident_manager,
     reset_incident_manager,
 )
@@ -92,6 +93,34 @@ class PushRecorder:
         return [call["text"] for call in self.calls]
 
 
+class GatedPush(PushRecorder):
+    """假推送：第一条命中 match 的播报卡在闸门上，之后的照常立即返回。
+
+    真机上一次播报是秒级的（ensure_speakable 最长等 3 秒 + TTS 合成播放），
+    这段「播报在途」的真空期正是竞态窗口；立即返回的假推送测不到它。
+    只卡第一条是为了让窗口期内进来的第二条能跑完，用例才有断言可做。
+    """
+
+    def __init__(self, match: str) -> None:
+        super().__init__()
+        self.match = match
+        self.entered = asyncio.Event()
+        self.gate = asyncio.Event()
+
+    async def __call__(self, conn, text, **kwargs):
+        self.calls.append({"conn": conn, "text": text, **kwargs})
+        if self.match in text and not self.entered.is_set():
+            self.entered.set()
+            await self.gate.wait()
+        return True
+
+    async def wait_in_flight(self) -> None:
+        await asyncio.wait_for(self.entered.wait(), 1.0)
+
+    def release(self) -> None:
+        self.gate.set()
+
+
 class FakeRunner:
     """假诊断执行器：不起子进程，直接回调 manager 给的结果。"""
 
@@ -109,10 +138,10 @@ class FakeRunner:
         return self.result
 
 
-def build_manager(tmp_path, *, on_low_severity=None, runner=None, config=None):
+def build_manager(tmp_path, *, on_low_severity=None, runner=None, config=None, push=None):
     clock = FakeClock()
     sleep = GatedSleep()
-    push = PushRecorder()
+    push = push or PushRecorder()
     manager = IncidentManager(
         config or {"incident": {"dedup_cooldown_s": 120, "observe_seconds": 300}},
         push_event=push,
@@ -280,6 +309,30 @@ async def test_announced_incident_repeat_upgrade_still_merges_in_cooldown(tmp_pa
     assert result["incident"]["severity"] == "P0"
 
 
+async def test_repeat_while_first_announcement_in_flight_is_merged(tmp_path):
+    """首播还卡在设备侧时进来的重复上报，必须走冷却合并，不能再播一遍。
+
+    冷却窗的破窗条件看的是「这条故障还从未播报过」；announced 若等播报
+    的 await 返回才置位，首播在途的那几秒里每一条重复都会被当成
+    「刚升级、还没播过」放行——告警风暴/webhook 重试有几条就播几条。
+    """
+    push = GatedPush("线上告警")
+    manager, clock, _, _ = build_manager(tmp_path, push=push)
+
+    first = asyncio.create_task(manager.handle_webhook(firing(severity="P0")))
+    await push.wait_in_flight()
+
+    clock.advance(30)  # 远在 dedup_cooldown_s=120 之内
+    second = await manager.handle_webhook(firing(severity="P0"))
+
+    push.release()
+    await first
+
+    assert second["outcome"] == "merged"
+    assert len(push.calls) == 1
+    assert second["incident"]["repeat_count"] == 2
+
+
 async def test_different_titles_are_separate_incidents(tmp_path):
     manager, _, _, push = build_manager(tmp_path)
 
@@ -342,6 +395,38 @@ async def test_reignition_during_observation_cancels_recovery(tmp_path):
     assert result["incident"]["state"] == STATUS_FIRING
     assert len(push.calls) == 2  # 首次告警 + 复燃告警，没有恢复播报
     assert all("已经恢复" not in text for text in push.texts)
+
+
+async def test_reignition_during_recovery_push_does_not_finalize(tmp_path):
+    """恢复播报还在途中就复燃：这条记录不能以 recovered 收尾。
+
+    定稿先把 state 置 recovered 再 await 播报，这个 await 在真机上是秒级的；
+    期间进来的 firing 把状态改回 firing 并重新告警，播报返回后定稿若还是
+    无脑往下写，就会给一条正在燃烧的故障追加 recovered 事件——桌面端和
+    日终总结读到的是一条自相矛盾的记录（state=firing，时间线以 recovered 结尾）。
+    """
+    push = GatedPush("已经恢复")
+    manager, _, sleep, _ = build_manager(tmp_path, push=push)
+    result = await manager.handle_webhook(firing(severity="P0"))
+    incident_id = result["incident_id"]
+    await manager.handle_webhook(resolved(severity="P0"))
+    await asyncio.sleep(0)
+
+    sleep.release()  # 观察窗走完，定稿卡在恢复播报上
+    await push.wait_in_flight()
+
+    reignite = await manager.handle_webhook(firing(severity="P0"))
+    push.release()
+    await manager.wait_idle()
+
+    assert reignite["outcome"] == "announced"
+    data = json.loads(
+        (tmp_path / f"2026-08-19-{incident_id}.json").read_text(encoding="utf-8")
+    )
+    assert data["state"] == STATUS_FIRING
+    assert data["recovered"] is False
+    assert data["recovered_at"] is None
+    assert "recovered" not in [event["event"] for event in data["timeline"]]
 
 
 async def test_second_resolved_does_not_restart_observation(tmp_path):
@@ -436,6 +521,25 @@ async def test_timeline_file_records_full_sequence(tmp_path):
     assert all(event["at"].startswith("2026-08-19T10:") for event in data["timeline"])
 
 
+async def test_long_service_incident_id_survives_the_id_filter(tmp_path):
+    """服务名很长时自动生成的 id 不能超长。
+
+    写入侧用的是完整 id（内存键与文件名），ack / 诊断侧一律先过 _safe_id
+    再查表；id 一旦被截断两侧就对不上，这些故障的「标记已处理」「启动诊断」
+    恒 404，桌面端点了没反应还查不出原因。
+    """
+    long_service = "iflyplot-ai-inference-gateway-canary-shanghai-prod-cluster-a"
+    manager, _, _, _ = build_manager(tmp_path, runner=FakeRunner())
+
+    result = await manager.handle_webhook(firing(service=long_service))
+    incident_id = result["incident_id"]
+
+    assert _safe_id(incident_id) == incident_id
+    assert manager.ack(incident_id)["outcome"] == "acked"
+    assert (await manager.request_diagnosis(incident_id))["outcome"] == "accepted"
+    await manager.wait_idle()
+
+
 async def test_incident_id_from_payload_is_sanitised_for_filename(tmp_path):
     manager, _, _, _ = build_manager(tmp_path)
 
@@ -483,6 +587,126 @@ async def test_list_today_merges_files_from_previous_process(tmp_path):
     titles = [item["title"] for item in manager.list_today()]
 
     assert titles == ["上一进程的故障", "接口错误率升高"]
+
+
+# ---------------------------------------------------------------- 跨进程重启
+
+
+def _timeline(tmp_path, incident_id):
+    path = tmp_path / f"2026-08-19-{incident_id}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+async def test_refiring_after_restart_keeps_the_previous_timeline(tmp_path):
+    """重启后同一故障当天再次告警，不能把重启前的时间线整份覆盖掉。
+
+    文件名是 {当天}-{incident_id}.json，新记录的 first_seen_at 又是当下，
+    命中的正是那份旧文件——_persist 整份 snapshot 写下去，announced 与
+    resolved_reported 就此消失。时间线是审计记录，不该被一次重启抹掉。
+    """
+    manager, _, _, _ = build_manager(tmp_path)
+    result = await manager.handle_webhook(firing())
+    incident_id = result["incident_id"]
+    await manager.handle_webhook(resolved())
+    manager.shutdown()  # 进程退出
+
+    revived, _, _, _ = build_manager(tmp_path)  # 新进程，同一个 storage_dir
+    again = await revived.handle_webhook(firing())
+
+    data = _timeline(tmp_path, incident_id)
+    events = [event["event"] for event in data["timeline"]]
+    assert events[:3] == ["received", "announced", "resolved_reported"]
+    assert "reignited" in events
+    assert data["state"] == STATUS_FIRING
+    assert again["incident"]["repeat_count"] == 2
+
+
+async def test_restore_finishes_the_observation_window_of_a_dead_process(tmp_path):
+    """重启前正在观察窗里的故障，装载后要接着把窗口走完并定稿。
+
+    定稿只有内存里的观察任务能触发，不装回来的话盘上永远停在 observing，
+    桌面端列表会一直挂着一条「恢复观察中」。
+    """
+    manager, _, _, _ = build_manager(tmp_path)
+    result = await manager.handle_webhook(firing())
+    incident_id = result["incident_id"]
+    await manager.handle_webhook(resolved())
+    manager.shutdown()
+
+    revived, clock, sleep, push = build_manager(tmp_path)
+    clock.advance(60)  # 停机 60 秒，300 秒的观察窗还剩 240 秒
+    await revived.restore()
+    await asyncio.sleep(0)  # 让重排的观察任务真的跑到闸门前
+
+    assert sleep.calls == [240.0]
+    sleep.release()
+    await revived.wait_idle()
+
+    # 播的是整个观察窗，不是剩下的那 240 秒——「连续4分钟」是句假话
+    assert push.texts[-1] == (
+        "错误率已经恢复，连续5分钟没有新增异常。故障时间线我也记录好了。"
+    )
+    data = _timeline(tmp_path, incident_id)
+    assert data["state"] == STATUS_RECOVERED
+    assert [event["event"] for event in data["timeline"]][-1] == "recovered"
+
+
+async def test_restore_finalizes_an_expired_window_without_speaking(tmp_path):
+    """停机期间观察窗就走完了：时间线照样定稿，但不播过期的恢复。"""
+    manager, _, _, _ = build_manager(tmp_path)
+    result = await manager.handle_webhook(firing())
+    incident_id = result["incident_id"]
+    await manager.handle_webhook(resolved())
+    manager.shutdown()
+
+    revived, clock, sleep, push = build_manager(tmp_path)
+    clock.advance(3600)  # 停机一小时
+    await revived.restore()
+    sleep.release()
+    await revived.wait_idle()
+
+    assert push.calls == []
+    assert _timeline(tmp_path, incident_id)["state"] == STATUS_RECOVERED
+
+
+async def test_restore_keeps_firing_incidents_and_skips_recovered_ones(tmp_path):
+    manager, _, sleep, _ = build_manager(tmp_path)
+    still_firing = await manager.handle_webhook(firing(title="还在烧"))
+    await manager.handle_webhook(firing(title="已经好了"))
+    await manager.handle_webhook(resolved(title="已经好了"))
+    sleep.release()
+    await manager.wait_idle()
+    manager.shutdown()
+
+    revived, _, revived_sleep, _ = build_manager(tmp_path)
+    restored = await revived.restore()
+
+    assert restored["restored"] == [still_firing["incident_id"]]
+    assert revived_sleep.calls == []  # 已定稿的不重排观察窗
+    assert revived.active_incident()["title"] == "还在烧"
+
+
+async def test_resolved_after_restart_finalizes_the_disk_record(tmp_path):
+    """重启后监控补发的 resolved 要能接上盘上那条，而不是当成未知故障丢掉。"""
+    manager, _, _, _ = build_manager(tmp_path)
+    result = await manager.handle_webhook(firing())
+    incident_id = result["incident_id"]
+    manager.shutdown()
+
+    revived, _, sleep, _ = build_manager(tmp_path)
+    outcome = await revived.handle_webhook(resolved())
+    sleep.release()
+    await revived.wait_idle()
+
+    assert outcome["outcome"] == "observing"
+    data = _timeline(tmp_path, incident_id)
+    assert [event["event"] for event in data["timeline"]] == [
+        "received",
+        "announced",
+        "resolved_reported",
+        "recovered",
+    ]
+    assert data["state"] == STATUS_RECOVERED
 
 
 # ---------------------------------------------------------------- 校验

@@ -3,13 +3,23 @@
 经典循环：专注 → 短休 → …… → 第 long_break_interval 轮专注结束后长休 → 回到第 1 轮。
 计时权威在服务端，设备只负责渲染：每次相位变化下发一次 self.pomodoro.show，
 固件拿到 remaining_s 后本地 1Hz 自减，走到 00:00 就停住等服务端推下一相位。
-这样 WiFi 抖动只会让画面短暂不同步，不会让两端的轮次各走各的。
+设备离线时下发发不出去，所以每次丢帧都挂一个「等设备回连、再按当时状态补一帧」
+的补帧任务（每设备去重，见 _schedule_resync）。这样 WiFi 抖动只会让画面
+短暂不同步，不会让两端的轮次各走各的。
 
 会话按 device_id 存在本模块，不挂在 conn 上：固件断线 10s 就重连、conn 会被换掉，
 挂 conn 上的状态在 WiFi 抖动时会静默丢失（同 pushHandle.py 顶部的理由）。
 推送时刻一律按 device_id 重新取活跃连接，不用闭包里那个可能已经死掉的 conn。
 
-服务端不做持久化：进程重启会丢掉所有会话，只记日志。
+会话落盘（`pomodoro.persist_path`，默认 data/pomodoro_sessions.json）：每次相位
+变迁原子写一次（先写 .tmp 再 rename，同 away_ledger / incident_manager）。
+不落盘的代价是真实的——服务端重启后认为没有会话，设备却还停在自己 1Hz 自减的
+倒计时画面上，两端各走各的，只能靠用户手动 stop 才收得回来。
+
+截止时刻存的是**墙钟 ISO 时间**，不是 time.monotonic() 的值：monotonic 的原点
+每次进程启动都不同，存进文件的那个数字重启后没有任何意义。restore() 把它
+换算回本进程的 monotonic 轴：仍在相位内就恢复计时并在设备回连后刷新画面，
+已经过期就丢掉会话、等设备回连推一次 idle 收屏。
 """
 
 import asyncio
@@ -18,6 +28,8 @@ import logging
 import math
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -62,6 +74,18 @@ SHOW_TIMEOUT = 10
 MAX_PHASE_SECONDS = 86400
 # 契约里 round / total_rounds 的上限
 MAX_ROUNDS = 99
+
+# 会话落盘位置（config 的 pomodoro.persist_path 可覆盖）
+DEFAULT_PERSIST_PATH = "data/pomodoro_sessions.json"
+
+# 补帧要等设备回连才推得出去：服务端起来时固件通常还在重连路上（断线 10s 重连
+# 一次），WiFi 抖动同理。等待上限按「一整段相位」量级取，抖动落在相位的哪一段
+# 都还等得到；等不到就放弃，不能让这条任务永远挂着。
+RESYNC_WAIT_SECONDS = 1800.0
+RESYNC_POLL_INTERVAL = 1.0
+
+# 可恢复的相位。idle 不是会话状态，落盘里出现就是脏数据
+RESTORABLE_PHASES = (PHASE_FOCUS, PHASE_SHORT_BREAK, PHASE_LONG_BREAK)
 
 
 async def _default_push_alert(conn, text: str, **kwargs) -> None:
@@ -118,6 +142,15 @@ class _Settings:
     long_break_interval: int
 
 
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _read_settings(config: Optional[dict]) -> _Settings:
     """读 pomodoro 配置段。全部带默认值，用户不写这一段也能跑。"""
     section = (config or {}).get("pomodoro") or {}
@@ -165,6 +198,7 @@ class PomodoroManager:
 
     推送函数与设备注册表都可注入，便于离线单测；生产用默认实现走 pushHandle 与
     设备 MCP。celebration_delay_s 注入为 0 可以让测试不必真等庆祝窗口。
+    wall_clock 返回 datetime，重启恢复按它换算已经过去了多久。
     """
 
     def __init__(
@@ -176,6 +210,8 @@ class PomodoroManager:
         play_action: Optional[Callable] = None,
         call_tool: Optional[Callable] = None,
         celebration_delay_s: float = DEFAULT_CELEBRATION_DELAY_S,
+        persist_path: Optional[Any] = None,
+        wall_clock: Optional[Callable[[], datetime]] = None,
         logger=None,
     ) -> None:
         self._config = config
@@ -184,6 +220,8 @@ class PomodoroManager:
         self._play_action = play_action or _default_play_action
         self._call_tool = call_tool or _default_call_tool
         self._celebration_delay_s = max(0.0, float(celebration_delay_s))
+        self._persist_path_override = Path(persist_path) if persist_path else None
+        self._wall_clock = wall_clock or datetime.now
         # 模块级默认实例建起来时还没有 loguru 可用，先挂标准库 logger，
         # 等 bind 时换成服务端那个（否则相位切换的日志进不了 tmp/server.log）。
         self._logger = logger or logging.getLogger(__name__)
@@ -192,6 +230,9 @@ class PomodoroManager:
         # 射后不理的推送任务。事件循环只对任务持弱引用，不留句柄会被 GC 提前回收
         # （同 pushHandle._restore_tasks 的理由），跑完由回调自行摘掉。
         self._push_tasks: set = set()
+        # 已经挂着补帧任务的设备。离线期间可能连丢好几帧，但补帧只按回连时刻的
+        # 状态推一帧，每设备留一个任务就够（见 _schedule_resync）。
+        self._pending_resync: set = set()
 
     # ------------------------------------------------------------ 装配
 
@@ -222,6 +263,256 @@ class PomodoroManager:
 
     def active_device_ids(self) -> List[str]:
         return list(self._sessions.keys())
+
+    # ------------------------------------------------------------ 落盘
+
+    @property
+    def _store_path(self) -> Path:
+        if self._persist_path_override is not None:
+            return self._persist_path_override
+        section = (self._config or {}).get("pomodoro") or {}
+        if not isinstance(section, dict):
+            section = {}
+        return Path(str(section.get("persist_path") or DEFAULT_PERSIST_PATH))
+
+    def _deadline_iso(self, session: _Session) -> Optional[str]:
+        """把 monotonic 截止时刻换算成墙钟 ISO 时间。
+
+        暂停中（deadline 为 None）与转相位的庆祝窗口内都返回 None，
+        恢复侧按 paused / total_s 走对应分支。
+        微秒精度保留：演示时会把相位压到亚秒级，截到秒会让恢复出来的会话直接过期。
+        """
+        if session.deadline is None:
+            return None
+        remaining = max(0.0, session.deadline - time.monotonic())
+        return (self._wall_clock() + timedelta(seconds=remaining)).isoformat()
+
+    def _session_payload(self, session: _Session) -> Dict[str, Any]:
+        return {
+            "device_id": session.device_id,
+            "phase": session.phase,
+            "round": session.round,
+            "total_s": session.total_s,
+            "remaining_s": self._remaining_seconds(session),
+            "paused": bool(session.paused),
+            "deadline_at": self._deadline_iso(session),
+            "focus_minutes": session.focus_minutes,
+            "settings": {
+                "focus_minutes": session.settings.focus_minutes,
+                "short_break_minutes": session.settings.short_break_minutes,
+                "long_break_minutes": session.settings.long_break_minutes,
+                "long_break_interval": session.settings.long_break_interval,
+            },
+            "saved_at": self._wall_clock().isoformat(),
+        }
+
+    def _persist(self) -> None:
+        """原子写：先写 .tmp 再 rename，进程被 kill 也不会留半截 JSON。
+
+        会话最多几台设备各一条，整份重写比增量便宜也更难写错（同 away_ledger）。
+        落盘失败只影响重启后的恢复，绝不能把异常抛给命令路径。
+        """
+        payload = {
+            "version": 1,
+            "sessions": [
+                self._session_payload(session) for session in self._sessions.values()
+            ],
+        }
+        path = self._store_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(path)
+        except Exception as e:
+            self._logger.warning(f"番茄钟会话落盘失败: {e}")
+
+    def _load(self) -> List[Dict[str, Any]]:
+        path = self._store_path
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except Exception:
+            # 损坏的落盘文件当作没有：宁可丢会话，也不要崩在启动路径上。
+            # 后续写入会把文件整体覆盖掉，坏文件不会一直卡着（同 away_ledger）。
+            self._logger.warning(f"读取番茄钟会话失败，按空存储处理: {path}")
+            return []
+        sessions = (data or {}).get("sessions") if isinstance(data, dict) else None
+        if not isinstance(sessions, list):
+            return []
+        return [item for item in sessions if isinstance(item, dict)]
+
+    async def restore(self) -> Dict[str, List[str]]:
+        """装载上个进程留下的会话（HTTP 服务启动时调一次）。
+
+        - 仍在相位内：按墙钟重算 monotonic 截止，恢复计时任务，设备回连后刷新画面。
+        - 已过期：丢掉会话，设备回连后推一次 idle——设备那张停在 00:00 的
+          倒计时画面只有服务端能收回去。
+        - 暂停中：恢复为暂停态，冻结的剩余秒数不因重启被扣掉。
+
+        只补空缺：已经跑起来的会话不会被盘上的旧快照覆盖。
+        """
+        restored: List[str] = []
+        expired: List[str] = []
+        now = self._wall_clock()
+
+        for payload in self._load():
+            device_id = str(payload.get("device_id") or "").strip()
+            if not device_id or device_id in self._sessions:
+                continue
+            session = self._session_from_payload(device_id, payload, now)
+            if session is None:
+                expired.append(device_id)
+                continue
+            self._sessions[device_id] = session
+            if not session.paused:
+                self._start_timer(session)
+            restored.append(device_id)
+            self._schedule_resync(device_id)
+
+        for device_id in expired:
+            self._schedule_resync(device_id)
+
+        if restored or expired:
+            # 过期的那几条别留在盘上，否则下次重启还要再走一遍
+            self._persist()
+            self._logger.info(
+                f"番茄钟会话恢复：{len(restored)} 个继续计时，{len(expired)} 个已过期"
+            )
+        return {"restored": restored, "expired": expired}
+
+    def _session_from_payload(
+        self, device_id: str, payload: Dict[str, Any], now: datetime
+    ) -> Optional[_Session]:
+        """把一条落盘快照还原成会话；已经过期或数据不可用时返回 None。"""
+        phase = str(payload.get("phase") or "")
+        if phase not in RESTORABLE_PHASES:
+            return None
+
+        raw_settings = payload.get("settings")
+        if not isinstance(raw_settings, dict):
+            raw_settings = {}
+        fallback = _read_settings(self._config)
+        settings = _Settings(
+            focus_minutes=_positive_float(
+                raw_settings.get("focus_minutes"), fallback.focus_minutes
+            ),
+            short_break_minutes=_positive_float(
+                raw_settings.get("short_break_minutes"), fallback.short_break_minutes
+            ),
+            long_break_minutes=_positive_float(
+                raw_settings.get("long_break_minutes"), fallback.long_break_minutes
+            ),
+            long_break_interval=_clamped_int(
+                raw_settings.get("long_break_interval"),
+                fallback.long_break_interval,
+                1,
+                MAX_ROUNDS,
+            ),
+        )
+
+        total_s = max(0.0, min(_positive_float(payload.get("total_s"), 0.0),
+                               float(MAX_PHASE_SECONDS)))
+        if total_s <= 0:
+            return None
+        paused = bool(payload.get("paused"))
+
+        if paused:
+            remaining = max(
+                0.0, min(_positive_float(payload.get("remaining_s"), 0.0), total_s)
+            )
+            deadline = None
+        else:
+            deadline_at = _parse_iso(payload.get("deadline_at"))
+            if deadline_at is None:
+                # 崩在转相位的庆祝窗口里：相位已经切了、截止时刻还没定，
+                # 按新相位的整段时长重新开始，比直接丢掉会话保守。
+                remaining = total_s
+            else:
+                remaining = (deadline_at - now).total_seconds()
+            if remaining <= 0:
+                return None
+            # 上界与暂停分支对称：截止时刻是墙钟值，重启时的 NTP 步进（开机最容易
+            # 发生）把系统时间往回拨，(deadline_at - now) 就会比整段相位还长——
+            # 相位会多跑这段时间，下发的 remaining_s 也越界（固件进度条
+            # total_s - remaining 为负）。夹住之后最坏只是这一相位从头开始。
+            remaining = min(remaining, total_s)
+            deadline = time.monotonic() + remaining
+
+        return _Session(
+            device_id=device_id,
+            settings=settings,
+            focus_minutes=_positive_float(
+                payload.get("focus_minutes"), settings.focus_minutes
+            ),
+            phase=phase,
+            round=_clamped_int(payload.get("round"), 1, 1, MAX_ROUNDS),
+            total_s=total_s,
+            remaining_s=remaining,
+            deadline=deadline,
+            paused=paused,
+        )
+
+    async def _await_device(self, device_id: str):
+        """等设备回连且 MCP 握手完。
+
+        服务端总比设备先起来（固件断线 10s 才重连一次）。conn 在 WS 握手时就登记，
+        mcp_client 要等 hello 消息里的 features.mcp 才创建，只等 conn 会让补帧
+        撞进这段窗口、以"未初始化 MCP"原地失败。
+        """
+        deadline = time.monotonic() + RESYNC_WAIT_SECONDS
+        while True:
+            conn = self._resolve_conn(device_id)
+            if conn is not None and getattr(conn, "mcp_client", None) is not None:
+                return conn
+            if time.monotonic() >= deadline:
+                self._logger.info(
+                    f"设备 {device_id} 在补帧窗口内没有回连，放弃补推番茄钟画面"
+                )
+                return None
+            await asyncio.sleep(RESYNC_POLL_INTERVAL)
+
+    def _schedule_resync(self, device_id: str) -> None:
+        """挂一个「等设备回连、再按当时状态补一帧」的任务，每设备只挂一个。
+
+        设备离线（或 MCP 还没握手完）时的下发会被 _call_show 当场丢掉，没有这一步
+        就没有任何一方负责补：设备注册表不带回连回调，也没有周期性对账，画面要挂到
+        下一次相位到点（生产默认 25 分钟）才被动纠正，而 stop 掉的会话根本等不到
+        下一次相位——设备会永远停在自己自减出来的幽灵倒计时上。
+
+        去重是这个机制的关键：离线期间可能连丢好几帧（转相位 + 用户操作），
+        但补帧只按回连那一刻的状态推一帧，多挂几个任务只会重复推同一张画面。
+        """
+        if device_id in self._pending_resync:
+            return
+        self._pending_resync.add(device_id)
+        self._spawn_push(self._resync_when_online(device_id))
+
+    async def _resync_when_online(self, device_id: str) -> bool:
+        """等设备回连，然后按**当时**的会话状态补一帧。
+
+        两个方向都要补，缺一边就会各留一半的不一致：
+        - 有会话 → 推它当前的画面（离线期间相位推进了，或是重启恢复出来的会话）
+        - 没会话 → 推 idle 收屏（离线期间被 stop：桌面端的设备列表刻意包含
+          "离线但有会话"的设备，对它点停止是被设计出来的正常操作）
+
+        状态一律在推的那一刻重查，等待期间用户怎么改都不会补出一帧陈旧画面。
+        补帧自己再失败就不再排队（去重集合要到本任务结束才放行），留给下一次
+        推送重新触发——避免在一直失败的设备上转成无限重试。
+        """
+        try:
+            if await self._await_device(device_id) is None:
+                return False
+            session = self._sessions.get(device_id)
+            if session is None:
+                await self._push_idle(device_id)
+                return True
+            return await self._call_show(device_id, self._show_args(session))
+        finally:
+            self._pending_resync.discard(device_id)
 
     def is_focus_active(self, device_id: str) -> bool:
         """该设备是否正处于进行中的专注相位（未暂停）。
@@ -279,6 +570,7 @@ class PomodoroManager:
         self._sessions[device_id] = session
         session.deadline = time.monotonic() + session.total_s
         self._start_timer(session)
+        self._persist()
         self._logger.info(
             f"设备 {device_id} 开始番茄钟：专注 {_display_minutes(focus)} 分钟，"
             f"共 {settings.long_break_interval} 轮"
@@ -302,6 +594,7 @@ class PomodoroManager:
             session.deadline = None
             session.paused = True
             self._cancel_timer(session)
+            self._persist()
             self._logger.info(f"设备 {device_id} 番茄钟已暂停")
 
         if feedback:
@@ -319,6 +612,7 @@ class PomodoroManager:
             session.deadline = time.monotonic() + session.remaining_s
             session.paused = False
             self._start_timer(session)
+            self._persist()
             self._logger.info(f"设备 {device_id} 番茄钟已继续")
 
         if feedback:
@@ -349,6 +643,7 @@ class PomodoroManager:
         session.remaining_s = 0.0
         session.deadline = time.monotonic()
         self._start_timer(session)
+        self._persist()
         self._logger.info(f"设备 {device_id} 跳过当前番茄钟相位: {session.phase}")
         return self._result("skipped", device_id)
 
@@ -357,6 +652,7 @@ class PomodoroManager:
         outcome = "stopped" if session is not None else "not_running"
         if session is not None:
             self._cancel_timer(session)
+            self._persist()
             self._logger.info(f"设备 {device_id} 番茄钟已停止")
 
         if feedback and session is not None:
@@ -365,7 +661,7 @@ class PomodoroManager:
             )
         # 没会话也推一次 idle：服务端重启会丢会话，设备却还停在番茄钟画面上，
         # 这时的 stop 就是唯一能把它收回去的手段。
-        self._spawn_push(self._push_idle(device_id))
+        self._spawn_push(self._idle_if_still_stopped(device_id))
         return self._result(outcome, device_id)
 
     async def status(self, device_id: str) -> Dict[str, Any]:
@@ -424,6 +720,9 @@ class PomodoroManager:
         session.remaining_s = session.total_s
         session.deadline = None
         session.paused = False
+        # 庆祝窗口内被 kill 时盘上是「相位已切、截止时刻未定」，
+        # restore 会按新相位整段重新开始（比丢掉整个会话保守）
+        self._persist()
 
         conn = self._resolve_conn(session.device_id)
         if conn is not None:
@@ -435,6 +734,7 @@ class PomodoroManager:
 
         # 倒计时从设备看见画面那一刻算起，别把庆祝的这几秒算进专注时间
         session.deadline = time.monotonic() + session.total_s
+        self._persist()
         await self._push_show(session)
 
     def _next_phase(self, session: _Session):
@@ -524,6 +824,20 @@ class PomodoroManager:
         }
         await self._call_show(device_id, args)
 
+    async def _idle_if_still_stopped(self, device_id: str) -> bool:
+        """stop 的收屏 idle：任务真正开跑时若已有新会话就弃推。
+
+        stop 的有声确认（按键路径）是个真的会让出事件循环的 await——
+        push_alert 最终是 `await conn.websocket.send(...)`，没有超时。让出期间
+        用户完全可能从另一条入口重新 start，这条 idle 再落地就把刚起的会话拍成
+        隐身：固件退出番茄钟画面，服务端却照常计时、分心检测照常武装。
+        """
+        if device_id in self._sessions:
+            self._logger.info(f"设备 {device_id} 已有新的番茄钟会话，放弃收屏 idle")
+            return False
+        await self._push_idle(device_id)
+        return True
+
     async def _push_show(self, session: _Session) -> None:
         await self._call_show(session.device_id, self._show_args(session))
 
@@ -541,22 +855,39 @@ class PomodoroManager:
         task.add_done_callback(self._push_tasks.discard)
 
     def _spawn_show(self, session: _Session) -> None:
-        """后台下发当前画面。
+        """后台下发这个会话的画面。
 
-        参数在命令时刻就算好，不拖到任务被调度才算：那时会话可能已经被 stop 掉，
-        再去读会话就成了给一个已经不存在的番茄钟算画面。
+        推什么在任务真正开跑时才决定：命令路径上的有声确认是个真的会让出事件循环的
+        await（同 _idle_if_still_stopped），让出期间另一入口可能已经把会话整个换掉。
+        开跑时比对会话身份，换过就弃推——否则设备停在服务端已经不存在的会话画面上，
+        只能靠用户再 stop 一次收回（同 _call_show 重试分支的理由）。
+        身份比对同时让参数按发送时刻算，倒计时不会比设备看见的早几秒。
         """
-        self._spawn_push(self._call_show(session.device_id, self._show_args(session)))
+        self._spawn_push(self._show_if_current(session))
+
+    async def _show_if_current(self, session: _Session) -> bool:
+        if self._sessions.get(session.device_id) is not session:
+            self._logger.info(
+                f"设备 {session.device_id} 番茄钟会话已变更，放弃下发陈旧画面"
+            )
+            return False
+        return await self._call_show(session.device_id, self._show_args(session))
 
     async def _call_show(self, device_id: str, args: Dict[str, Any]) -> bool:
         conn = self._resolve_conn(device_id)
         if conn is None:
-            self._logger.info(f"设备 {device_id} 不在线，跳过番茄钟画面下发")
+            self._logger.info(f"设备 {device_id} 不在线，等回连再补一帧番茄钟画面")
+            self._schedule_resync(device_id)
             return False
 
         mcp_client = getattr(conn, "mcp_client", None)
         if mcp_client is None:
-            self._logger.warning(f"设备 {device_id} 未初始化 MCP，无法下发番茄钟画面")
+            # conn 在 WS 握手时就登记，mcp_client 要等 hello 里的 features.mcp 才建
+            # 起来；落在这段窗口里的下发同样发不出去，交给补帧任务（它等的就是 MCP）
+            self._logger.warning(
+                f"设备 {device_id} 未初始化 MCP，等回连再补一帧番茄钟画面"
+            )
+            self._schedule_resync(device_id)
             return False
 
         last_error = None
@@ -588,20 +919,28 @@ class PomodoroManager:
                 mcp_client = getattr(conn, "mcp_client", None) if conn else None
                 if mcp_client is None:
                     break
-                if args.get("phase") != PHASE_IDLE:
-                    session = self._sessions.get(device_id)
-                    if session is None:
-                        # 睡这几秒里用户 stop 了。stop 自己已经把 idle 推过去，
-                        # 这时再把陈旧的番茄钟画面补上，设备就停在服务端已经不存在的
-                        # 会话画面上，只能靠用户再 stop 一次才收得回来。弃推才是安全的。
+                # 睡这几秒里状态可能已经变了，两侧都得按重试时刻重新判一次
+                session = self._sessions.get(device_id)
+                if session is None:
+                    if args.get("phase") != PHASE_IDLE:
+                        # 用户 stop 了。stop 自己已经把 idle 推过去，这时再把陈旧的
+                        # 番茄钟画面补上，设备就停在服务端已经不存在的会话画面上，
+                        # 只能靠用户再 stop 一次才收得回来。弃推才是安全的。
                         self._logger.info(
                             f"设备 {device_id} 番茄钟已停止，放弃重推陈旧画面"
                         )
                         return False
-                    # 这几秒里倒计时还在走，参数得按重试时刻重算
+                    # 仍然没有会话，这条 idle 照原样重推
+                else:
+                    # 有会话就一律改推它当前的画面：
+                    # - 原本是 show：这几秒里倒计时还在走，参数得按重试时刻重算
+                    # - 原本是 idle：用户在窗口里重新 start 了，这条 idle 已经过期，
+                    #   补上去会把刚起的会话拍成隐身——固件退出番茄钟画面，服务端
+                    #   却照常计时（同 _idle_if_still_stopped 的理由）
                     args = self._show_args(session)
 
         self._logger.warning(f"下发番茄钟画面最终失败: {last_error}")
+        self._schedule_resync(device_id)
         return False
 
     # ------------------------------------------------------------ 快照

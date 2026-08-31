@@ -8,6 +8,7 @@ import type {
   RecognitionEvent,
   RecognitionStreamOptions,
 } from '../../modules/features/camera-capture/types';
+import type { AppConfigReader } from '../config/appConfigStore';
 
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
@@ -33,8 +34,8 @@ export type CameraWebSocketFactory = (
 type TimerHandle = unknown;
 
 interface CameraStreamClientOptions {
-  serverUrl?: string;
-  authToken?: string;
+  /** 地址与令牌一律按次向配置中心取，构造期不缓存。 */
+  config: AppConfigReader;
   webSocketFactory?: CameraWebSocketFactory;
   randomUUID?: () => string;
   setTimer?: (callback: () => void, delay: number) => TimerHandle;
@@ -74,8 +75,7 @@ const decodeMessage = (value: unknown): RecognitionEvent | null => {
 };
 
 export class CameraStreamClient {
-  private readonly serverUrl: string;
-  private readonly authToken: string;
+  private readonly config: AppConfigReader;
   private readonly webSocketFactory: CameraWebSocketFactory;
   private readonly randomUUID: () => string;
   private readonly setTimer: (callback: () => void, delay: number) => TimerHandle;
@@ -87,14 +87,10 @@ export class CameraStreamClient {
   private sessionId = '';
   private ready = false;
   private reconnectAttempt = 0;
+  private unsubscribeConfig: (() => void) | null = null;
 
-  constructor(options: CameraStreamClientOptions = {}) {
-    this.serverUrl = options.serverUrl
-      ?? process.env.XIAOFEI_SERVER_URL
-      ?? 'http://127.0.0.1:8003';
-    this.authToken = options.authToken
-      ?? process.env.XIAOFEI_SERVER_AUTH_TOKEN
-      ?? '';
+  constructor(options: CameraStreamClientOptions) {
+    this.config = options.config;
     this.webSocketFactory = options.webSocketFactory ?? ((url, init) => (
       new WebSocket(url, { headers: init.headers }) as unknown as CameraSocketLike
     ));
@@ -113,6 +109,8 @@ export class CameraStreamClient {
     this.stop();
     this.desiredOptions = { ...options };
     this.reconnectAttempt = 0;
+    // 只在会话期间订阅：监测没开时改地址不该凭空建连接。
+    this.unsubscribeConfig = this.config.subscribe(() => { this.reconnectToNewEndpoint(); });
     this.connect();
   }
 
@@ -127,6 +125,8 @@ export class CameraStreamClient {
   stop(): void {
     this.desiredOptions = null;
     this.ready = false;
+    this.unsubscribeConfig?.();
+    this.unsubscribeConfig = null;
     if (this.reconnectTimer !== null) {
       this.clearTimer(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -148,11 +148,31 @@ export class CameraStreamClient {
   private connect(): void {
     const desired = this.desiredOptions;
     if (desired === null) return;
+    // 每次建连现取：设置面板改完地址，重连自然落到新 Server。
+    const { serverUrl, authToken } = this.config.get();
+    let wsUrl: string;
+    try {
+      wsUrl = streamUrl(serverUrl);
+    } catch (error) {
+      // 协议头校验已经在保存时前置拦截（parseAppConfigPatch），这里只兜底
+      // 已经落盘的旧坏值：格式错误的地址不能同步抛出去炸穿 start()/配置
+      // 热切换的调用栈——那会把「已经保存成功」的一次配置更新误报成失败。
+      // 不排重连：desiredOptions 保持不动，配置改回合法地址后 subscribe
+      // 回调会自然重新 connect()。
+      this.emit({
+        type: 'error',
+        code: 'INVALID_SERVER_URL',
+        message: error instanceof Error ? error.message : 'Server 地址格式无效',
+        retryable: false,
+      });
+      this.emit({ type: 'connection', state: 'idle' });
+      return;
+    }
     this.sessionId = this.randomUUID();
     this.ready = false;
     const headers: Record<string, string> = {};
-    if (this.authToken) headers.Authorization = `Bearer ${this.authToken}`;
-    const socket = this.webSocketFactory(streamUrl(this.serverUrl), { headers });
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const socket = this.webSocketFactory(wsUrl, { headers });
     this.socket = socket;
     this.emit({
       type: 'connection',
@@ -193,6 +213,27 @@ export class CameraStreamClient {
       this.ready = false;
       this.scheduleReconnect();
     });
+  }
+
+  /**
+   * 配置里的地址或令牌变了：断开旧连接，立刻按新地址重连。
+   *
+   * 走的还是既有重连路径（新 session_id、退避计数归零），只是不等退避——
+   * 用户刚在设置面板按下保存，等 30 秒才切过去等于没生效。
+   */
+  private reconnectToNewEndpoint(): void {
+    if (this.desiredOptions === null) return;
+    if (this.reconnectTimer !== null) {
+      this.clearTimer(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.socket;
+    // 先置空再关：close 回调认 socket !== this.socket 就不会再排一次重连。
+    this.socket = null;
+    this.ready = false;
+    socket?.close();
+    this.reconnectAttempt = 0;
+    this.connect();
   }
 
   private scheduleReconnect(): void {

@@ -16,7 +16,7 @@ ServoController::~ServoController() {
 
 void ServoController::Initialize() {
     if (move_mutex_ == nullptr) {
-        move_mutex_ = xSemaphoreCreateMutex();
+        move_mutex_ = xSemaphoreCreateRecursiveMutex();
         if (move_mutex_ == nullptr) {
             ESP_LOGE(TAG, "舵机互斥锁创建失败，并发驱动时可能卡死");
         }
@@ -87,13 +87,38 @@ void ServoController::SetServoAngle(int channel, int angle) {
     // 观测改为在 MoveTo 里每段移动打一行。
 }
 
+bool ServoController::LockServo() {
+    if (move_mutex_ == nullptr) {
+        return true;
+    }
+    if (xSemaphoreTakeRecursive(move_mutex_, pdMS_TO_TICKS(SERVO_LOCK_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "舵机等锁超时，放弃本次动作");
+        return false;
+    }
+    return true;
+}
+
+void ServoController::UnlockServo() {
+    if (move_mutex_ != nullptr) {
+        xSemaphoreGiveRecursive(move_mutex_);
+    }
+}
+
 void ServoController::HeadMove(int x_offset, int y_offset, int servo_delay) {
+    // 相对移动：读当前角度这一步本身就必须在锁内，否则会把另一条链路移动中的
+    // 中间角度当成自己的起点
+    if (!LockServo()) {
+        return;
+    }
+
     // 根据当前角度计算绝对目标
     int target_x = current_x_angle_ + x_offset;
     int target_y = current_y_angle_ + y_offset;
     
     // 调用绝对移动函数，它内部会处理边界保护和步进插值
     MoveTo(target_x, target_y, servo_delay);
+
+    UnlockServo();
 }
 
 void ServoController::MoveTo(int target_x, int target_y, int servo_delay) {
@@ -101,10 +126,9 @@ void ServoController::MoveTo(int target_x, int target_y, int servo_delay) {
     int clamped_x = std::max(SERVO_MIN_X, std::min(SERVO_MAX_X, target_x));
     int clamped_y = std::max(SERVO_MIN_Y, std::min(SERVO_MAX_Y, target_y));
     
-    // 整段移动必须独占舵机：并发改动 current_*_angle_ 会让收敛循环永远退不出去
-    if (move_mutex_ != nullptr &&
-        xSemaphoreTake(move_mutex_, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        ESP_LOGW(TAG, "MoveTo 等锁超时，放弃本次移动 -> (%d,%d)", clamped_x, clamped_y);
+    // 整段移动必须独占舵机：并发改动 current_*_angle_ 会让收敛循环永远退不出去。
+    // 由复合动作入口调进来时这里是重入，递归锁直接放行
+    if (!LockServo()) {
         return;
     }
 
@@ -113,7 +137,7 @@ void ServoController::MoveTo(int target_x, int target_y, int servo_delay) {
 
     if (clamped_x == current_x_angle_ && clamped_y == current_y_angle_) {
         // 如果已在目标位置（或是已触碰边界无法再向该方向移动），则直接返回
-        if (move_mutex_ != nullptr) xSemaphoreGive(move_mutex_);
+        UnlockServo();
         return;
     }
 
@@ -150,12 +174,16 @@ void ServoController::MoveTo(int target_x, int target_y, int servo_delay) {
                  current_x_angle_, current_y_angle_, clamped_x, clamped_y);
     }
 
-    if (move_mutex_ != nullptr) {
-        xSemaphoreGive(move_mutex_);
-    }
+    UnlockServo();
 }
 
 void ServoController::HeadNod(int servo_delay) {
+    // 5 段一起持锁：段间放锁会被另一条链路的段插进来，收尾那段
+    // MoveTo(current_x_angle_, SERVO_CENTER_Y) 就会把对方刚摆好的姿态压回中位
+    if (!LockServo()) {
+        return;
+    }
+
     // 确保最小延迟值，避免太快导致生硬
     int actual_delay = std::max(10, servo_delay);
     
@@ -169,9 +197,15 @@ void ServoController::HeadNod(int servo_delay) {
     
     // 恢复到中心位置
     MoveTo(current_x_angle_, SERVO_CENTER_Y, actual_delay);
+
+    UnlockServo();
 }
 
 void ServoController::HeadShake(int servo_delay) {
+    if (!LockServo()) {
+        return;
+    }
+
     // 确保最小延迟值
     int actual_delay = std::max(10, servo_delay);
     
@@ -185,9 +219,16 @@ void ServoController::HeadShake(int servo_delay) {
     
     // 恢复到中心位置
     MoveTo(SERVO_CENTER_X, current_y_angle_, actual_delay);
+
+    UnlockServo();
 }
 
 void ServoController::HeadRoll(int servo_delay) {
+    // 11 段、约 3 秒，全程持锁（等锁上限 SERVO_LOCK_TIMEOUT_MS 就是按它定的）
+    if (!LockServo()) {
+        return;
+    }
+
     // 完全参考boardemoji.ino中的实现
     HeadCenter();
     HeadDown(SERVO_OFFSET_Y/2+5);
@@ -200,6 +241,8 @@ void ServoController::HeadRoll(int servo_delay) {
     HeadMove(SERVO_OFFSET_X, SERVO_OFFSET_Y/2, servo_delay);
     HeadMove(-SERVO_OFFSET_X, SERVO_OFFSET_Y/2, servo_delay);
     HeadCenter();
+
+    UnlockServo();
 }
 
 void ServoController::HeadUp(int offset) {
@@ -219,6 +262,11 @@ void ServoController::HeadRight(int offset) {
 }
 
 void ServoController::HeadCenter(int servo_delay) {
+    // 同样要持锁后再读当前角度，否则算出来的偏移量是基于别人的中间姿态
+    if (!LockServo()) {
+        return;
+    }
+
     // 参考原始boardemoji.ino中的实现，通过HeadMove方法逐步移动到中心位置
     // 计算当前位置到中心位置的偏移量
     int x_offset = SERVO_CENTER_X - current_x_angle_;
@@ -226,4 +274,6 @@ void ServoController::HeadCenter(int servo_delay) {
     
     // 通过HeadMove方法逐步移动到中心位置
     HeadMove(x_offset, y_offset, servo_delay);
+
+    UnlockServo();
 }

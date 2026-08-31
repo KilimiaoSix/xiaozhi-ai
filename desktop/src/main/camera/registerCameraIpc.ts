@@ -10,11 +10,19 @@ import {
   openCameraPrivacySettings,
   requestCameraPermission,
 } from './cameraPermissions';
+import type { AppConfigReader } from '../config/appConfigStore';
 
-export const registerCameraIpc = (): CameraStreamIpcRegistration => {
+interface RegisterCameraIpcOptions {
+  /** 摄像头流的地址与令牌来源；serverUrl 变了会断开重连到新地址。 */
+  config: AppConfigReader;
+}
+
+export const registerCameraIpc = (
+  options: RegisterCameraIpcOptions,
+): CameraStreamIpcRegistration => {
   const stream = registerCameraStreamIpc({
     ipcMain,
-    client: new CameraStreamClient(),
+    client: new CameraStreamClient({ config: options.config }),
   });
 
   ipcMain.handle('camera:get-permission', getCameraPermissionStatus);

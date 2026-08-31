@@ -8,7 +8,7 @@ presence 休眠链路用它回答「摄像头说没人，但语音说明人还�
 
 from types import SimpleNamespace
 
-from core.dialogue_gate import DialogueGate
+from core.dialogue_gate import ROBOT_SPOKE_FIRST_REASON, DialogueGate
 from core.handle.pushHandle import voice_session_active
 
 
@@ -44,6 +44,30 @@ def test_open_dialogue_window_counts_as_active():
     conn = make_conn()
     DialogueGate({"dialogue_gate": {"enabled": True}}).open(conn, "唤醒词")
     assert voice_session_active(conn, 60, clock=lambda: 0.0) is True
+
+
+def test_robot_opened_window_is_not_presence_evidence():
+    """机器人自己播报后开的窗不算「工位上有人」。
+
+    每条 speak=true 的推送播完都会开 60 秒窗口（robot_spoke_first）。若把它
+    当在场证据，告警风暴期间每条播报都把摄像头的离席判定往后推 60 秒：离席
+    台账永远不开窗，那段真实离席期间的告警一条都进不了返岗汇总，设备也永远
+    不进休眠。窗口本身照旧管 ASR 准入，只是不再冒充在场证据。
+    """
+    conn = make_conn()
+    DialogueGate({"dialogue_gate": {"enabled": True}}).open(
+        conn, ROBOT_SPOKE_FIRST_REASON
+    )
+    assert voice_session_active(conn, 2, clock=lambda: 0.0) is False
+
+
+def test_user_reply_inside_a_robot_window_still_counts_as_active():
+    """机器人开的窗里用户真的应答了：VAD 那两条判据自然命中，在场证据不丢。"""
+    conn = make_conn(client_have_voice=True)
+    DialogueGate({"dialogue_gate": {"enabled": True}}).open(
+        conn, ROBOT_SPOKE_FIRST_REASON
+    )
+    assert voice_session_active(conn, 2, clock=lambda: 0.0) is True
 
 
 def test_bare_conn_defaults_to_inactive():

@@ -50,12 +50,14 @@ describe('DiscoveringRobotNotifier', () => {
     const createNotifier = vi.fn().mockReturnValue(inner);
     const notifier = new DiscoveringRobotNotifier({
       fetcher,
-      serverUrl: 'http://s',
+      resolveServerUrl: () => 'http://s',
       createNotifier,
       sleep: async () => {},
     });
     await notifier.settled;
     expect(createNotifier).toHaveBeenCalledWith('aa:bb');
+    // 地址来自配置中心而不是构造期快照，探测请求必须真的打到它
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe('http://s/xiaozhi/event/devices');
 
     const tasks: AgentTaskSnapshot[] = [];
     await notifier.notify([intent('t1')], tasks);
@@ -67,12 +69,32 @@ describe('DiscoveringRobotNotifier', () => {
     const fetcher = vi.fn().mockResolvedValue(devicesResponse([]));
     const notifier = new DiscoveringRobotNotifier({
       fetcher,
-      serverUrl: 'http://s',
+      resolveServerUrl: () => 'http://s',
       maxAttempts: 2,
       sleep: async () => {},
     });
     await expect(notifier.notify([intent('t1')], [])).resolves.toBeUndefined();
     await notifier.settled;
+  });
+
+  it('每一轮探测都重新取地址，中途改配置后打到新地址', async () => {
+    let serverUrl = 'http://old';
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(devicesResponse([]))
+      .mockResolvedValue(devicesResponse(['aa:bb']));
+    const notifier = new DiscoveringRobotNotifier({
+      fetcher,
+      resolveServerUrl: () => serverUrl,
+      createNotifier: () => ({ notify: vi.fn() }),
+      sleep: async () => { serverUrl = 'http://new'; },
+    });
+    await notifier.settled;
+
+    expect(fetcher.mock.calls.map((call) => String(call[0]))).toEqual([
+      'http://old/xiaozhi/event/devices',
+      'http://new/xiaozhi/event/devices',
+    ]);
   });
 
   it('前几轮失败后重试，直到唯一设备出现', async () => {
@@ -85,7 +107,7 @@ describe('DiscoveringRobotNotifier', () => {
     const createNotifier = vi.fn().mockReturnValue(inner);
     const notifier = new DiscoveringRobotNotifier({
       fetcher,
-      serverUrl: 'http://s',
+      resolveServerUrl: () => 'http://s',
       createNotifier,
       sleep: async () => {},
     });
@@ -102,7 +124,7 @@ describe('DiscoveringRobotNotifier', () => {
     });
     const notifier = new DiscoveringRobotNotifier({
       fetcher,
-      serverUrl: 'http://s',
+      resolveServerUrl: () => 'http://s',
       maxAttempts: 100,
       sleep: async () => {
         notifier.stop();

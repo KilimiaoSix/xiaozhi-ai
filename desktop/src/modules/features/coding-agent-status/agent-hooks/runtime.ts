@@ -193,6 +193,14 @@ export class AgentHooksRuntime {
         : installation);
   }
 
+  /**
+   * 外部探针（Codex 桌面版的「等待批准」）报上来的关注态。
+   *
+   * 探针每秒轮询，同一个等待批准窗口会被报上来几十次；上面这道同源同因的闸门
+   * 就是「只在跃迁沿走一次」的唯一保证——通知机器人必须在闸门之后，
+   * 否则真机上等待批准会被反复播报。解除时 actionIntents 为空，
+   * notifyRobot 自然静默：解除只是把界面上的「需要你」摘掉，不是一条新意图。
+   */
   private async handleExternalAttention(attention: AgentAttention | null): Promise<void> {
     if (attention && this.externalAttention
       && attention.source === this.externalAttention.source
@@ -207,6 +215,7 @@ export class AgentHooksRuntime {
       : undefined;
     this.actionIntents = attention ? [this.attentionIntent(attention, taskKey)] : [];
     this.publish();
+    await this.notifyRobot();
   }
 
   private tasksWithExternalAttention(): AgentTaskSnapshot[] {

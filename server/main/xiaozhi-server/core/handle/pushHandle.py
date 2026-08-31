@@ -9,7 +9,10 @@ kListeningModeManualStop 会切到 Listening（麦克风打开等待回话），
 """
 import asyncio
 import json
+import logging
+import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 TAG = __name__
@@ -22,33 +25,120 @@ DEFAULT_STATUS = "通知"
 # 任何路过的瞬时事件都会把它永久冲掉，所以事件播完要能自动恢复。
 DEFAULT_BASE_STATE = {"status": "待机", "message": "", "emotion": "neutral"}
 
+# 基态要活过进程重启：只放内存的话，重启后 get_base_state 会回落默认「待机」，
+# 人明明在工位，下一条带 restore_after 的提醒播完就把「待机」钉到屏上，
+# 只能等摄像头链路下一次纠偏才改回来。落盘沿用 away_ledger / incident_manager
+# 的「先写 .tmp 再 rename」原子替换，进程被 kill 也不会留半截 JSON。
+DEFAULT_BASE_STATE_PATH = "data/base_states.json"
+
 # 按 device_id 存，不挂在 conn 上：固件断线 10s 就重连、conn 会被换掉，
 # 挂 conn 上的状态在 WiFi 抖动时会静默丢失。
 _base_states: Dict[str, Dict[str, str]] = {}
 _restore_tasks: Dict[str, Any] = {}
 
+# 读写来自三条线：HTTP 推送在事件循环、在岗编排在摄像头推理线程、
+# 语音函数在会话线程，因此落盘全程持锁（同 away_ledger）。
+_base_state_lock = threading.RLock()
+_base_state_path = Path(DEFAULT_BASE_STATE_PATH)
+_base_states_loaded = False
+# 本模块的日志一向挂在 conn 上，落盘却发生在没有 conn 的路径里，
+# 只好另挂一个标准库 logger（同 pomodoro_manager 模块级实例的理由）。
+_logger = logging.getLogger(__name__)
+
+
+def set_base_state_store(path) -> None:
+    """切换基态落盘位置并立即重载。
+
+    装配与测试用；重复用同一路径调用即可模拟「进程重启后重新装载」。
+    """
+    global _base_state_path, _base_states_loaded
+    with _base_state_lock:
+        _base_state_path = Path(path)
+        _base_states.clear()
+        _base_states_loaded = False
+        _load_base_state_store()
+
+
+def _load_base_state_store() -> None:
+    """从盘上装载基态。文件不在或损坏都按空存储处理。"""
+    global _base_states_loaded
+    _base_states_loaded = True
+    try:
+        data = json.loads(_base_state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception:
+        # 损坏的落盘文件当作没有：宁可丢基态，也不要崩在启动路径上。
+        # 后续写入会把文件整体覆盖掉，坏文件不会一直卡着（同 away_ledger）。
+        _logger.warning(f"读取设备基态失败，按空存储处理: {_base_state_path}")
+        return
+    devices = (data or {}).get("devices") if isinstance(data, dict) else None
+    if not isinstance(devices, dict):
+        return
+    for device_id, state in devices.items():
+        if not device_id or not isinstance(state, dict):
+            continue
+        _base_states[str(device_id)] = {
+            "status": str(state.get("status") or DEFAULT_BASE_STATE["status"]),
+            "message": str(state.get("message") or ""),
+            "emotion": str(state.get("emotion") or DEFAULT_BASE_STATE["emotion"]),
+        }
+
+
+def _write_base_state_store() -> None:
+    """原子写：先写 .tmp 再 rename。落盘失败只影响重启后的恢复，不抛给调用方。"""
+    payload = {"version": 1, "devices": dict(_base_states)}
+    try:
+        _base_state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _base_state_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp.replace(_base_state_path)
+    except Exception:
+        _logger.warning(f"设备基态落盘失败: {_base_state_path}")
+
+
+def _ensure_base_states_loaded() -> None:
+    """首次读写时才碰盘：导入期做文件 IO 会把离线单测也拖下水。"""
+    if not _base_states_loaded:
+        _load_base_state_store()
+
 
 def set_base_state(device_id: str, status: str, message: str, emotion: str) -> None:
-    """设定设备的常驻基态。"""
+    """设定设备的常驻基态，并落盘。"""
     if not device_id:
         return
-    _base_states[device_id] = {
+    state = {
         "status": str(status or DEFAULT_BASE_STATE["status"]),
         "message": str(message or ""),
         "emotion": str(emotion or DEFAULT_BASE_STATE["emotion"]),
     }
+    with _base_state_lock:
+        _ensure_base_states_loaded()
+        # 离席判定挂在每条 presence 心跳上（15 秒一条），基态是幂等写，
+        # 值没变就别重写文件——这条路径一天能走几千次。
+        if _base_states.get(device_id) == state:
+            return
+        _base_states[device_id] = state
+        _write_base_state_store()
 
 
 def get_base_state(device_id: str) -> Dict[str, str]:
     """读取基态，没设过就是默认待机态。"""
-    return dict(_base_states.get(device_id) or DEFAULT_BASE_STATE)
+    with _base_state_lock:
+        _ensure_base_states_loaded()
+        return dict(_base_states.get(device_id) or DEFAULT_BASE_STATE)
 
 
 def clear_base_state(device_id: str) -> None:
     """清除自定义基态，回落到默认待机态。"""
     if not device_id:
         return
-    _base_states.pop(device_id, None)
+    with _base_state_lock:
+        _ensure_base_states_loaded()
+        if _base_states.pop(device_id, None) is not None:
+            _write_base_state_store()
     _cancel_pending_restore(device_id)
 
 
@@ -100,7 +190,11 @@ def _schedule_base_state_restore(conn, device_id: str, delay: float) -> None:
         except Exception as e:
             conn.logger.bind(tag=TAG).warning(f"恢复设备基态失败: {e}")
         finally:
-            if _restore_tasks.get(device_id) is not None:
+            # 只摘自己：被新推送取消的旧任务，CancelledError 要等事件循环下次
+            # 恢复它才投递，那时登记的已经是新任务了。只判「有没有条目」就 pop
+            # 会把新任务摘成孤儿——它照常睡着，却再没人取消得了（取消的唯一
+            # 入口就是这张表），到点用基态覆盖此刻屏上的画面。
+            if _restore_tasks.get(device_id) is asyncio.current_task():
                 _restore_tasks.pop(device_id, None)
 
     _restore_tasks[device_id] = asyncio.create_task(_restore())
@@ -123,12 +217,14 @@ def device_busy_reason(conn) -> Optional[str]:
 
 def voice_session_active(conn, within_seconds: float, clock=None) -> bool:
     """设备上的语音对话是否活跃：正在播报、正在拾到人声、最近 within_seconds
-    秒内说过话，或对话窗口开着（唤醒词刚喊过、还在等问题）。
+    秒内说过话，或用户开的对话窗口还开着（唤醒词刚喊过、还在等问题）。
 
     presence 休眠链路用它判断「摄像头说没人，但语音说明人还在」。刻意不看
     last_activity_time——那个时间戳被设备 30 秒一条的 ping 心跳刷新，
-    安静挂机也永远“活跃”。clock 返回秒（time.time 口径），与
-    vad_last_voice_time 的毫秒对齐后比较。
+    安静挂机也永远“活跃”；同理刻意不认机器人自己播报后开的那扇窗
+    （user_window_open），否则告警风暴期间每条播报都把离席判定往后推
+    一整扇窗，空工位永远睡不着、离席台账永远不开窗。clock 返回秒
+    （time.time 口径），与 vad_last_voice_time 的毫秒对齐后比较。
     """
     import time as _time
 
@@ -143,9 +239,9 @@ def voice_session_active(conn, within_seconds: float, clock=None) -> bool:
         if now_ms - last_voice_ms < within_seconds * 1000:
             return True
 
-    from core.dialogue_gate import window_open
+    from core.dialogue_gate import user_window_open
 
-    return window_open(conn)
+    return user_window_open(conn)
 
 
 # 推送要出声时的等待策略。默认 3 秒：桌面端推送客户端的 HTTP 超时是 5 秒，
@@ -207,7 +303,15 @@ async def ensure_speakable(conn, busy_probe=None, sleep=None, clock=None, abort=
     while busy:
         if preempt and busy == BUSY_SPEAKING:
             conn.logger.bind(tag=TAG).info("打断设备当前播报，让位给本次推送")
+            # handleAbortMessage 无条件清零 close_after_chat，那是给「用户主动
+            # 打断」用的语义（打断告别就等于不走了）。抢播是服务端自己发起的，
+            # 不该顺带把「声明离开 → 收会话」这类待办收场吃掉：确认语「知道了，
+            # 我帮你看着工位」被抢播后，owner_status 已经落盘成 meeting，会话却
+            # 继续挂着。标记原样还回去，交给本次推送自己的 LAST 句去执行收场。
+            keep_close = bool(getattr(conn, "close_after_chat", False))
             await abort(conn)
+            if keep_close:
+                conn.close_after_chat = True
             busy = probe(conn)
             if not busy:
                 return None
@@ -383,9 +487,14 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
     # 把推送内容写进对话历史，否则用户追问"刚才那个告警怎么回事"时 LLM 毫无上下文。
     # 历史已有截断（dialogue.py DEFAULT_MAX_HISTORY_MESSAGES），不怕撑爆。
     try:
+        from core.dialogue_gate import mark_push_authored
         from core.utils.dialogue import Message
 
-        conn.dialogue.put(Message(role="assistant", content=text))
+        message = Message(role="assistant", content=text)
+        # 打上「推送写的」记号：这条不是对话里的一轮回答，以问号收尾也不该被
+        # 对话门当成机器人在追问（否则通知型推送能借追问通道放行环境人声）
+        mark_push_authored(message)
+        conn.dialogue.put(message)
     except Exception as e:
         conn.logger.bind(tag=TAG).warning(f"推送内容写入对话历史失败: {e}")
 
@@ -417,9 +526,14 @@ async def push_work_event(conn, text: str, emotion: str = DEFAULT_EMOTION,
         # 迎接后的吩咐)必须能进对话窗口门——门默认只认用户主动唤醒,
         # 这里补上"机器人发起对话"的另一半,真机上告警应答曾被门整句丢弃。
         try:
-            from core.dialogue_gate import DialogueGate
+            from core.dialogue_gate import ROBOT_SPOKE_FIRST_REASON, DialogueGate
 
-            DialogueGate(conn.config).open(conn, reason="robot_spoke_first")
+            # 先判 enabled 再开窗,口径与 abortHandle / receiveAudioHandle 的
+            # 两处调用点一致:open() 是无条件 setattr,门没启用时开出来的窗口
+            # 属性没有任何写者认领,却会被旁观者读成「对话正开着」。
+            gate = DialogueGate(conn.config)
+            if gate.enabled:
+                gate.open(conn, reason=ROBOT_SPOKE_FIRST_REASON)
         except Exception as e:
             conn.logger.bind(tag=TAG).warning(f"播报后开对话窗口失败: {e}")
     return spoke

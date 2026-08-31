@@ -13,7 +13,7 @@ from core.api.camera_stream_handler import (
 )
 from core.api.presence_handler import PresenceHandler
 from core.camera_stream.protocol import MAX_FRAME_BYTES
-from core.presence_registry import PresenceRegistry
+from core.presence_registry import PresenceRegistry, PresenceReport
 from core.presence_routes import add_presence_routes
 
 
@@ -187,6 +187,74 @@ async def test_monitoring_stream_survives_on_accepted_failure(aiohttp_client):
 
     assert result["type"] == "recognition_result"
     assert registry.get("desk-test")["reported_state"] == "present"
+
+
+OTHER_INSTANCE = "45912c0c-144b-4ac7-970b-527add7b4dcc"
+
+
+def newer_report_from_another_instance():
+    """同一 workstation 上一条「更新的观测」，来自另一个 agent 实例。
+
+    真实来源：presence-agent 的 HTTP 上报走客户端时钟（允许超前服务端至多
+    5 分钟）且与摄像头流共用同一个 registry；桌面端每次重连都换一个
+    session_id，于是摄像头首条上报就撞上「新实例不能替换更新的观测」。
+    """
+    return PresenceReport.from_payload(
+        {
+            "schema_version": "1.0",
+            "event_id": "b98af960-9166-45f3-bfb4-2f9fa6b9938f",
+            "agent_instance_id": OTHER_INSTANCE,
+            "workstation_id": "desk-test",
+            "source": "camera_pose",
+            "state": "present",
+            "previous_state": "starting",
+            "changed": True,
+            "reason": "pose_confirmed",
+            "sequence": 1,
+            "observed_at": "2026-08-18T12:00:30.000Z",
+            "metrics": {},
+        },
+        now_utc=NOW,
+    )
+
+
+@pytest.mark.asyncio
+async def test_registry_rejection_does_not_kill_the_recognition_stream(aiohttp_client):
+    """registry 拒收一条上报，不能连带打死整条摄像头识别流。
+
+    emit() 里 accept() 抛出的异常会穿到 CameraStreamSession._run，任务当场
+    死亡；外层帧循环照常收帧、session.replace 照常成功，于是桌面端既收不到
+    error 帧也再收不到任何 recognition_result，编排器被永久冻在最后一条上报的
+    状态（那条若是 absent/asleep，主人在场也一直睡）。断开时 cancel() 的
+    gather(return_exceptions=True) 还会把异常吃掉，日志里一行都没有。
+    """
+    accepted = []
+
+    async def on_accepted(report, acceptance):
+        accepted.append(report)
+
+    runtime = FakeRuntime([dict(MONITORING_RESULT), dict(MONITORING_RESULT)])
+    client, registry, _, _ = await make_client(
+        aiohttp_client, monitoring_runtime=runtime, on_accepted=on_accepted
+    )
+    registry.accept(newer_report_from_another_instance())
+
+    ws = await client.ws_connect("/xiaozhi/presence/stream")
+    await ws.send_json(start_message())
+    await ws.receive_json()
+
+    await ws.send_bytes(JPEG)
+    first = await asyncio.wait_for(ws.receive_json(), timeout=2)
+    await ws.send_bytes(JPEG)
+    second = await asyncio.wait_for(ws.receive_json(), timeout=2)
+    await ws.close()
+
+    assert first["type"] == "recognition_result"
+    assert second["type"] == "recognition_result"
+    assert second["sequence"] == 2
+    # 两条都被 registry 拒了：槽位保持不动，编排回调一次都不该触发
+    assert accepted == []
+    assert registry.get("desk-test")["agent_instance_id"] == OTHER_INSTANCE
 
 
 @pytest.mark.asyncio

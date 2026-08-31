@@ -206,7 +206,12 @@ def test_compose_speech_reads_duration_and_grouped_items(env):
     )
 
 
-def test_compose_speech_is_at_most_three_sentences(env):
+def test_compose_speech_stays_within_length_target_when_not_folded(env):
+    """混合六类事件但都没触发折叠时，整体长度贴着 200 字目标，不再受"至多三句"硬顶约束。
+
+    旧断言 speech.count("。") <= 3 与新规则冲突：新规则里严重告警/留言逐条播、
+    等待操作最多播 3 条，都可能各自独立成句，句数不再是长度控制的手段。
+    """
     ledger, clock, _path = env
     ledger.mark_away()
 
@@ -221,7 +226,8 @@ def test_compose_speech_is_at_most_three_sentences(env):
     speech = ledger.compose_speech()
 
     assert speech.startswith("你离开的一小时三十分里，")
-    assert speech.count("。") <= 3
+    assert len(speech) <= 200
+    assert "其余我记在桌面端返岗页了" not in speech
 
 
 def test_compose_speech_hours_and_minutes(env):
@@ -233,7 +239,8 @@ def test_compose_speech_hours_and_minutes(env):
     assert ledger.compose_speech().startswith("你离开的两小时里，")
 
 
-def test_compose_speech_counts_multiple_visitor_messages(env):
+def test_compose_speech_visitor_messages_are_never_folded(env):
+    """留言不能丢内容：多条留言要逐条播完，不能只报最新一条 + 计数。"""
     ledger, clock, _path = env
     ledger.mark_away()
 
@@ -244,8 +251,114 @@ def test_compose_speech_counts_multiple_visitor_messages(env):
     speech = ledger.compose_speech()
 
     assert "有 2 条留言" in speech
-    # 计数句里不该再套一层"有同事留言："
-    assert "最近一条是下午两点对一下接口" in speech
+    assert "日志方案已发飞书" in speech
+    assert "下午两点对一下接口" in speech
+    assert "其余我记在桌面端返岗页了" not in speech
+
+
+def test_compose_speech_completed_and_failed_only_report_counts(env):
+    """已完成桶（含失败）只报计数，不念内容——细节留给桌面端返岗页。"""
+    ledger, clock, _path = env
+    ledger.mark_away()
+
+    ledger.record("agent_completed", "跑完了很长很长的一段集成测试", task_key="t1", source="Codex")
+    ledger.record("agent_failed", "构建失败，报错信息巨长巨长巨长", task_key="t2")
+    clock.advance(minutes=5)
+
+    speech = ledger.compose_speech()
+
+    assert "Codex 完成了 1 个任务" in speech
+    assert "有 1 个任务失败了" in speech
+    assert "构建失败" not in speech
+    assert "报错信息" not in speech
+
+
+def test_compose_speech_generic_only_reports_count(env):
+    """只有普通消息时，只报条数，不念任何一条的原文。"""
+    ledger, clock, _path = env
+    ledger.mark_away()
+
+    ledger.record("generic", "周会挪到四点")
+    ledger.record("generic", "打印机没纸了")
+    ledger.record("generic", "快递到前台了")
+    clock.advance(minutes=5)
+
+    speech = ledger.compose_speech()
+
+    assert speech == "你离开的五分钟里，有 3 条普通消息。"
+    assert "其余我记在桌面端返岗页了" not in speech
+
+
+def test_compose_speech_needs_user_exactly_three_speaks_all_no_fold(env):
+    """等待操作恰好 3 条：边界内逐条播完，不折叠、不加导流尾句。"""
+    ledger, clock, _path = env
+    ledger.mark_away()
+
+    ledger.record("agent_needs_user", "确认部署方案 A", task_key="t1")
+    ledger.record("agent_needs_user", "确认部署方案 B", task_key="t2")
+    ledger.record("agent_needs_user", "确认部署方案 C", task_key="t3")
+    clock.advance(minutes=5)
+
+    speech = ledger.compose_speech()
+
+    assert "有 3 个任务在等你确认" in speech
+    assert "确认部署方案 A" in speech
+    assert "确认部署方案 B" in speech
+    assert "确认部署方案 C" in speech
+    assert "其余我记在桌面端返岗页了" not in speech
+
+
+def test_compose_speech_needs_user_four_items_folds_with_headline_and_count(env):
+    """等待操作超过 3 条：只播头条 + 报总数，并在结尾加导流尾句。"""
+    ledger, clock, _path = env
+    ledger.mark_away()
+
+    ledger.record("agent_needs_user", "确认部署方案 A", task_key="t1")
+    ledger.record("agent_needs_user", "确认部署方案 B", task_key="t2")
+    ledger.record("agent_needs_user", "确认部署方案 C", task_key="t3")
+    ledger.record("agent_needs_user", "确认部署方案 D", task_key="t4")
+    clock.advance(minutes=5)
+
+    speech = ledger.compose_speech()
+
+    assert "有 4 个任务在等你确认" in speech
+    # 只播头条（最新一条），不逐条列出被折叠掉的其余几条
+    assert "确认部署方案 D" in speech
+    assert "确认部署方案 A" not in speech
+    assert "确认部署方案 B" not in speech
+    assert "确认部署方案 C" not in speech
+    assert speech.endswith("其余我记在桌面端返岗页了。")
+
+
+def test_compose_speech_never_folds_critical_and_visitor_even_when_others_fold(env):
+    """严重告警和留言永不折叠：即便等待操作因超量触发折叠，这两类内容也不能被截断或丢弃。"""
+    ledger, clock, _path = env
+    ledger.mark_away()
+
+    ledger.record("incident", "服务 A 挂了", severity="critical")
+    ledger.record("incident", "服务 B 挂了", severity="critical")
+    ledger.record("incident", "服务 C 挂了", severity="critical")
+    ledger.record("visitor_message", "有同事留言：合同要今天签")
+    ledger.record("visitor_message", "有同事留言：快递到前台了")
+    ledger.record("visitor_message", "有同事留言：下午三点开会")
+    ledger.record("agent_needs_user", "确认部署方案 A", task_key="t1")
+    ledger.record("agent_needs_user", "确认部署方案 B", task_key="t2")
+    ledger.record("agent_needs_user", "确认部署方案 C", task_key="t3")
+    ledger.record("agent_needs_user", "确认部署方案 D", task_key="t4")
+    clock.advance(minutes=5)
+
+    speech = ledger.compose_speech()
+
+    # 折叠确实发生了（等待操作超过 3 条），尾句该在
+    assert speech.endswith("其余我记在桌面端返岗页了。")
+    # 但严重告警三条全在，一条都不能少
+    assert "服务 A 挂了" in speech
+    assert "服务 B 挂了" in speech
+    assert "服务 C 挂了" in speech
+    # 留言三条也全在
+    assert "合同要今天签" in speech
+    assert "快递到前台了" in speech
+    assert "下午三点开会" in speech
 
 
 def test_compose_speech_reports_critical_incident_first(env):

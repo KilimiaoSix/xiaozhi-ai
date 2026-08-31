@@ -10,12 +10,25 @@ monorepo，**没有根 package.json、没有 Makefile、没有 CI**。所有命�
 
 ## 常用命令
 
+### 一键启停（仓库根 `./gongban`）
+
+```bash
+./gongban up          # 预检(venv/摄像头依赖/配置/端口) → 起 Server → open 打包版桌面端
+./gongban status      # 一屏：Server 进程/HTTP 健康/在线设备/桌面端/最近 ERROR
+./gongban down        # 优雅退出桌面端 + 停 Server
+./gongban doctor      # server.command doctor + 启动器预检
+./gongban demo        # 分发 tools/ 下拍摄脚本（incident / away-return）
+./gongban mock-device # 起模拟设备（无真机联调；见 AGENTS.md WebSocket 契约节）
+```
+
+`up` 会在 SSL_CERT_FILE 缺失时从 venv certifi 推导，并 `launchctl setenv` 使 launchd 托管的 Server 进程拿到它（shell export 对 `launchctl bootstrap` 的作业无效——实测），打印撤销命令。
+
 ### desktop/（Electron + React + TypeScript）
 
 ```bash
 cd desktop && npm install        # node_modules 不入库，新克隆必做
 cd desktop && npm run dev        # 开发运行
-cd desktop && npm test           # vitest，44 个测试文件
+cd desktop && npm test           # vitest，60+ 个测试文件
 cd desktop && npm run typecheck
 ```
 
@@ -68,6 +81,10 @@ curl -X POST http://127.0.0.1:8003/xiaozhi/event/push -H "Content-Type: applicat
 ```
 
 ## 坑
+
+### dev 直启摄像头调不起来是 TCC 归属问题
+
+`npm run dev` 不经 LaunchServices，摄像头授权记在终端宿主与全机共享的 `com.github.Electron` 名下——该身份链上任何一次「拒绝」都会永久静默（不再弹窗），症状是预览全黑、无任何报错。摄像头链路验收一律走打包产物（`npm run package` 后 open）；dev 下要用摄像头，先 `tccutil reset Camera com.github.Electron` 并给终端宿主授一次摄像头权限。
 
 ### 只有一块开发板
 

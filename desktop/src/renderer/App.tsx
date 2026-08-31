@@ -5,14 +5,14 @@ import {
   Camera,
   PlugZap,
   RefreshCw,
-  Save,
-  Server,
 } from 'lucide-react';
 
 import { AppSidebar } from './components/AppSidebar';
 import type { AppPage } from './components/AppSidebar';
+import { ServerSettingsPanel } from './components/ServerSettingsPanel';
 
-import { featureCatalog, featureRegistry } from '../modules/features';
+import { featureRegistry, visibleFeatureCatalog } from '../modules/features';
+import { AwaySummaryPanel } from '../modules/features/away-summary';
 import { CameraPage } from '../modules/features/camera-capture';
 import { useCameraMonitoring } from '../modules/features/camera-capture/context/CameraMonitoringProvider';
 import { PomodoroPanel } from '../modules/features/focus-mode/PomodoroPanel';
@@ -26,7 +26,11 @@ import type {
   FeishuBriefingSnapshot,
   FeishuConnectionStatus,
 } from '../modules/features/feishu-briefing/contracts';
-import { featureRuntimeContext, serverGateway } from '../modules/runtime';
+import { featureRuntimeContext } from '../modules/runtime';
+import type {
+  AppConfigFieldResolution,
+  AppConfigResolution,
+} from '../shared/appConfig';
 import type { FeatureDefinition } from '../shared/features';
 
 interface TimelineEvent {
@@ -42,14 +46,14 @@ const initialEvents: TimelineEvent[] = [
     id: 1,
     time: '现在',
     title: '桌面控制台已启动',
-    detail: '八项演示能力已注册，等待逐项接入。',
+    detail: `${visibleFeatureCatalog.length} 项已接入能力可用，事件流只记录真实发生的事。`,
     tone: 'cyan',
   },
   {
     id: 2,
-    time: '待配置',
-    title: 'Server 地址尚未保存',
-    detail: '输入局域网地址后即可开始连接调试。',
+    time: '待确认',
+    title: 'Server 地址取自配置中心',
+    detail: '连接工作台里能看到每项配置的生效值与来源，改完即时生效。',
     tone: 'amber',
   },
 ];
@@ -137,10 +141,9 @@ const formatFeishuDue = (value?: string, allDay = false): string => {
 export function App() {
   const cameraMonitoring = useCameraMonitoring();
   const [activePage, setActivePage] = useState<AppPage>('dashboard');
-  const [activeFeature, setActiveFeature] = useState(featureCatalog[0]);
+  const [activeFeature, setActiveFeature] = useState(visibleFeatureCatalog[0]);
   const [events, setEvents] = useState(initialEvents);
-  const [serverUrl, setServerUrl] = useState('http://192.168.1.100:8003');
-  const [savedUrl, setSavedUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState<AppConfigFieldResolution | null>(null);
   const [agentSnapshot, setAgentSnapshot] = useState(emptyAgentSnapshot);
   const [agentBusy, setAgentBusy] = useState<AgentSource | 'all' | null>(null);
   const [agentError, setAgentError] = useState('');
@@ -339,20 +342,15 @@ export function App() {
     }
   };
 
-  const saveServerUrl = (): void => {
-    const normalizedUrl = serverGateway.setBaseUrl(serverUrl);
-    const eventTone: TimelineEvent['tone'] = normalizedUrl ? 'cyan' : 'amber';
-    setSavedUrl(normalizedUrl);
-    setEvents((current) => [
-      {
-        id: Date.now(),
-        time: timeLabel(),
-        title: 'Server 地址已保存',
-        detail: normalizedUrl || '地址已清空，连接保持关闭。',
-        tone: eventTone,
-      },
-      ...current,
-    ].slice(0, 5));
+  // 设置面板每次读到/写完配置都回传一次：链路节点照着真实的生效地址走，
+  // 不再靠一个只存在于渲染进程内存里、谁都没在用的 savedUrl。
+  const applyServerResolution = (resolution: AppConfigResolution): void => {
+    const next = resolution.serverUrl;
+    setServerUrl((current) => (
+      current !== null && current.value === next.value && current.source === next.source
+        ? current
+        : next
+    ));
   };
 
   return (
@@ -399,6 +397,21 @@ export function App() {
             <IncidentPanel />
           </main>
         </div>
+      ) : activePage === 'away' ? (
+        <div className="app-shell focus-shell">
+          <header className="topbar">
+            <div className="view-title">
+              <h1>返岗汇总</h1>
+              <span>离席期间发生的事，按播报优先级排好</span>
+            </div>
+            <div className="topbar-status">
+              <span className="runtime-label">Electron {runtime.versions.electron}</span>
+            </div>
+          </header>
+          <main className="focus-page">
+            <AwaySummaryPanel />
+          </main>
+        </div>
       ) : (
       <div className="app-shell">
       <header className="topbar">
@@ -443,7 +456,7 @@ export function App() {
               <div className="link-node">
                 <span className="link-node-icon"><span>2</span></span>
                 <strong>Server</strong>
-                <small>{savedUrl ? '地址已配置' : '等待配置'}</small>
+                <small>{serverUrl ? serverUrl.value : '读取配置中…'}</small>
               </div>
               <div className="link-line is-muted"><i /></div>
               <div className="link-node is-muted">
@@ -454,33 +467,7 @@ export function App() {
             </div>
           </div>
 
-          <aside className="connection-panel">
-            <div className="panel-heading">
-              <div>
-                <span className="panel-kicker">CONNECTION</span>
-                <h2>连接工作台</h2>
-              </div>
-              <span className="panel-icon" aria-hidden="true"><Server size={18} /></span>
-            </div>
-            <label htmlFor="server-url">Server 地址</label>
-            <div className="url-control">
-              <input
-                id="server-url"
-                value={serverUrl}
-                onChange={(event) => setServerUrl(event.target.value)}
-                placeholder="http://192.168.1.100:8003"
-              />
-              <button type="button" onClick={saveServerUrl}><Save size={15} />保存</button>
-            </div>
-            <dl className="connection-meta">
-              <div><dt>控制链路</dt><dd>Electron → HTTP → Server</dd></div>
-              <div><dt>机器人链路</dt><dd>Server → WebSocket → ESP32</dd></div>
-              <div><dt>当前模式</dt><dd className="mock-value">MOCK / SAFE</dd></div>
-            </dl>
-            <p className="panel-note">
-              此阶段不会发送真实请求。接口与鉴权将在 Server 适配器中接入。
-            </p>
-          </aside>
+          <ServerSettingsPanel onResolved={applyServerResolution} />
         </section>
 
         <section className="agent-monitor" id="agent-monitor">
@@ -680,14 +667,14 @@ export function App() {
           <div className="capabilities">
             <div className="section-heading">
               <div>
-                <span className="section-index">8 CAPABILITIES</span>
-                <h2>能力占位</h2>
+                <span className="section-index">{visibleFeatureCatalog.length} CAPABILITIES</span>
+                <h2>已接入能力</h2>
               </div>
-              <p>每张卡片对应一个独立扩展入口</p>
+              <p>每张卡片都连着真实链路，点了就是真发生</p>
             </div>
 
             <div className="feature-grid">
-              {featureCatalog.map((feature) => (
+              {visibleFeatureCatalog.map((feature) => (
                 <article
                   className={`feature-card tone-${feature.tone} ${activeFeature.id === feature.id ? 'is-active' : ''}`}
                   key={feature.id}
@@ -706,6 +693,7 @@ export function App() {
                       if (feature.id === 'coding-agent-status') focusAgentMonitor();
                       if (feature.id === 'focus-mode') setActivePage('focus');
                       if (feature.id === 'incident-assistant') setActivePage('incident');
+                      if (feature.id === 'away-summary') setActivePage('away');
                       if (feature.id === 'feishu-briefing') {
                         focusFeishuWorkspace();
                         void refreshFeishuBriefing();
@@ -733,7 +721,7 @@ export function App() {
             <div className="active-feature">
               <span>当前模块 / {activeFeature.code}</span>
               <strong>{activeFeature.title}</strong>
-              <p>模块已注册，可从当前 Mock 实现逐步替换为真实适配器。</p>
+              <p>{activeFeature.summary}</p>
             </div>
 
             <ol className="event-list">
@@ -753,7 +741,7 @@ export function App() {
 
       <footer>
         <span>XIAOFEI SYSTEM / MACOS {runtime.platform.toUpperCase()}</span>
-        <span>Agent Hook 已本机接入 / Server 与机器人链路仍为安全占位</span>
+        <span>Agent Hook 已本机接入 / Server 地址与设备号统一取自配置中心</span>
       </footer>
       </div>
       )}

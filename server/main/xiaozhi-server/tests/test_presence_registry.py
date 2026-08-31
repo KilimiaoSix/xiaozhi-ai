@@ -360,6 +360,84 @@ def test_rejects_new_instance_with_older_observation(payload):
         registry.accept(parse(payload, clock.utcnow()))
 
 
+def test_stale_slot_can_be_taken_over_at_any_sequence(payload):
+    """一次拒绝不能把工位永久锁死。
+
+    presence-agent 的 sequence 只增不减、实例 id 进程内固定：首条 seq=1 被 409
+    掉之后它再也回不到 sequence 1，此后条条落进「新实例必须从 sequence 1 开始」
+    分支，编排器一条上报都收不到、GET 永远 stale，只能人工重启。旧记录一旦
+    stale（持有者早就不报了，对外也一直是 stale），槽位必须能被新实例在任意
+    sequence 上接管。
+    """
+    clock = FakeClock()
+    registry = PresenceRegistry(clock=clock, stale_after_seconds=30.0)
+    registry.accept(parse(payload, clock.utcnow()))
+
+    # 新实例带着回拨过的时钟起来：首条 seq=1 被判「不能替换更新的观测」
+    payload.update(
+        event_id="b98af960-9166-45f3-bfb4-2f9fa6b9938f",
+        agent_instance_id="f2cc9abc-e8f2-4d6b-aa5d-34dbc560538b",
+        observed_at="2026-08-18T01:10:29.000Z",
+    )
+    with pytest.raises(PresenceOutOfOrderError):
+        registry.accept(parse(payload, clock.utcnow()))
+
+    # 旧持有者已经不报了，记录过期；新实例的 sequence 早涨到 2 回不去了
+    clock.advance(31.0)
+    payload.update(
+        event_id="7ebd1794-c471-4a73-8ec5-0f0307fd901a",
+        sequence=2,
+        observed_at="2026-08-18T01:10:30.500Z",
+    )
+
+    result = registry.accept(parse(payload, clock.utcnow()))
+
+    assert result["accepted"] is True
+    stored = registry.get("desk-test")
+    assert stored["agent_instance_id"] == "f2cc9abc-e8f2-4d6b-aa5d-34dbc560538b"
+    assert stored["sequence"] == 2
+
+
+def test_stale_slot_takeover_survives_a_rolled_back_clock(payload):
+    """NTP 校正 / 睡眠唤醒把新实例的时钟拨到旧观测之前。
+
+    记录已经 stale 时这条也必须收下：否则工位要一直等到墙钟追平才解锁，
+    回拨超过 5 分钟的话连「更旧的观测」这条校验都过不去，永远解锁不了。
+    """
+    clock = FakeClock()
+    registry = PresenceRegistry(clock=clock, stale_after_seconds=30.0)
+    registry.accept(parse(payload, clock.utcnow()))
+    clock.advance(31.0)
+    payload.update(
+        event_id="b98af960-9166-45f3-bfb4-2f9fa6b9938f",
+        agent_instance_id="f2cc9abc-e8f2-4d6b-aa5d-34dbc560538b",
+        sequence=4,
+        observed_at="2026-08-18T01:00:00.000Z",
+    )
+
+    result = registry.accept(parse(payload, clock.utcnow()))
+
+    assert result["accepted"] is True
+    assert registry.get("desk-test")["observed_at"] == "2026-08-18T01:00:00.000Z"
+
+
+def test_fresh_slot_still_requires_a_new_instance_to_start_at_sequence_one(payload):
+    """记录还新鲜时旧规则一条不放松：在场的持有者不能被另一路 agent 顶掉。"""
+    clock = FakeClock()
+    registry = PresenceRegistry(clock=clock, stale_after_seconds=30.0)
+    registry.accept(parse(payload, clock.utcnow()))
+    clock.advance(29.0)
+    payload.update(
+        event_id="b98af960-9166-45f3-bfb4-2f9fa6b9938f",
+        agent_instance_id="f2cc9abc-e8f2-4d6b-aa5d-34dbc560538b",
+        sequence=2,
+        observed_at="2026-08-18T01:10:59.000Z",
+    )
+
+    with pytest.raises(PresenceOutOfOrderError):
+        registry.accept(parse(payload, clock.utcnow()))
+
+
 def test_unknown_workstation_returns_none():
     registry = PresenceRegistry(clock=FakeClock())
 

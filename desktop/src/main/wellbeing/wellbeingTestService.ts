@@ -65,16 +65,18 @@ const WELLBEING_TEST_EVENTS = {
 /** 从桌面 APP 主动触发一次与首次久坐提醒一致的模拟事件。 */
 export class WellbeingTestService {
   constructor(
-    private readonly fetcher: Fetcher = fetch,
-    private readonly baseUrl = process.env.DESKPET_SERVER ?? 'http://127.0.0.1:8003',
+    private readonly fetcher: Fetcher,
+    /** 地址按次向配置中心取，不再自己读 DESKPET_SERVER。 */
+    private readonly resolveBaseUrl: () => string,
   ) {}
 
   async sendTest(kind: WellbeingTestKind): Promise<WellbeingTestResult> {
+    const baseUrl = this.resolveBaseUrl();
     // discoverRobotDeviceId 把「连不上」和「设备数不为 1」都吞成 null，
     // 两种排查方向完全不同，这里自己查一次以便分辨。
     let devices: unknown[];
     try {
-      const listing = await this.fetcher(`${this.baseUrl}/xiaozhi/event/devices`, {
+      const listing = await this.fetcher(`${baseUrl}/xiaozhi/event/devices`, {
         signal: AbortSignal.timeout(5000),
       });
       if (!listing.ok) {
@@ -100,7 +102,7 @@ export class WellbeingTestService {
     }
     const deviceId = devices[0];
 
-    const response = await this.fetcher(`${this.baseUrl}/xiaozhi/event/push`, {
+    const response = await this.fetcher(`${baseUrl}/xiaozhi/event/push`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ device_id: deviceId, ...WELLBEING_TEST_EVENTS[kind] }),

@@ -16,13 +16,20 @@ import type {
   PomodoroStatus,
 } from './modules/features/focus-mode/types';
 import type {
+  AwayIpcResult,
+  AwaySummaryResult,
+} from './modules/features/away-summary/types';
+import type {
   IncidentAckResult,
   IncidentDiagnoseResult,
   IncidentIpcResult,
   IncidentListResult,
 } from './modules/features/incident-assistant/types';
+import type { AppConfig, AppConfigResolution } from './shared/appConfig';
 import type { XiaofeiDesktopApi } from './shared/contracts';
+import { AWAY_CHANNELS } from './main/away/registerAwaySummaryIpc';
 import { CAMERA_STREAM_CHANNELS } from './main/camera/cameraStreamIpc';
+import { CONFIG_CHANNELS } from './main/config/registerConfigIpc';
 import { INCIDENT_CHANNELS } from './main/incident/registerIncidentIpc';
 import { POMODORO_CHANNELS } from './main/pomodoro/registerPomodoroIpc';
 import { WELLBEING_CHANNELS } from './main/wellbeing/wellbeingIpc';
@@ -70,6 +77,13 @@ const desktopApi: XiaofeiDesktopApi = {
       return () => { ipcRenderer.removeListener(AGENT_HOOKS_CHANNELS.snapshotChanged, handler); };
     },
   },
+  // 返岗汇总与告警管理同理走信封，由 awaySummaryDesktopGateway 还原
+  away: {
+    getSummary: () => (
+      ipcRenderer.invoke(AWAY_CHANNELS.summary) as
+        Promise<AwayIpcResult<AwaySummaryResult>>
+    ),
+  },
   camera: {
     getPermissionStatus: () => ipcRenderer.invoke('camera:get-permission'),
     requestPermission: () => ipcRenderer.invoke('camera:request-permission'),
@@ -87,6 +101,11 @@ const desktopApi: XiaofeiDesktopApi = {
         return () => ipcRenderer.removeListener(CAMERA_STREAM_CHANNELS.event, handler);
       },
     },
+  },
+  config: {
+    get: () => invoke<AppConfigResolution>(CONFIG_CHANNELS.get),
+    update: (patch: Partial<AppConfig>) =>
+      invoke<AppConfigResolution>(CONFIG_CHANNELS.update, patch),
   },
   feishu: {
     getStatus: () => invoke<FeishuConnectionStatus>(FEISHU_CHANNELS.status),

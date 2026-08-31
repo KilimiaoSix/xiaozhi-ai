@@ -131,6 +131,100 @@ async def test_default_wait_stays_under_the_client_http_timeout():
     assert DEFAULT_PUSH_WAIT_SECONDS <= 3.0
 
 
+# ------------------------------------------- 抢播不能顺带取消「本轮说完就收会话」
+
+
+class _WrapupConn:
+    """正在播确认语、且这轮说完就该收会话的连接假体。
+
+    比 FakeConn 多的字段都是真实 handleAbortMessage 会碰的：本用例刻意不注入
+    abort 替身，走真打断，否则测不出「抢播清零收场位」这条接缝。
+    """
+
+    class _WS:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, payload):
+            self.sent.append(payload)
+
+    class _Log:
+        def bind(self, **_kw):
+            return self
+
+        def info(self, *_a, **_k):
+            pass
+
+        def warning(self, *_a, **_k):
+            pass
+
+    def __init__(self):
+        self.config = {"push_speak": {"wait_seconds": 1, "preempt_speaking": True}}
+        self.logger = self._Log()
+        self.websocket = self._WS()
+        self.session_id = "sess-wrapup"
+        self.tts = object()
+        self.client_is_speaking = True  # 确认语正在播
+        self.client_have_voice = False
+        self.client_abort = False
+        # 用户刚说「我去开会了」：确认语的 LAST 句播完就该关这轮会话
+        self.close_after_chat = True
+
+    def clear_queues(self):
+        pass
+
+    def clearSpeakStatus(self):
+        self.client_is_speaking = False
+
+
+@pytest.mark.asyncio
+async def test_preempting_its_own_playback_keeps_a_pending_session_wrapup():
+    """服务端为插播而发的打断，不该把「声明离开 → 收会话」一起吃掉。
+
+    handleAbortMessage 无条件清零 close_after_chat（那是给用户主动打断用的
+    语义：打断告别就等于不走了），而抢播调的是同一个函数、不带 reason。真机
+    时序：确认语「知道了，我帮你看着工位」播报期间来了条告警推送 → 抢播 →
+    收场位被清零，确认语的 LAST 永远到不了 sendAudioHandle 的关闭判断，
+    owner_status 已经落盘成 meeting，会话却继续挂着。
+    """
+    conn = _WrapupConn()
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+
+    clock = {"t": 0.0}
+
+    def now():
+        clock["t"] += 0.3
+        return clock["t"]
+
+    busy = await ensure_speakable(conn, sleep=sleep, clock=now)
+
+    assert busy is None  # 抢播成功，本次推送可以播
+    assert conn.client_abort is True  # 打断确实发生了
+    assert conn.close_after_chat is True  # 收场位留着，交给本次推送的 LAST 去执行
+
+
+@pytest.mark.asyncio
+async def test_preempt_does_not_invent_a_wrapup_that_was_not_pending():
+    """本来就没有待办收场的连接，抢播后照旧不收会话。"""
+    conn = _WrapupConn()
+    conn.close_after_chat = False
+
+    async def sleep(_seconds):
+        pass
+
+    clock = {"t": 0.0}
+
+    def now():
+        clock["t"] += 0.3
+        return clock["t"]
+
+    assert await ensure_speakable(conn, sleep=sleep, clock=now) is None
+    assert conn.close_after_chat is False
+
+
 class _GateConn:
     """push_work_event 走完 alert+speak 所需的最小连接桩。"""
 

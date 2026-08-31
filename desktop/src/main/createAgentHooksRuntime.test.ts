@@ -51,6 +51,16 @@ describe('createAgentHooksRuntime', () => {
       userDataPath,
       electronPath: process.execPath,
       platform: 'linux',
+      // 地址与设备号一律来自配置中心；这里给一台明确的设备，免得测试进程
+      // 顺手启动半小时的设备自动发现轮询。
+      config: {
+        get: () => ({
+          serverUrl: 'http://127.0.0.1:8003',
+          deviceId: 'dc:da:0c:26:9a:60',
+          authToken: '',
+        }),
+        subscribe: () => () => {},
+      },
     });
 
     await expect(runtime.install('codex')).resolves.toMatchObject({

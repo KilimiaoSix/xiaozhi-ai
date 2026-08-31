@@ -18,12 +18,17 @@ import type {
   PomodoroStatus,
 } from '../modules/features/focus-mode/types';
 import type {
+  AwayIpcResult,
+  AwaySummaryResult,
+} from '../modules/features/away-summary/types';
+import type {
   IncidentAckResult,
   IncidentDiagnoseResult,
   IncidentIpcResult,
   IncidentListResult,
 } from '../modules/features/incident-assistant/types';
 import type { WellbeingTestKind } from '../modules/features/wellbeing/contracts';
+import type { AppConfig, AppConfigResolution } from './appConfig';
 
 export interface RuntimeInfo {
   platform: NodeJS.Platform;
@@ -59,6 +64,12 @@ export interface IncidentDesktopApi {
   diagnose: (incidentId: string) => Promise<IncidentIpcResult<IncidentDiagnoseResult>>;
 }
 
+// 返岗汇总同样走信封（AwayGatewayError 的 code/status 必须以数据形式跨 contextBridge）。
+// 这条链路只读：没有清账动作，清账在 Server 侧真的播报之后完成。
+export interface AwayDesktopApi {
+  getSummary: () => Promise<AwayIpcResult<AwaySummaryResult>>;
+}
+
 export interface FeishuDesktopApi {
   getStatus: () => Promise<FeishuConnectionStatus>;
   getBriefing: () => Promise<FeishuBriefingSnapshot>;
@@ -82,10 +93,19 @@ export interface WellbeingDesktopApi {
   sendTest: (kind: WellbeingTestKind) => Promise<{ deviceId: string }>;
 }
 
+// 配置中心：读回的是每字段的生效值与来源（env / 文件 / 默认值），
+// 写入的是「配置文件」那一层——env 覆盖期间写了也不会立刻生效，界面据此提示。
+export interface ConfigDesktopApi {
+  get: () => Promise<AppConfigResolution>;
+  update: (patch: Partial<AppConfig>) => Promise<AppConfigResolution>;
+}
+
 export interface XiaofeiDesktopApi {
   getRuntimeInfo: () => RuntimeInfo;
   agentHooks: AgentHooksDesktopApi;
+  away: AwayDesktopApi;
   camera: CameraDesktopApi;
+  config: ConfigDesktopApi;
   feishu: FeishuDesktopApi;
   pomodoro: PomodoroDesktopApi;
   incident: IncidentDesktopApi;

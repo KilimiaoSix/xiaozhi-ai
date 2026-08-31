@@ -50,4 +50,22 @@ describe('AppSidebar', () => {
     await act(async () => focus?.click());
     expect(onNavigate).toHaveBeenCalledWith('focus');
   });
+
+  it('返岗汇总有自己的工作区入口', async () => {
+    const onNavigate = vi.fn();
+    await act(async () => root.render(
+      <AppSidebar
+        activePage="away"
+        agentHookCount={0}
+        cameraMonitoring={{ enabled: false, connection: 'idle' }}
+        onNavigate={onNavigate}
+      />,
+    ));
+
+    const away = container.querySelector<HTMLButtonElement>('button[aria-label="返岗"]');
+    expect(away?.getAttribute('aria-current')).toBe('page');
+
+    await act(async () => away?.click());
+    expect(onNavigate).toHaveBeenCalledWith('away');
+  });
 });

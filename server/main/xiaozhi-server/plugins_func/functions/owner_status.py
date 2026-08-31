@@ -30,6 +30,11 @@ TAG = __name__
 # "11:30" / "08:00" 这类只有时分的表达；HH 允许 0-23，两位或一位都行
 _TIME_ONLY_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
+# 目标状态语义是"主人将不在工位"的那几种；声明成这类状态后应该收场，
+# 呼应 handle_exit_intent.py 的用法。available 是唯一"人还在/回来了"的状态，
+# 不在其中——查询不改状态，也天然不触发。
+_STATION_LEAVING_STATES = VALID_STATES - {STATUS_AVAILABLE}
+
 
 def _now() -> datetime:
     """本地时区当前时间。单独抽出来是为了测试能 monkeypatch 固定时钟。"""
@@ -114,6 +119,19 @@ clear_owner_status_function_desc = {
 
 def _reply(text: str, result: str = "ok") -> ActionResponse:
     return ActionResponse(action=Action.RESPONSE, result=result, response=text)
+
+
+def _mark_close_after_chat(conn: "ConnectionHandler") -> None:
+    """声明离开类状态后，让确认语播完就自然收场（同 handle_exit_intent.py）。
+
+    真实 ConnectionHandler 在 __init__ 里总是有 close_after_chat 属性，这里
+    只是防御极端的 conn 实现（没有该属性也无法动态创建）——赋值失败就静默
+    跳过，绝不能因为收场这一步失败让确认语回复不出去。
+    """
+    try:
+        conn.close_after_chat = True
+    except AttributeError:
+        pass
 
 
 def _normalize_expected_return(value: Optional[str]) -> Optional[str]:
@@ -258,6 +276,9 @@ async def set_owner_status(
         )
     except ValueError as e:
         return _reply(f"没太明白，能再说一次吗？（{e}）", "invalid_input")
+
+    if state in _STATION_LEAVING_STATES:
+        _mark_close_after_chat(conn)
 
     return _reply(_confirm_text(status), "ok")
 

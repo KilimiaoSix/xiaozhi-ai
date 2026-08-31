@@ -8,10 +8,21 @@
 1. **只说公开信息。** 会议主题、请假原因不出 owner_status，这里也只用
    state / expected_return 拼固定模板，绝不把 owner_status 的其它字段念出去。
 2. **防抖。** presence 上报在人站着不动时也会持续来（心跳 15 秒一条），
-   没有冷却期的话来访者会被同一句话反复轰炸。冷却只在推送成功后才计，
-   设备不在线的那一次根本没发生，不能把冷却用掉。
+   没有冷却期的话来访者会被同一句话反复轰炸。冷却只在**话真出声**之后才计：
+   设备不在线、或设备忙到 push_work_event 降级为仅提示（返回 False，不抛异常）
+   的那一次根本没发生，不能把冷却用掉。
 3. **留言窗口是有界的。** 播报成功后开一个窗口（默认 90 秒），只有窗口内
    这台设备的下一句 ASR 才当留言；否则主人自己回来说的话会被记成留言。
+   除了被消费与自然过期，主人被确认返岗时 presence 编排会调 cancel_window
+   提前失效——返岗首帧常被判 unknown，那一下开出来的窗口正好罩住他的第一句话。
+4. **候选留言要先过噪声过滤，入账要带确认复述。** 真机实锤过：设备在
+   Listening 态下唤醒模型是关的，一句被 ASR 误转写的唤醒词（「你好么办」
+   之类）会被当场原样记成留言、无任何确认。所以候选文本先归一（复用
+   dialogue_gate._normalize，同音混淆表也一并生效），命中唤醒词表或归一后
+   不足 4 个字就判定为噪声：不入账，改口再问一次；第二次还是噪声就礼貌
+   收场，不问第三次。真正入账后的应答也不再是固定的「记下了」，而是带上
+   留言内容复述一遍，播报超长时截断（台账仍存全文），让主人和来访者都能
+   当场确认记的是不是那句话。
 
 handle_asr_text 返回要说的回复语，**不负责推送**——集成方（startToChat）
 拿到字符串后自己走 push_work_event，避免本模块和会话生命周期耦合。
@@ -42,11 +53,21 @@ TEXT_LEAVE = "他今天请假，不在工位。有重要的事我可以帮你记
 TEXT_AWAY_WITH_TIME = "他暂时不在工位，预计{time}回来。需要帮你留句话吗？"
 TEXT_GENERIC = "他暂时不在工位，需要帮你留句话吗？"
 
-REPLY_RECORDED = "记下了，他回来我就提醒。"
 REPLY_DECLINED = "好的，他回来我就说你来过。"
+# 入账成功的应答带确认复述，不再是固定的「记下了」——让来访者当场确认
+# 记的是不是那句话；brief 超长时会被截断（见 BROADCAST_TRUNCATE_CHARS）。
+REPLY_RECORDED_TEMPLATE = "记下了：{brief}。他回来我就转达"
+# 疑似噪声（唤醒词误转写/超短句）时的再问文案，风格与其它访客话术一致
+REPLY_ASK_AGAIN = "不好意思没听清，你要带的话是？"
 
 # 来访者身份未知，一律记成「同事」——不能凭空给留言安一个名字
 VISITOR_MESSAGE_PREFIX = "有同事留言："
+
+# 候选留言归一（同 dialogue_gate._normalize 口径）后不足这个字数，
+# 大概率是「嗯」「啊」这类无意义音节或误转写残片，不值得当场记下来。
+NOISE_MIN_CHARS = 4
+# 确认复述播报的长度上限：台账永远存全文，只有念给来访者/主人听的这句会截断。
+BROADCAST_TRUNCATE_CHARS = 40
 
 # 否定词只在短句里生效：「没有别的事，就是日志方案已经发飞书了」里的「没有」
 # 是内容不是拒绝，按包含匹配会把整条留言吞掉。
@@ -155,8 +176,13 @@ class VisitorFlow:
 
             away_ledger = get_away_ledger(config)
 
+        # 噪声过滤复用 dialogue_gate 的归一与唤醒词口径，直接 import 用，不复制实现。
+        from core.dialogue_gate import DialogueGate, _normalize
+
         self._owner_status = owner_status_store
         self._ledger = away_ledger
+        self._normalize = _normalize
+        self._wake_words = DialogueGate._collect_wake_words(config or {})
         self._push_event = push_event or _default_push_event
         self._device_resolver = device_resolver
         self._clock = clock or datetime.now
@@ -179,6 +205,9 @@ class VisitorFlow:
         self._last_greeted: dict[str, datetime] = {}
         # device_id -> 留言窗口关闭时刻
         self._windows: dict[str, datetime] = {}
+        # device_id -> 已经用过一次「疑似噪声，再问一次」的机会；
+        # 命中过一次的设备下次再判定为噪声就直接收场，不再问第三次。
+        self._noise_retry_used: set[str] = set()
 
     # ---------- 流程四·应答 ----------
 
@@ -214,7 +243,7 @@ class VisitorFlow:
 
         text = self._compose_announcement()
         try:
-            await self._push_event(
+            spoke = await self._push_event(
                 conn,
                 text=text,
                 emotion=DEFAULT_EMOTION,
@@ -227,10 +256,24 @@ class VisitorFlow:
             self._logger.warning(f"来访应答推送失败，将在下次上报重试: {e}")
             return False
 
+        if not spoke:
+            # 「没抛异常」不等于「念出来了」：设备忙时 push_work_event 只闪一行
+            # OLED 提示就降级为仅提示并返回 False，问句一个字都没出去。此时既不能
+            # 记冷却（否则访客再站 180 秒也等不到第二次应答），更不能开留言窗口
+            # （否则窗口里下一句路过同事的闲聊、或主人回来说的第一句会被当成留言
+            # 入账）。语义与上面推送失败那条一致：下一条上报重试。
+            self._logger.info(
+                f"工位 {workstation_id} 来访应答降级为静音（设备忙），"
+                f"不记冷却也不开留言窗口，将在下次上报重试"
+            )
+            return False
+
         with self._lock:
             self._last_greeted[workstation_id] = now
             # 只有话真说出口了才开留言窗口
             self._windows[device_id] = now + timedelta(seconds=self._message_window_s)
+            # 新一轮来访播报，清掉上一轮可能残留的噪声重试标记
+            self._noise_retry_used.discard(device_id)
         self._logger.info(f"工位 {workstation_id} 有人来访，已应答：{text}")
         return True
 
@@ -277,15 +320,39 @@ class VisitorFlow:
             if now >= expires:
                 # 窗口过期：来访者转身走了，之后这台设备听到的是别人的话
                 self._windows.pop(device_id, None)
+                self._noise_retry_used.discard(device_id)
                 return None
             if not content:
                 # 空识别结果不算一次回答，窗口继续开着等真正那句
                 return None
             self._windows.pop(device_id, None)
+            already_retried = device_id in self._noise_retry_used
 
         if _is_decline(content):
+            with self._lock:
+                self._noise_retry_used.discard(device_id)
             self._logger.info("来访者谢绝留言，不入账")
             return REPLY_DECLINED
+
+        if self._is_noise(content):
+            if already_retried:
+                # 第二次仍是噪声：大概率环境音或唤醒词又一次被误转写，
+                # 礼貌收场，不再问第三次，免得反复打扰来访者。
+                with self._lock:
+                    self._noise_retry_used.discard(device_id)
+                self._logger.info(f"来访留言连续两次疑似噪声，礼貌收场，不入账：{content}")
+                return REPLY_DECLINED
+            # 第一次疑似噪声（唤醒词误转写/超短句）：不入账，重开窗口再问一次
+            with self._lock:
+                self._noise_retry_used.add(device_id)
+                self._windows[device_id] = now + timedelta(
+                    seconds=self._message_window_s
+                )
+            self._logger.info(f"来访留言疑似噪声，不入账，再问一次：{content}")
+            return REPLY_ASK_AGAIN
+
+        with self._lock:
+            self._noise_retry_used.discard(device_id)
 
         # 来访时间由台账按记账时刻自动打上；身份未知就记「同事」
         self._ledger.record(
@@ -294,7 +361,37 @@ class VisitorFlow:
             source="visitor",
         )
         self._logger.info(f"已记录来访留言：{content}")
-        return REPLY_RECORDED
+        return self._compose_recorded_reply(content)
+
+    def _is_noise(self, content: str) -> bool:
+        """归一后不足 4 个字，或命中唤醒词表，判定为噪声候选。"""
+        normalized = self._normalize(content)
+        if len(normalized) < NOISE_MIN_CHARS:
+            return True
+        return any(word in normalized for word in self._wake_words)
+
+    @staticmethod
+    def _compose_recorded_reply(content: str) -> str:
+        """确认复述：台账存全文，这里只截断念给人听的这句。"""
+        brief = content
+        if len(brief) > BROADCAST_TRUNCATE_CHARS:
+            brief = brief[:BROADCAST_TRUNCATE_CHARS] + "…"
+        return REPLY_RECORDED_TEMPLATE.format(brief=brief)
+
+    def cancel_window(self, device_id: str) -> None:
+        """让这台设备的留言窗口立刻失效（幂等）。
+
+        窗口原本只有两个出口：被一次 ASR 消费，或自然过期。主人返岗被确认时
+        必须还有第三个出口——返岗首帧因角度被判 unknown 会走访客分支开出一个
+        90 秒窗口，identity 随后收敛到 owner 正常迎接，窗口却纹丝不动；他开口
+        说的第一句在对话门之前就被 handle_asr_text 吃掉，记成「有同事留言」、
+        答一句「记下了」，请求根本没进 LLM。由 presence 编排在确认 owner 时调用。
+        """
+        if not device_id:
+            return
+        with self._lock:
+            self._windows.pop(device_id, None)
+            self._noise_retry_used.discard(device_id)
 
     def has_open_window(self, device_id: str) -> bool:
         with self._lock:

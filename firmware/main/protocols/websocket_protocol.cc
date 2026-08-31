@@ -47,6 +47,7 @@ bool WebsocketProtocol::Start() {
         ESP_LOGW(TAG, "Initial connect failed, will retry every %d ms",
             WEBSOCKET_KEEPALIVE_TICK_MS * WEBSOCKET_RECONNECT_INTERVAL_TICKS);
     }
+    last_connect_attempt_ = std::chrono::steady_clock::now();
     return true;
 }
 
@@ -71,8 +72,23 @@ void WebsocketProtocol::OnKeepaliveTick() {
         return;
     }
     reconnect_ticks_ = 0;
+
+    // Connect 是彻底同步阻塞的（DNS + connect() + 握手 + server hello），而这个回调
+    // 经 Application::Schedule 跑在主事件循环任务上：黑洞链路下单次可达数十秒，
+    // 期间唤醒词、按键、状态栏全部得不到处理。而定时器仍以固定节奏往 main_tasks_
+    // 里压 tick——只按 tick 计数重连，到达率会大于服务率，积压无界增长，断网越久
+    // 设备越迟钝。用单调时钟给"两次阻塞尝试之间"设下限：积压的陈旧 tick 在这里
+    // O(µs) 空转，队列必然排空。时刻记在尝试**结束**时，阻塞了多久就从多久之后
+    // 再算间隔，保证每次尝试后主循环至少有一整个重连间隔是可响应的。
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_connect_attempt_ < std::chrono::milliseconds(
+            WEBSOCKET_KEEPALIVE_TICK_MS * WEBSOCKET_RECONNECT_INTERVAL_TICKS)) {
+        return;
+    }
+
     ESP_LOGI(TAG, "Reconnecting to websocket server");
     Connect(false);
+    last_connect_attempt_ = std::chrono::steady_clock::now();
 }
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {

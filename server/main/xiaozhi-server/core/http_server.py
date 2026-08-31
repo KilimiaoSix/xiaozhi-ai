@@ -416,6 +416,31 @@ class SimpleHttpServer:
 
             app.on_startup.append(start_morning_brief)
             app.on_cleanup.append(stop_morning_brief)
+
+        # 番茄钟会话跨重启：上个进程留下的会话在这里装回内存，仍在相位内的
+        # 继续计时、设备回连后刷新画面，已过期的推一次 idle 把设备那张停在
+        # 00:00 的倒计时收回去（不做的话只能靠用户手动 stop）。
+        async def restore_pomodoro(_app):
+            await pomodoro_manager.restore()
+
+        app.on_startup.append(restore_pomodoro)
+
+        # 告警状态同样跨重启：恢复观察窗的定稿只有内存里的观察任务能触发，
+        # 不装回来的话重启前正在观察的故障盘上永远停在 observing，桌面端
+        # 列表一直挂着一条「恢复观察中」，当天再次告警还会覆盖掉旧时间线。
+        if self.incident_handler:
+
+            async def restore_incidents(_app):
+                await get_incident_manager(self.config).restore()
+
+            app.on_startup.append(restore_incidents)
+
+        # 告警中继的巡检任务起在 start() 里，却一直没人停：wellbeing 与
+        # morning_brief 都是 on_startup + on_cleanup 成对注册的，这里补齐同款。
+        async def stop_alert_relay(_app):
+            await self.alert_relay_service.stop()
+
+        app.on_cleanup.append(stop_alert_relay)
         add_presence_routes(
             app,
             self.presence_handler,

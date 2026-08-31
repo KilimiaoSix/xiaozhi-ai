@@ -11,6 +11,7 @@ presence-agent 把工位在岗与本人识别结果 POST 给 Server，此前 Ser
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 import logging
 import time
 from typing import Any, Callable, Optional
@@ -48,6 +49,11 @@ DEFAULT_VOICE_ACTIVE_SECONDS = 60.0
 # 连续迎接十几次的"复读机"。冷却期内被复位也不再出声;返岗汇总不受冷却影响,
 # 有待播报事项时仍然送达(只是不再重复"早上好")。
 DEFAULT_GREETING_COOLDOWN_SECONDS = 180.0
+# 兄弟工位(同一台设备的另一路)在场证据的保鲜期。上报是变化事件流 + 每 15 秒
+# 一条心跳,连丢三条就说明那一路已经不报了(桌面端被关、presence-agent 挂了),
+# 它最后一次看到人的时刻会永远冻在那儿。不设保鲜期的话,一个冻住的「在岗」
+# 会永久压住另一路的离席判定——设备再也睡不着,离席窗口也再没开起来过。
+SIBLING_PRESENCE_TTL_SECONDS = 45.0
 DEFAULT_GREETING_OWNER = "早上好，今天也一起把事情搞定吧。"
 DEFAULT_GREETING_GENERIC = "你好，我在这儿。"
 DEFAULT_GREETING_EMOTION = "happy"
@@ -97,8 +103,13 @@ class _WorkstationState:
     asleep: bool = False
     present_since: Optional[float] = None
     absent_since: Optional[float] = None
+    # 最近一条 present 上报的时刻(clock 轴);同设备工位间仲裁时判证据是否新鲜
+    last_present_at: Optional[float] = None
     # 最近一次成功问候的时刻(clock 轴);迎接冷却的锚点
     last_greeted_at: Optional[float] = None
+    # 本轮到岗周期里是否已经按「主人」收过离席台账。identity 收敛比迎接慢时,
+    # 通用问候会先把 greeted 置上,后到的 owner 上报不能再被早退丢掉。
+    owner_settled: bool = False
 
 
 @dataclass(frozen=True)
@@ -250,7 +261,7 @@ class PresenceArrivalOrchestrator:
         if report.state == "present":
             await self._on_present(report, state, device_id, now)
         elif report.state == "absent":
-            await self._on_absent(state, device_id, now)
+            await self._on_absent(report.workstation_id, state, device_id, now)
 
     async def _on_present(
         self,
@@ -260,9 +271,27 @@ class PresenceArrivalOrchestrator:
         now: float,
     ) -> None:
         state.absent_since = None
+        state.last_present_at = now
         if state.present_since is None:
             state.present_since = now
+        if (report.identity or {}).get("state") == "owner":
+            # 流程四：认准是主人本人的这一刻，访客留言窗口必须当场失效。
+            # 返岗最初几帧常因角度被判 unknown 而走访客分支开出 90 秒窗口,
+            # 之后 identity 收敛到 owner 也不会把它关掉——主人开口的第一句会在
+            # 对话门之前被 handle_asr_text 吃掉,记成「有同事留言」再复述一遍。
+            # 放在所有早退之前:冷却期静默返岗、已迎接的心跳都得覆盖到。
+            self._cancel_visitor_window(device_id)
         if state.greeted:
+            # 本周期已经迎接过——访客分支刻意不置 greeted,走到这里的一定是
+            # 真到岗,所以不必重判访客,直接把「在岗」基态重新断言一遍。
+            # 必须在这条早退之前做:同一台设备可能被两个工位映射,看不见人的
+            # 那一路会把基态改写成「休眠」,而基态写入原本排在早退之后,于是
+            # 人在工位屏幕却常驻休眠,之后每条带 restore_after 的推送播完还会
+            # 被恢复成休眠。set_base_state 是幂等写,15 秒一条心跳重断言无害。
+            self._set_base_state(
+                device_id, self._settings.greeting_status, "", "neutral"
+            )
+            await self._settle_late_owner(report, state, device_id)
             return
 
         greeting = self._choose_greeting(report, state, now)
@@ -304,6 +333,13 @@ class PresenceArrivalOrchestrator:
             if summary is None:
                 state.greeted = True
                 state.asleep = False
+                # 静默返岗也要收账:不出声不代表人没回来。漏掉这一步 is_away()
+                # 就恒为真——主人在工位时发生的每一件事都被记成「离席期间发生」
+                # 进待播报队列,来访者流程还会对着在场的主人说他不在,离开时长
+                # 一路累加。此处什么都没念,pending 也是空的,不能 mark_reported。
+                if is_owner:
+                    state.owner_settled = True
+                    self._settle_return(reported=False)
                 return
             greeting = summary
         elif summary:
@@ -322,7 +358,7 @@ class PresenceArrivalOrchestrator:
         state.greeted = True
         state.asleep = False
         try:
-            await self._push_event(
+            spoke = await self._push_event(
                 conn,
                 text=greeting,
                 emotion=self._settings.greeting_emotion,
@@ -335,11 +371,56 @@ class PresenceArrivalOrchestrator:
             raise
         state.last_greeted_at = now
         if is_owner:
-            # 只有推送成功之后才清账：先清后推的话，一次断线就把同事的留言吞了
-            self._settle_return(reported=bool(summary))
+            state.owner_settled = True
+            # 只有真的念出来才清账：先清后推的话，一次断线就把同事的留言吞了。
+            # 「没抛异常」不等于「念出来了」——设备忙时 push_work_event 只打一行
+            # 日志、降级为仅提示并返回 False，那条留言一个字都没出声。
+            # 窗口照关：人确实回来了，不然来访者流程会把主人自己当访客。
+            self._settle_return(reported=bool(summary) and bool(spoke))
         self._logger.info(
             f"工位 {report.workstation_id} 到岗，已让设备 {device_id} 迎接：{greeting}"
         )
+
+    async def _settle_late_owner(
+        self, report: PresenceReport, state: _WorkstationState, device_id: str
+    ) -> None:
+        """identity 晚于迎接才收敛到 owner 时补做返岗收尾。
+
+        底片没录过(not_enrolled)、或者主人坐下后一直低头看显示器(no_face 等到
+        超时)，迎接都会按通用问候发出并置 greeted；两秒后收敛到 owner 的那条
+        上报若被早退丢掉，这一轮返岗汇总就永远不播，离席窗口也一直开着——主人
+        在岗期间发生的事继续被记成「离席期间发生」。
+
+        只补汇总、不补问候：问候已经说过了。汇总不受迎接冷却约束(冷却压的是
+        重复的「早上好」)，与主路径一致。
+        """
+        if state.owner_settled:
+            return
+        if (report.identity or {}).get("state") != "owner":
+            return
+
+        summary = self._compose_away_summary()
+        spoke = False
+        if summary:
+            conn = self._resolve_conn(device_id)
+            if conn is None:
+                # 设备还没上线：什么都别动，等它上线后的下一条上报再补
+                return
+            try:
+                spoke = bool(
+                    await self._push_event(
+                        conn,
+                        text=summary,
+                        emotion=self._settings.greeting_emotion,
+                        status=self._settings.greeting_status,
+                        speak=True,
+                    )
+                )
+            except Exception as e:
+                self._logger.warning(f"补播返岗汇总失败，台账保持不动: {e}")
+                return
+        state.owner_settled = True
+        self._settle_return(reported=bool(summary) and spoke)
 
     # ---------- 流程四/五：离席台账与来访者 ----------
 
@@ -363,6 +444,20 @@ class PresenceArrivalOrchestrator:
             except Exception as e:
                 self._logger.warning(f"读取主人状态失败，按主人在岗处理: {e}")
         return False
+
+    def _cancel_visitor_window(self, device_id: str) -> None:
+        """主人已确认在场：关掉这台设备上还开着的访客留言窗口。
+
+        与 _handle_visitor 同样自行吞异常——它挂在上报处理路径上，
+        且每条 owner 心跳都会走一次，失败不该影响迎接与休眠。
+        """
+        flow = self._visitor_flow
+        if flow is None:
+            return
+        try:
+            flow.cancel_window(device_id)
+        except Exception as e:
+            self._logger.warning(f"关闭访客留言窗口失败，已忽略: {e}")
 
     async def _handle_visitor(self, workstation_id: str) -> None:
         try:
@@ -396,20 +491,50 @@ class PresenceArrivalOrchestrator:
         except Exception as e:
             self._logger.warning(f"返岗台账收尾失败: {e}")
 
-    def _begin_away_window(self) -> None:
+    def _begin_away_window(self, started_at: Optional[datetime] = None) -> None:
         """确认离席后开始攒返岗汇总。
 
         先问 is_away() 再标记：离席心跳 15 秒一条，无条件调用会让台账
         每条心跳都重写一次落盘文件。
+
+        started_at 是「摄像头第一次报没人」的时刻，不是宽限期满的这一刻：
+        用后者当起点的话，返岗汇总里的离开时长永远少算一个宽限期。
         """
         ledger = self._away_ledger
         if ledger is None:
             return
         try:
             if not ledger.is_away():
-                ledger.mark_away()
+                ledger.mark_away(started_at)
         except Exception as e:
             self._logger.warning(f"标记离席失败: {e}")
+
+    def _sibling_workstation_present(
+        self, workstation_id: str, device_id: str, now: float
+    ) -> bool:
+        """同一台设备的另一个工位是不是还看得见人（且证据还新鲜）。
+
+        一台机器人可以被多个工位映射（真实配置里 desktop-local 与 desk-test
+        指向同一个 MAC）。基态按 device_id 存、离席台账是全局单例，两路对同一
+        目标的写入没有 owner 概念，谁后写谁赢——仲裁规则是「同设备有任一工位
+        在场即在场」。
+
+        只认新鲜证据：那一路彻底不报了的话，它的在岗状态会永远冻在最后一帧，
+        不设保鲜期就把「休眠钉死」换成了「永远睡不着」。
+        """
+        for other_id, other_device in self._settings.workstations.items():
+            if other_id == workstation_id or other_device != device_id:
+                continue
+            other = self._states.get(other_id)
+            if other is None or other.present_since is None:
+                continue
+            last_present_at = other.last_present_at
+            if (
+                last_present_at is not None
+                and now - last_present_at <= SIBLING_PRESENCE_TTL_SECONDS
+            ):
+                return True
+        return False
 
     def _choose_greeting(
         self, report: PresenceReport, state: _WorkstationState, now: float
@@ -429,13 +554,24 @@ class PresenceArrivalOrchestrator:
         return self._settings.greeting_generic
 
     async def _on_absent(
-        self, state: _WorkstationState, device_id: str, now: float
+        self,
+        workstation_id: str,
+        state: _WorkstationState,
+        device_id: str,
+        now: float,
     ) -> None:
         state.present_since = None
         if state.absent_since is None:
             state.absent_since = now
         if now - state.absent_since < self._settings.absent_grace_seconds:
             # 宽限期内：可能只是弯腰捡东西，别急着睡，也别复位到岗标记
+            return
+
+        # 同一台设备的兄弟工位还看得见人：这一路的 absent 不足以驱动降级。
+        # 基态与离席台账都是共享写入目标，让看不见人的那一路单方面写休眠会把
+        # 画面钉死在「工位没人」，还会把在场的主人记成离席。
+        if self._sibling_workstation_present(workstation_id, device_id, now):
+            state.absent_since = now
             return
 
         # 摄像头说没人，但设备上的语音对话还活跃：低头凑近机器人说话时姿态
@@ -452,8 +588,12 @@ class PresenceArrivalOrchestrator:
 
         # 确认是真的离开了，复位到岗周期，下次回来重新迎接
         state.greeted = False
-        # 流程五：从这一刻起的事件才算「离席期间发生的」，回来要汇总
-        self._begin_away_window()
+        state.owner_settled = False
+        # 流程五：离席期间发生的事件回来要汇总。窗口起点回拨到摄像头第一次
+        # 报没人的时刻——判定晚了一个宽限期，离开时长不该跟着少算。
+        self._begin_away_window(
+            datetime.now() - timedelta(seconds=max(0.0, now - state.absent_since))
+        )
 
         # 基态跟着离席走:睡则常驻休眠画面(sleepy 让离席期间的告警播完后
         # 顺带低头回到睡姿),不睡则传空值回落 pushHandle 的默认待机。

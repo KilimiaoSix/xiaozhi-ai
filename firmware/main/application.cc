@@ -20,6 +20,14 @@
 
 #define TAG "Application"
 
+// 自动聆听的本地超时（秒）。服务端主动播报（pushHandle.speak_on_device）播完后，
+// tts stop 会按 listening_mode_ 把设备推进 Listening，但没有任何一侧负责关麦：
+// 服务端的 no_voice_close_connect / _check_timeout 都看 last_activity_time，而它被
+// 固件 30s 一条的 ping 刷新，安静挂机永远判不到。设备就会无限期灌麦克风音频，
+// 且 Listening 态本地唤醒词引擎是关的（见 SetDeviceState）。阈值与服务端
+// dialogue_gate 的 window_seconds（config.yaml 默认 60）对齐。
+#define LISTENING_AUTO_STOP_TIMEOUT_SECONDS 60
+
 
 static const char* const STATE_STRINGS[] = {
     "unknown",
@@ -424,7 +432,9 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (device_state_ == kDeviceStateSpeaking) {
+        // aborted_ 在 tts start 时复位（见下），生命周期正好覆盖"已经打断、
+        // 但服务端的 tts stop 还没回来"这段窗口，期间到达的包一律丢弃
+        if (device_state_ == kDeviceStateSpeaking && !aborted_) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -631,6 +641,20 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
+
+            // clock_ticks_ 在 SetDeviceState 里进入每个状态时清零，天然就是本状态的
+            // 驻留秒数。自动聆听没人应答时本地自己退出，麦克风关闭、本地唤醒词恢复。
+            // ManualStop（按键手动聆听，由用户按键退出）与 Realtime（AEC 实时通话）
+            // 不在此列。
+            if (device_state_ == kDeviceStateListening &&
+                listening_mode_ == kListeningModeAutoStop &&
+                clock_ticks_ >= LISTENING_AUTO_STOP_TIMEOUT_SECONDS && protocol_) {
+                ESP_LOGW(TAG, "Listening timed out after %d seconds, back to idle",
+                    LISTENING_AUTO_STOP_TIMEOUT_SECONDS);
+                protocol_->SendStopListening();
+                SetDeviceState(kDeviceStateIdle);
+            }
+
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
         
@@ -677,14 +701,38 @@ void Application::OnWakeWordDetected() {
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
+        // AbortSpeaking 只发 abort，本地要等服务端回 tts stop 才真正切回
+        // Listening（异步）。但紧接着同步补发 SendWakeWordDetected 是安全的：
+        // 两条消息复用同一条已开的 protocol_ 连接顺序发出，不依赖 device_state_
+        // 是否已经跳到 Listening——上面 Idle 分支同样是在 SetListeningMode 把状态
+        // 切到 Listening 之前就发 SendWakeWordDetected（663/671 行），本地 FSM 状态
+        // 只是客户端记账，从不是发这条消息的前置条件。服务端一侧
+        // core/handle/abortHandle.py 的 handleAbortMessage 会被完整 await 完才处理
+        // 下一条消息，detect 到达时 client_is_speaking 已清；即便偶发提前到达，
+        // core/handle/receiveAudioHandle.py 的 startToChat 还会按 client_is_speaking
+        // 再兜底一次 abort，重复的 tts stop 客户端也会因为已不在 Speaking 态而忽略。
+        auto wake_word = audio_service_.GetLastWakeWord();
+        ESP_LOGI(TAG, "Wake word detected while speaking: %s", wake_word.c_str());
+        protocol_->SendWakeWordDetected(wake_word);
     } else if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
+    } else {
+        // 唤醒事件是异步置位的，消费时状态可能已经变了：Speaking 态喊唤醒词，
+        // 若同一轮里服务端的 tts stop 先被 MAIN_EVENT_SCHEDULE 处理完，下一轮
+        // 消费时状态已是 Listening，整条 if 链都不命中。此时 TTS 已停、设备也
+        // 已在收音，会话不会卡死，但事件被丢弃在串口上不留任何痕迹。
+        ESP_LOGW(TAG, "Wake word ignored in state %s", STATE_STRINGS[device_state_]);
     }
 }
 
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    // 本地立刻停嘴：只发 abort 的话，已进解码/播放队列的音频会照播完，
+    // 用户要等服务端 abort→tts stop 一个完整往返才听见机器人停下，
+    // 会以为没打断成功而反复喊唤醒词。aborted_ 同时关掉 OnIncomingAudio 的
+    // 收包闸门，丢弃这一往返之间还在飞的包。
+    audio_service_.ResetDecoder();
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }

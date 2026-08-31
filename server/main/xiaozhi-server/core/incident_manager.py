@@ -16,9 +16,11 @@
 诊断只读：start_diagnosis() 起的是 DiagnosisRunner（claude -p 无头模式，只给
 Read/Grep/Glob 这类只读工具），结论只播报事实与建议，任何生产操作都由人来做。
 
-状态放内存 + 时间线落盘（data/incidents/{date}-{incident_id}.json）：内存丢了
-只影响正在观察中的窗口，已经发生过的事件序列在盘上；落盘用「先写 .tmp 再 rename」
-的原子替换（同 core/owner_status.py），进程被 kill 也不会留半截 JSON。
+状态放内存 + 时间线落盘（data/incidents/{date}-{incident_id}.json）：落盘用
+「先写 .tmp 再 rename」的原子替换（同 core/owner_status.py），进程被 kill 也不会
+留半截 JSON。进程重启后由 restore()（HTTP 启动钩子）把当天没定稿的故障装回内存
+并续上观察窗——只写盘不读盘的话，重启时正在观察的故障会永远停在 observing，
+当天再次告警还会因为文件名相同把旧时间线整份覆盖掉。
 
 配置段（config.yaml，本地覆盖走 data/.config.yaml）::
 
@@ -103,6 +105,8 @@ OUTCOME_ALREADY_RUNNING = "already_running"
 # 就能把时间线写到 data/incidents 之外去。
 _ID_SAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 _MAX_ID_LEN = 64
+# 自动生成的 id 里留给 sha1 摘要的位数
+_ID_DIGEST_LEN = 8
 
 
 # ---------------------------------------------------------------- 默认实现
@@ -134,9 +138,16 @@ def _stable_incident_id(service: str, title: str) -> str:
 
     监控不给 incident_id 时用它归并：同一个服务的同一条告警规则，
     每次重发都会算出同一个 id，dedup 才有依据。
+
+    服务名先截短，保证拼完不超过 _MAX_ID_LEN：写入侧（内存键、文件名）用的是
+    这里返回的完整 id，而 ack / 诊断侧一律先过一次 _safe_id；id 一旦超长被截，
+    两侧就对不上，那些故障的「标记已处理」「启动诊断」会恒 404。
     """
-    digest = hashlib.sha1(f"{service}|{title}".encode("utf-8")).hexdigest()
-    return f"{_safe_id(service)}-{digest[:8]}"
+    digest = hashlib.sha1(f"{service}|{title}".encode("utf-8")).hexdigest()[
+        :_ID_DIGEST_LEN
+    ]
+    prefix = _safe_id(service)[: _MAX_ID_LEN - _ID_DIGEST_LEN - 1]
+    return f"{prefix}-{digest}"
 
 
 def _safe_id(value: str) -> str:
@@ -279,6 +290,60 @@ class IncidentManager:
             return self._storage_dir_override
         return Path(self._settings().storage_dir)
 
+    async def restore(self) -> Dict[str, List[str]]:
+        """装载上个进程留下的故障（HTTP 服务启动时调一次）。
+
+        恢复观察窗的定稿只有内存里的 _observe 任务能触发：不装回来的话，
+        重启时正处在观察窗里的故障盘上永远停在 observing，桌面端列表会一直
+        挂着一条「恢复观察中」，谁也不会再去收尾它。
+
+        - 仍在窗口内：按墙钟补上剩余时长接着观察，走完照常播报恢复。
+        - 停机期间窗口就走完了：时间线照样定稿，但不播——半小时前恢复的
+          故障，开机第一句是「已经恢复」属于过期新闻。
+        - 已定稿（recovered）的不装载：它们只是历史，list_for_date 直接读盘。
+
+        只补空缺：内存里已经有的记录不会被盘上的旧快照盖掉。
+        """
+        day = self.current_day()
+        restored: List[str] = []
+        finalized: List[str] = []
+        observe_default = self._settings().observe_seconds
+
+        for path in sorted(self._storage_dir.glob(f"{day}-*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                self._logger.warning(f"故障时间线文件损坏，已跳过: {path}")
+                continue
+            record = self._record_from_disk(data)
+            if record is None or record["state"] == STATUS_RECOVERED:
+                continue
+            incident_id = record["incident_id"]
+            if incident_id in self._incidents:
+                continue
+            self._incidents[incident_id] = record
+            restored.append(incident_id)
+
+            if record["state"] != STATUS_OBSERVING:
+                continue
+            seconds = _positive_float(record.get("observe_seconds"), observe_default)
+            elapsed = _seconds_between(self._now_iso(), record.get("resolved_at")) or 0.0
+            remaining = seconds - elapsed
+            if remaining > 0:
+                self._schedule_observation(incident_id, seconds, wait_seconds=remaining)
+            else:
+                self._schedule_observation(
+                    incident_id, seconds, wait_seconds=0.0, announce=False
+                )
+                finalized.append(incident_id)
+
+        if restored:
+            self._logger.info(
+                f"故障状态恢复：装回 {len(restored)} 条，"
+                f"其中 {len(finalized)} 条的观察窗在停机期间已走完"
+            )
+        return {"restored": restored, "finalized": finalized}
+
     # ------------------------------------------------------------ 入口
 
     async def handle_webhook(self, payload: dict) -> dict:
@@ -305,6 +370,11 @@ class IncidentManager:
         record = self._incidents.get(incident_id)
 
         if record is None:
+            # 进程重启后同一故障再次告警：先看盘上有没有当天的时间线，
+            # 有就接着写（否则 _new_record 会用同一个文件名整份覆盖它）
+            record = self._adopt_disk_record(incident_id, now[:10])
+
+        if record is None:
             record = self._new_record(event, now)
             self._incidents[incident_id] = record
             self._append_event(record, EVENT_RECEIVED, "首次收到告警")
@@ -324,7 +394,11 @@ class IncidentManager:
             return await self._route_new_firing(record, settings)
 
         if record["state"] == STATUS_RECOVERED:
-            # 已经定稿的故障又复发：当成新一轮火灾重新开始计数
+            # 已经定稿的故障又复发：当成新一轮火灾重新开始计数。
+            # 也要取消观察任务：state 早在恢复播报之前就置成了 recovered，
+            # 这一刻定稿很可能只跑了一半、正卡在播报的 await 上；不取消的话
+            # 它醒来会往这条已经改回 firing 的记录上追加 recovered 事件。
+            self._cancel_observation(incident_id)
             record["state"] = STATUS_FIRING
             record["resolved_at"] = None
             record["recovered_at"] = None
@@ -373,15 +447,18 @@ class IncidentManager:
 
     async def _announce_alert(self, record: dict) -> bool:
         text = self._alert_text(record)
+        # 状态必须在任何 await 之前就翻掉（同中继 handle_reply 的纪律）：播报是
+        # 秒级的 await，announced 若等它返回才置位，这几秒里进来的重复上报都会
+        # 被冷却门当成「还没播过、刚升级」放行，一次告警风暴有几条就播几条。
+        record["announced"] = True
+        record["last_announced_at"] = self._now_iso()
+        self._append_event(record, EVENT_ANNOUNCED, text)
         spoke = await self._push(
             text,
             emotion=EMOTION_ALERT,
             status=f"线上告警 {record['severity']}",
             action=ACTION_ALERT,
         )
-        record["announced"] = True
-        record["last_announced_at"] = self._now_iso()
-        self._append_event(record, EVENT_ANNOUNCED, text)
         # 回调失败只记日志：台账挂了不该反过来影响告警播报的成败判定
         if self._on_announced is not None:
             try:
@@ -417,7 +494,12 @@ class IncidentManager:
         now = self._now_iso()
 
         if record is None:
-            # 进程重启后只收到恢复信号：没有燃烧过程可收尾，记一笔就够，不播报
+            # 内存没有不等于没发生过：进程重启后补发的 resolved 要能接上盘上
+            # 那条，否则它永远停在 firing，恢复也永远不会被定稿
+            record = self._adopt_disk_record(incident_id, now[:10])
+
+        if record is None:
+            # 真的没有燃烧过程可收尾（跨天或从未上报过）：记一笔就够，不播报
             self._logger.info(f"收到未知故障 {incident_id} 的恢复信号，忽略")
             return {
                 "ok": True,
@@ -448,9 +530,29 @@ class IncidentManager:
         self._schedule_observation(record["incident_id"], settings.observe_seconds)
         return self._result("observing", record, announced=False)
 
-    def _schedule_observation(self, incident_id: str, seconds: float) -> None:
+    def _schedule_observation(
+        self,
+        incident_id: str,
+        seconds: float,
+        *,
+        wait_seconds: Optional[float] = None,
+        announce: bool = True,
+    ) -> None:
+        """排一次观察窗定稿。
+
+        seconds 是观察窗本身的长度，只用来说「连续 N 分钟没有新增异常」；
+        wait_seconds 是这次还要等多久——重启装载时窗口已经走掉一截，
+        两者不再相等，按剩余时长播报就是把窗口说短了。
+        """
         self._cancel_observation(incident_id)
-        task = asyncio.create_task(self._observe(incident_id, seconds))
+        task = asyncio.create_task(
+            self._observe(
+                incident_id,
+                seconds,
+                seconds if wait_seconds is None else wait_seconds,
+                announce,
+            )
+        )
         self._observe_tasks[incident_id] = task
         self._track(task)
 
@@ -459,7 +561,13 @@ class IncidentManager:
         if task is not None and not task.done():
             task.cancel()
 
-    async def _observe(self, incident_id: str, seconds: float) -> None:
+    async def _observe(
+        self,
+        incident_id: str,
+        seconds: float,
+        wait_seconds: float,
+        announce: bool = True,
+    ) -> None:
         """观察窗：安静走完才宣布恢复。
 
         期间又收到 firing 时 _handle_firing 会 cancel 掉本任务；这里醒来后
@@ -467,11 +575,11 @@ class IncidentManager:
         往下跑的时刻（同 pomodoro_manager 的代次检查）。
         """
         try:
-            await self._sleep(seconds)
+            await self._sleep(wait_seconds)
             record = self._incidents.get(incident_id)
             if record is None or record["state"] != STATUS_OBSERVING:
                 return
-            await self._finalize_recovery(record, seconds)
+            await self._finalize_recovery(record, seconds, announce=announce)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -482,14 +590,29 @@ class IncidentManager:
             if self._observe_tasks.get(incident_id) is asyncio.current_task():
                 self._observe_tasks.pop(incident_id, None)
 
-    async def _finalize_recovery(self, record: dict, seconds: float) -> None:
+    async def _finalize_recovery(
+        self, record: dict, seconds: float, *, announce: bool = True
+    ) -> None:
         record["state"] = STATUS_RECOVERED
         record["recovered_at"] = self._now_iso()
 
-        if record.get("announced"):
+        if announce and record.get("announced"):
             text = self._recovery_text(record, seconds)
             await self._push(text, emotion=EMOTION_RECOVERED, status=STATUS_TEXT_RECOVERED)
+            # 恢复播报是秒级的 await：这期间故障可能已经复燃，_handle_firing
+            # 把状态改回了 firing 并重新告警。不重新确认就往下写，等于给一条
+            # 正在燃烧的记录追加 recovered 事件并整份落盘覆盖复燃那次的写入。
+            if record["state"] != STATUS_RECOVERED:
+                self._logger.info(
+                    f"故障 {record['incident_id']} 在恢复播报期间复燃，不定稿"
+                )
+                return
             self._append_event(record, EVENT_RECOVERED, text)
+        elif record.get("announced"):
+            # 观察窗在停机期间就走完了：时间线照样定稿，但不播过期的恢复
+            self._append_event(
+                record, EVENT_RECOVERED, "指标恢复（观察窗跨进程重启走完，不再播报）"
+            )
         else:
             # 从没播报过的低级别故障，恢复也不该突然出声
             self._append_event(record, EVENT_RECOVERED, "指标恢复（未播报，低级别）")
@@ -964,6 +1087,77 @@ class IncidentManager:
             if isinstance(data, dict) and data.get("incident_id") == incident_id:
                 return path, data
         return None
+
+    def _record_from_disk(self, data: Any) -> Optional[dict]:
+        """把落盘 JSON 还原成内存记录。
+
+        缺键一律补默认值：状态机里 record["state"] / record["severity"] 这类
+        下标访问缺一个就是 KeyError，为一份手工改过的旧文件崩在 webhook
+        路径上，比丢一条时间线更糟。
+        """
+        if not isinstance(data, dict):
+            return None
+        incident_id = str(data.get("incident_id") or "").strip()
+        if not incident_id:
+            return None
+
+        record = dict(data)
+        # observing / recovered 是 snapshot() 派生出来的，内存态不留，读回时重算
+        record.pop("observing", None)
+        record.pop("recovered", None)
+        record["incident_id"] = incident_id
+        if record.get("state") not in (
+            STATUS_FIRING,
+            STATUS_OBSERVING,
+            STATUS_RECOVERED,
+        ):
+            record["state"] = STATUS_FIRING
+        # 缺严重度按可播报处理：宁可多说一句，也不要把一条 P0 静默成低级别
+        if record.get("severity") not in SEVERITIES:
+            record["severity"] = "P1"
+        record.setdefault("service", "")
+        record.setdefault("title", incident_id)
+        record.setdefault("message", "")
+        record.setdefault("repeat_count", 1)
+        record.setdefault("announced", False)
+        record.setdefault("acknowledged", False)
+        record.setdefault("simulated", False)
+        record.setdefault("timeline", [])
+        now = self._now_iso()
+        for key in ("started_at", "first_seen_at", "last_seen_at"):
+            if not record.get(key):
+                record[key] = now
+        for key in (
+            "last_announced_at",
+            "last_notified_at",
+            "resolved_at",
+            "recovered_at",
+            "observe_seconds",
+            "diagnosis",
+        ):
+            record.setdefault(key, None)
+        return record
+
+    def _adopt_disk_record(self, incident_id: str, day: str) -> Optional[dict]:
+        """把同一天的落盘记录装回内存（进程重启后续接同一条故障）。
+
+        文件名是 {首次上报日}-{incident_id}.json：不装回来的话，同一故障当天
+        再次告警会新建一条 first_seen_at=当下的记录，_persist 用同一个文件名
+        把重启前的时间线整份覆盖掉——时间线是审计记录，不能这么消失。
+        跨天的旧记录不认：那本来就该算新一轮火灾，写进新一天的文件里。
+        """
+        found = self._find_disk_record(incident_id)
+        if found is None:
+            return None
+        _path, data = found
+        if str((data or {}).get("first_seen_at") or "")[:10] != day:
+            return None
+        record = self._record_from_disk(data)
+        if record is None:
+            return None
+        self._incidents[incident_id] = record
+        self._logger.info(f"故障 {incident_id} 的落盘时间线已装回内存（进程重启后续接）")
+        return record
 
 
 def _epoch(value: Optional[str]) -> float:

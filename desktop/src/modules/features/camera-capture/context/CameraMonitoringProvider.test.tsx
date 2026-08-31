@@ -9,6 +9,7 @@ import {
   useCameraMonitoring,
   type CameraMonitoringValue,
 } from './CameraMonitoringProvider';
+import type { CameraPermissionStatus } from '../types';
 
 const producerMocks = vi.hoisted(() => ({
   start: vi.fn(),
@@ -53,6 +54,12 @@ describe('CameraMonitoringProvider', () => {
       return vi.fn();
     }),
   };
+  // OS 层权限闸门:默认放行(granted),权限拒绝场景在各用例里用
+  // mockResolvedValueOnce 覆盖一次,不影响其余用例的默认路径。
+  const camera = {
+    getPermissionStatus: vi.fn(async (): Promise<CameraPermissionStatus> => 'granted'),
+    requestPermission: vi.fn(async (): Promise<CameraPermissionStatus> => 'granted'),
+  };
 
   function Probe() {
     current = useCameraMonitoring();
@@ -75,6 +82,8 @@ describe('CameraMonitoringProvider', () => {
     recognition.sendFrame.mockClear();
     recognition.stop.mockClear();
     recognition.onEvent.mockClear();
+    camera.getPermissionStatus.mockClear();
+    camera.requestPermission.mockClear();
     producerMocks.start.mockClear();
     producerMocks.stop.mockClear();
     let streamIndex = 0;
@@ -87,7 +96,7 @@ describe('CameraMonitoringProvider', () => {
     });
     Object.defineProperty(window, 'xiaofei', {
       configurable: true,
-      value: { camera: { recognition } },
+      value: { camera: { ...camera, recognition } },
     });
     Object.defineProperty(HTMLMediaElement.prototype, 'play', {
       configurable: true,
@@ -308,6 +317,99 @@ describe('CameraMonitoringProvider', () => {
 
       expect(recognition.start).not.toHaveBeenCalled();
       expect(current!.enabled).toBe(false);
+    });
+  });
+
+  describe('OS 层摄像头权限闸门', () => {
+    it('startMonitoring: 权限 denied 时不调 getUserMedia,直接进入权限错误态', async () => {
+      camera.getPermissionStatus.mockResolvedValueOnce('denied');
+      await render();
+      await act(async () => current!.startMonitoring());
+
+      expect(camera.getPermissionStatus).toHaveBeenCalledOnce();
+      expect(camera.requestPermission).not.toHaveBeenCalled();
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+      // 意图仍是「持续意图」语义:权限失败不应清掉用户想监测的意图
+      expect(current!.enabled).toBe(true);
+    });
+
+    it('startMonitoring: 权限 restricted 时不调 getUserMedia,直接进入权限错误态', async () => {
+      camera.getPermissionStatus.mockResolvedValueOnce('restricted');
+      await render();
+      await act(async () => current!.startMonitoring());
+
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+    });
+
+    it('startMonitoring: not-determined 时先 requestPermission,拒绝后同样进入权限错误态', async () => {
+      camera.getPermissionStatus.mockResolvedValueOnce('not-determined');
+      camera.requestPermission.mockResolvedValueOnce('denied');
+      await render();
+      await act(async () => current!.startMonitoring());
+
+      expect(camera.requestPermission).toHaveBeenCalledOnce();
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+    });
+
+    it('startMonitoring: 权限 granted 时正常放行,走原有 getUserMedia 路径', async () => {
+      camera.getPermissionStatus.mockResolvedValueOnce('granted');
+      await render();
+      await act(async () => current!.startMonitoring());
+
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce();
+      expect(current!.errorMessage).toBe('');
+      expect(current!.enabled).toBe(true);
+    });
+
+    it('startEnrollment: 权限 denied 时不调 getUserMedia 也不建立识别会话,直接进入权限错误态', async () => {
+      camera.getPermissionStatus.mockResolvedValueOnce('denied');
+      await render();
+      await act(async () => current!.startEnrollment('主人'));
+
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(recognition.start).not.toHaveBeenCalled();
+      expect(current!.enrollment.status).toBe('error');
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+    });
+
+    it('startEnrollment: 权限 granted 时正常放行,走原有路径', async () => {
+      camera.getPermissionStatus.mockResolvedValueOnce('granted');
+      await render();
+      await act(async () => current!.startEnrollment('主人'));
+
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce();
+      expect(recognition.start).toHaveBeenCalledWith({
+        mode: 'enrollment',
+        workstationId: 'desktop-local',
+        displayName: '主人',
+      });
+      expect(current!.errorMessage).toBe('');
+    });
+
+    it('闸门下沉到 startCamera:2 秒恢复定时器在权限持续 denied 时不会绕过闸门白调 getUserMedia', async () => {
+      vi.useFakeTimers();
+      // 权限恒 denied：初次 startMonitoring 一次 + 两轮 2 秒恢复定时器各一次
+      camera.getPermissionStatus
+        .mockResolvedValueOnce('denied')
+        .mockResolvedValueOnce('denied')
+        .mockResolvedValueOnce('denied');
+      await render();
+      await act(async () => current!.startMonitoring());
+
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(current!.errorMessage).toBe('摄像头权限未开启');
+      expect(camera.getPermissionStatus).toHaveBeenCalledTimes(3);
     });
   });
 

@@ -43,7 +43,7 @@ const okResponse = () =>
 describe('RobotEventPushClient', () => {
   it('POST 到 /xiaozhi/event/push 并带上 JSON 请求体', async () => {
     const fetcher = vi.fn().mockResolvedValue(okResponse());
-    const client = new RobotEventPushClient(fetcher, 'http://127.0.0.1:8003');
+    const client = new RobotEventPushClient(fetcher, () => 'http://127.0.0.1:8003');
 
     const delivered = await client.push({
       device_id: DEVICE,
@@ -63,7 +63,7 @@ describe('RobotEventPushClient', () => {
   it('Server 不可用时吞掉异常并返回 false，不阻断调用方', async () => {
     const client = new RobotEventPushClient(
       vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
-      'http://127.0.0.1:8003',
+      () => 'http://127.0.0.1:8003',
     );
 
     await expect(
@@ -78,7 +78,7 @@ describe('RobotEventPushClient', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    const client = new RobotEventPushClient(fetcher, 'http://127.0.0.1:8003');
+    const client = new RobotEventPushClient(fetcher, () => 'http://127.0.0.1:8003');
 
     await expect(
       client.push({ device_id: DEVICE, text: 'x', emotion: 'happy', status: 's', speak: false }),
