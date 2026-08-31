@@ -36,6 +36,8 @@ private:
     esp_timer_handle_t keepalive_timer_ = nullptr;
     int ping_ticks_ = 0;
     int reconnect_ticks_ = 0;
+    // 上一次阻塞式重连尝试的结束时刻，给两次尝试之间设时间下限（见 OnKeepaliveTick）
+    std::chrono::steady_clock::time_point last_connect_attempt_;
 
     bool Connect(bool report_error);
     void OnKeepaliveTick();

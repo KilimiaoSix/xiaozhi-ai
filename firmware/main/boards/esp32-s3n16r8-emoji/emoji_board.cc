@@ -157,6 +157,9 @@ private:
     int64_t pomo_deadline_us_ = 0;
     // SyncPomodoroScreen 的 100ms 计数：idle 稳定 2 秒才把画面收回来
     int pomo_idle_ticks_ = 0;
+    // 让屏给表情脸之后，这块屏归表情所有的截止时刻（esp_timer 时基）。
+    // 三个写者（Yield/Sync/ShowPomodoro）共享它，谁都不许在归属期内抢屏
+    int64_t pomo_yield_hold_until_us_ = 0;
 
     // 上一次处理的AI回复
     std::string last_ai_response_;
@@ -702,9 +705,12 @@ private:
 
         pomodoro_active_ = true;
 
-        // 设备空闲才立即抢屏；对话中让屏，等 SyncPomodoroScreen 在回 idle 后收复
+        // 设备空闲才立即抢屏；对话中让屏，等 SyncPomodoroScreen 在回 idle 后收复。
+        // 让屏归属期内也不抢：文字已经更新好了，等归属期过后由 Sync 按原节奏收回，
+        // 否则 celebration_delay 被调小时这里会当场把还在演的表情脸顶掉
         if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&
-            lv_scr_act() != pomodoro_screen_) {
+            lv_scr_act() != pomodoro_screen_ &&
+            esp_timer_get_time() >= pomo_yield_hold_until_us_) {
             lv_scr_load(pomodoro_screen_);
         }
     }
@@ -735,6 +741,13 @@ private:
         // speaking/connecting 等仍让屏：播报字幕和连接状态是用户需要看见的。
         if (state == kDeviceStateIdle || state == kDeviceStateListening) {
             if (lv_scr_act() == pomodoro_screen_) {
+                pomo_idle_ticks_ = 0;
+                return;
+            }
+            // 让屏归属期内不计数也不收回：服务端相位切换是"先 alert(表情)、隔
+            // celebration_delay 秒再推 show"，2 秒计数会在庆祝动画演到一半时把屏
+            // 抢回来，而那时新相位的 show 还没到，屏上是上一相位钳到 00:00 的旧画面
+            if (esp_timer_get_time() < pomo_yield_hold_until_us_) {
                 pomo_idle_ticks_ = 0;
                 return;
             }
@@ -772,6 +785,9 @@ private:
         // 表情动画只存在于 emoji_screen_，对话模式下也得切到脸才看得见
         SwitchScreen(true);
         pomo_idle_ticks_ = 0;
+        // 归属期取 3.5s：略大于服务端 pomodoro_manager 的庆祝窗口
+        // DEFAULT_CELEBRATION_DELAY_S = 3.0s，保证新相位的 show 先到、画面再收回
+        pomo_yield_hold_until_us_ = esp_timer_get_time() + 3500000;
     }
 
     // 声明静态任务函数为友元函数，使其可以访问私有成员

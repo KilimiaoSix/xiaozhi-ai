@@ -21,6 +21,9 @@
 #define SERVO_OFFSET_X 40
 #define SERVO_OFFSET_Y 25
 
+// 等锁上限：必须长于最长的复合动作（HeadRoll 约 3 秒），否则并发时会整条动作被丢
+#define SERVO_LOCK_TIMEOUT_MS 5000
+
 /**
  * @class ServoController
  * @brief 舵机控制类，负责管理和控制舵机的运动
@@ -131,5 +134,14 @@ private:
     // 否则 MoveTo 的收敛循环会因目标被并发改动而永远不满足退出条件（死循环）。
     int current_x_angle_ = SERVO_CENTER_X;
     int current_y_angle_ = SERVO_CENTER_Y;
+    // 递归互斥：互斥粒度是"整个复合动作"而不是单段 MoveTo。只锁单段的话，
+    // HeadNod(5 段)/HeadRoll(11 段) 的段与段之间锁是放开的，另一条链路的段会插
+    // 进来，两边的收尾段互相把对方的姿态抹平，终态取决于竞态；而各入口在锁外
+    // 读 current_*_angle_ 算目标，读到的还可能是对方移动中的中间值。复合入口整体
+    // 持锁后，内层 MoveTo 的重入由递归锁吸收。
     SemaphoreHandle_t move_mutex_ = nullptr;
+
+    // 取锁失败（超时）返回 false，调用方放弃整个动作而不是丢单段
+    bool LockServo();
+    void UnlockServo();
 };

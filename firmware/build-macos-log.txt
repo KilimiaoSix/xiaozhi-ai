@@ -1,0 +1,19 @@
+Executing action: all (aliases: build)
+Running ninja in directory /Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos
+Executing "ninja all"...
+[1/4] cd /Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos/esp-idf/esptool_py && /Users/kilimiao/.espressif/python_env/idf5.5_py3.10_env/bin/python /Users/kilimiao/esp/esp-idf-v5.5.3/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos/partition_table/partition-table.bin /Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos/xiaozhi.bin
+xiaozhi.bin binary size 0x2dcda0 bytes. Smallest app partition is 0x400000 bytes. 0x123260 bytes (28%) free.
+[2/4] Performing build step for 'bootloader'
+[1/1] cd /Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos/bootloader/esp-idf/esptool_py && /Users/kilimiao/.espressif/python_env/idf5.5_py3.10_env/bin/python /Users/kilimiao/esp/esp-idf-v5.5.3/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos/bootloader/bootloader.bin
+Bootloader binary size 0x3f80 bytes. 0x4080 bytes (50%) free.
+[3/4] No install step for 'bootloader'
+[4/4] Completed 'bootloader'
+
+Project build complete. To flash, run:
+ idf.py flash
+or
+ idf.py -p PORT flash
+or
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 launchcrush/firmware/build-macos/bootloader/bootloader.bin 0x8000 launchcrush/firmware/build-macos/partition_table/partition-table.bin 0xd000 launchcrush/firmware/build-macos/ota_data_initial.bin 0x10000 launchcrush/firmware/build-macos/srmodels/srmodels.bin 0x100000 launchcrush/firmware/build-macos/xiaozhi.bin
+or from the "/Users/kilimiao/CodeProject/gongban/launchcrush/firmware/build-macos" directory
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash "@flash_args"
