@@ -29,6 +29,12 @@ def _isolate_session_store(tmp_path, monkeypatch):
         pomodoro_module, "DEFAULT_PERSIST_PATH", str(tmp_path / "pomodoro_sessions.json")
     )
 
+
+@pytest.fixture
+def fast_reconnect_poll(monkeypatch):
+    """真实的 1s 回连轮询语义不变，只是压短到测试跑得完（同 SHOW_RETRY_DELAY 的做法）。"""
+    monkeypatch.setattr(pomodoro_module, "RESYNC_POLL_INTERVAL", 0.02)
+
 # 0.01 分钟 = 0.6 秒。真机语义不变，只是把相位压短到测试跑得完。
 TINY_MINUTES = 0.01
 PHASE_SECONDS = 0.6
@@ -94,6 +100,14 @@ class FakeRegistry:
     def device_ids(self):
         return list(self._conns.keys())
 
+    def plug_in(self, device_id=DEVICE_ID):
+        """模拟设备回连（同 test_pomodoro_restore.py）。"""
+        self._conns[device_id] = FakeConn(device_id)
+
+    def unplug(self, device_id=DEVICE_ID):
+        """模拟 WiFi 抖动：连接被摘掉，会话留在服务端照常跑。"""
+        self._conns.pop(device_id, None)
+
 
 class AlertRecorder:
     def __init__(self):
@@ -113,6 +127,27 @@ class AlertRecorder:
     @property
     def texts(self):
         return [call["text"] for call in self.calls]
+
+
+class GatedAlert(AlertRecorder):
+    """卡住的有声确认。
+
+    生产里 push_alert 最终是 `await conn.websocket.send(...)`，没有超时：设备 TCP
+    窗口满或半开连接时这一步是秒级的，命令路径会真的让出事件循环。用事件把它
+    钉住，才能把「让出期间另一入口把会话换掉」这个窗口稳定地复现出来。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, conn, text, emotion=None, status=None, silent=False):
+        await super().__call__(
+            conn, text, emotion=emotion, status=status, silent=silent
+        )
+        self.entered.set()
+        await self.release.wait()
 
 
 class ActionRecorder:
@@ -190,6 +225,9 @@ async def shutdown(manager):
     """收掉后台计时任务与推送任务，避免测试之间互相干扰。"""
     for device_id in list(manager.active_device_ids()):
         await manager.stop(device_id)
+    # 设备离线时补帧任务会一直等回连（生产上正是要这样），测试收尾直接取消掉
+    for task in list(manager._push_tasks):
+        task.cancel()
     await wait_pushes_settled(manager)
 
 
@@ -358,6 +396,9 @@ async def test_stop_clears_session_and_pushes_idle():
     manager, _, _, tools = make_manager(focus=10.0)
 
     await manager.start(DEVICE_ID)
+    # 等开始那一帧真的落地再停：同一轮事件循环里 start+stop 会合并成只推一帧 idle
+    # （画面推什么现在按任务开跑时的会话状态判，见 _show_if_current）
+    await wait_for_shows(tools, 1)
     result = await manager.stop(DEVICE_ID)
 
     assert result["outcome"] == "stopped"
@@ -405,6 +446,72 @@ async def test_offline_device_keeps_ticking_without_raising():
     assert alerts.calls == []
     assert actions.calls == []
     assert (await manager.status(DEVICE_ID))["status"]["phase"] == "short_break"
+
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_phase_missed_while_offline_is_caught_up_after_reconnect(
+    fast_reconnect_poll,
+):
+    """WiFi 抖动跨过相位边界：设备回连后必须补一帧当前相位。
+
+    离线期间的下发被 _call_show 当场丢弃（不重试、不排队），设备停在自己
+    自减到 00:00 的旧相位画面上。没有回连补帧，这个不同步要挂到下一次相位
+    到点才被动纠正——生产默认 25 分钟，与模块头"只会短暂不同步"的承诺相悖。
+    """
+    registry = FakeRegistry({DEVICE_ID: FakeConn()})
+    manager, _, _, tools = make_manager(
+        focus=TINY_MINUTES, short_break=1.0, registry=registry
+    )
+
+    await manager.start(DEVICE_ID)
+    await wait_for_shows(tools, 1)
+    registry.unplug()
+
+    await wait_until(
+        lambda: manager._sessions[DEVICE_ID].phase == "short_break",
+        what="离线期间相位推进到短休",
+    )
+    await asyncio.sleep(0.05)
+    # 佐证：转相位那一帧确实被丢掉了
+    assert tools.phases() == ["focus"]
+
+    registry.plug_in()
+    await wait_until(
+        lambda: tools.phases()[-1:] == ["short_break"], what="设备回连后补帧"
+    )
+
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_stop_while_offline_collapses_the_screen_after_reconnect(
+    fast_reconnect_poll,
+):
+    """对离线设备点停止：设备回连后必须收到 idle，否则永远停在幽灵倒计时。
+
+    桌面端的设备列表刻意包含"离线但有会话"的设备，对它点停止是被设计出来的
+    正常操作。stop 的 idle 因设备离线被丢弃后没有任何一方补推，固件的
+    pomodoro_active_ 仍为 true，会把停在 00:00 的假倒计时反复抢回前台。
+    """
+    registry = FakeRegistry({DEVICE_ID: FakeConn()})
+    manager, _, _, tools = make_manager(focus=25.0, registry=registry)
+
+    await manager.start(DEVICE_ID)
+    await wait_for_shows(tools, 1)
+    registry.unplug()
+
+    result = await manager.stop(DEVICE_ID)
+    assert result["outcome"] == "stopped"
+    await asyncio.sleep(0.05)
+    # 佐证：离线时的收屏 idle 确实发不出去
+    assert tools.phases() == ["focus"]
+
+    registry.plug_in()
+    await wait_until(
+        lambda: tools.phases()[-1:] == ["idle"], what="设备回连后补推 idle 收屏"
+    )
 
     await shutdown(manager)
 
@@ -527,6 +634,8 @@ async def test_stale_timer_does_not_fire_after_stop():
     manager, alerts, _, tools = make_manager()
 
     await manager.start(DEVICE_ID)
+    # 等开始那一帧落地再停，否则两条命令会合并成只推一帧 idle（见 _show_if_current）
+    await wait_for_shows(tools, 1)
     await manager.stop(DEVICE_ID)
     await wait_for_shows(tools, 2)
     await wait_phase_end()
@@ -585,11 +694,142 @@ async def test_retry_after_stop_does_not_repush_stale_show(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retry_after_start_does_not_repush_stale_idle(monkeypatch):
+    """重试窗口里 start：陈旧的 idle 不许把刚起的新会话拍成隐身。
+
+    stop 的收屏 idle 首推失败（设备刚重连、MCP 还没握手完）会进重试窗口，用户在
+    窗口里双击开机键重新开始，新会话的画面此刻链路已恢复、下发成功；重试若原样
+    再把 idle 补上去，固件就退出番茄钟画面，而服务端照常计时、分心检测照常武装，
+    用户看到的是"刚按的开始没反应"，再按一次反而变成暂停。
+    与 test_retry_after_stop_does_not_repush_stale_show 是镜像的两侧。
+    """
+    # 真实的 3s 重试窗口语义不变，只是压短到测试跑得完
+    monkeypatch.setattr(pomodoro_module, "SHOW_RETRY_DELAY", 0.3)
+
+    class FlakyIdleTool(ToolRecorder):
+        """第一次 idle 下发必失败，之后恢复正常。"""
+
+        def __init__(self):
+            super().__init__()
+            self.attempts = []
+            self.failures_left = 1
+
+        async def __call__(self, conn, mcp_client, tool_name, args, timeout=30):
+            phase = json.loads(args)["phase"]
+            self.attempts.append(phase)
+            if phase == "idle" and self.failures_left > 0:
+                self.failures_left -= 1
+                raise RuntimeError("设备重连中，MCP 尚未就绪")
+            return await super().__call__(conn, mcp_client, tool_name, args, timeout)
+
+    tools = FlakyIdleTool()
+    manager = PomodoroManager(
+        {"pomodoro": {"focus_minutes": 25}},
+        FakeRegistry({DEVICE_ID: FakeConn()}),
+        push_alert=AlertRecorder(),
+        play_action=ActionRecorder(),
+        call_tool=tools,
+        celebration_delay_s=0.0,
+    )
+
+    await manager.start(DEVICE_ID)
+    await wait_for_shows(tools, 1)
+    await manager.stop(DEVICE_ID)
+    # 等 idle 首推真的失败了再重新开始，否则可能抢在重试窗口之前
+    await wait_until(
+        lambda: tools.attempts == ["focus", "idle"], what="idle 首次下发失败"
+    )
+    started = await manager.start(DEVICE_ID)
+    assert started["outcome"] == "started"
+
+    await wait_pushes_settled(manager)
+    # 设备最后看到的必须是新会话的专注画面
+    assert tools.phases()[-1] == "focus"
+    assert tools.attempts == ["focus", "idle", "focus", "focus"]
+    assert manager.active_device_ids() == [DEVICE_ID]
+
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_stop_during_start_feedback_does_not_push_a_stale_focus():
+    """start 卡在有声确认里被 stop 插队：不许再把已作废会话的画面补上去。
+
+    按键路径的 start 带有声确认，那个 await 会真的让出事件循环；让出期间桌面面板
+    或语音发 stop，会话已经被 pop、idle 也已推出去。start 醒来若还拿着调用时刻
+    捕获的会话去下发，设备就停在服务端已经不存在的会话画面上，只能靠用户再
+    stop 一次收回（正是 _call_show 重试分支注释里点名要避免的状态）。
+    """
+    tools = ToolRecorder()
+    alerts = GatedAlert()
+    manager = PomodoroManager(
+        {"pomodoro": {"focus_minutes": 25}},
+        FakeRegistry({DEVICE_ID: FakeConn()}),
+        push_alert=alerts,
+        play_action=ActionRecorder(),
+        call_tool=tools,
+        celebration_delay_s=0.0,
+    )
+
+    starting = asyncio.create_task(manager.start(DEVICE_ID, feedback=True))
+    await alerts.entered.wait()
+    stopped = await manager.stop(DEVICE_ID)
+    assert stopped["outcome"] == "stopped"
+    alerts.release.set()
+    await starting
+
+    await wait_pushes_settled(manager)
+    assert manager.active_device_ids() == []
+    assert tools.phases() == ["idle"]
+
+
+@pytest.mark.asyncio
+async def test_start_during_stop_feedback_does_not_collapse_the_new_session():
+    """stop 卡在有声确认里被 start 插队：陈旧的 idle 不许收掉新会话的画面。
+
+    反方向同构（按键三连击 → stop(feedback=True)）：让出期间用户重新开始，
+    新会话画面已经落地，stop 醒来那条射后不理的 idle 再落下去，设备就被收屏，
+    服务端却照常计时。
+    """
+    tools = ToolRecorder()
+    alerts = GatedAlert()
+    manager = PomodoroManager(
+        {"pomodoro": {"focus_minutes": 25}},
+        FakeRegistry({DEVICE_ID: FakeConn()}),
+        push_alert=alerts,
+        play_action=ActionRecorder(),
+        call_tool=tools,
+        celebration_delay_s=0.0,
+    )
+
+    await manager.start(DEVICE_ID)
+    await wait_for_shows(tools, 1)
+
+    stopping = asyncio.create_task(manager.stop(DEVICE_ID, feedback=True))
+    await alerts.entered.wait()
+    started = await manager.start(DEVICE_ID)
+    assert started["outcome"] == "started"
+    await wait_for_shows(tools, 2)
+    alerts.release.set()
+    await stopping
+
+    await wait_pushes_settled(manager)
+    assert manager.active_device_ids() == [DEVICE_ID]
+    assert tools.phases() == ["focus", "focus"]
+
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
 async def test_restart_after_stop_begins_from_first_round():
     manager, _, _, tools = make_manager(focus=1.0)
 
+    # 每条命令都等自己那一帧落地：同一轮事件循环里连发会合并成只推最终状态那一帧
+    # （见 _show_if_current / _idle_if_still_stopped）
     await manager.start(DEVICE_ID)
+    await wait_for_shows(tools, 1)
     await manager.stop(DEVICE_ID)
+    await wait_for_shows(tools, 2)
     await manager.start(DEVICE_ID)
 
     await wait_for_shows(tools, 3)

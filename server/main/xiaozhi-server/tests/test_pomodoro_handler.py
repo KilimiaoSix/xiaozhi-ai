@@ -107,6 +107,9 @@ async def shutdown(client):
     manager = client.app["pomodoro_manager"]
     for device_id in list(manager.active_device_ids()):
         await manager.stop(device_id)
+    # 离线设备的补帧任务会一直等回连（生产上正是要这样），测试收尾直接取消掉
+    for task in list(manager._push_tasks):
+        task.cancel()
 
 
 @pytest.mark.asyncio

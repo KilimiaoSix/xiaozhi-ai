@@ -7,6 +7,7 @@
 本文件锁的是「新实例从同一 data 目录装载」：
 - 仍在相位内 → 按墙钟重算 monotonic 截止、恢复计时任务、设备回连后刷新画面
 - 已过期     → 丢会话，设备回连后推一次 idle 收屏
+- 等待中被停 → 设备回连后照样要补一次 idle，否则没有任何一方给设备收屏
 - 暂停中     → 恢复为暂停态，冻结的剩余秒数不因重启被扣掉
 - 坏文件     → 按空存储处理，不崩在启动路径上
 
@@ -162,6 +163,9 @@ async def settle(manager, timeout=5.0):
 async def shutdown(manager):
     for device_id in list(manager.active_device_ids()):
         await manager.stop(device_id)
+    # 设备离线时补帧任务会一直等回连（生产上正是要这样），测试收尾直接取消掉
+    for task in list(manager._push_tasks):
+        task.cancel()
     await settle(manager)
 
 
@@ -186,7 +190,7 @@ def store(tmp_path):
 @pytest.fixture
 def fast_reconnect_poll(monkeypatch):
     """真实的 1s 回连轮询语义不变，只是压短到测试跑得完（同 SHOW_RETRY_DELAY 的做法）。"""
-    monkeypatch.setattr(pomodoro_module, "RESTORE_POLL_INTERVAL", 0.02)
+    monkeypatch.setattr(pomodoro_module, "RESYNC_POLL_INTERVAL", 0.02)
 
 
 # ------------------------------------------------------------------ 落盘
@@ -338,13 +342,12 @@ async def test_new_session_started_while_waiting_for_device_wins_over_stale_idle
 ):
     """过期会话的收屏任务不能拍飞回连前另起的新会话。
 
-    restore() 给过期会话 spawn 的 _idle_when_online 会等设备回连，最长 180s。
+    restore() 给过期会话挂的补帧任务（_resync_when_online）会等设备回连。
     这段等待窗口里，用户完全可能经 HTTP / 语音 / 按键对同一设备重新 start 了一个
-    新会话——新会话 start() 里的 _spawn_show 因为设备当时还离线，_call_show 撞见
-    conn is None 会直接放弃且不重试（同 idle 分支不同，这条路径没有姊妹任务兜底）。
-    设备回连时，如果收屏任务无条件推 idle 而不重新查一遍 self._sessions，就会把
-    刚起的新会话画面覆盖成 idle：服务端 /status 报"进行中"，设备却被钉在 idle，
-    直到相位自然到点才恢复。
+    新会话——新会话 start() 里的画面下发因为设备当时还离线发不出去，只会被并到
+    同一个补帧任务上（每设备去重）。设备回连时，如果补帧无条件推 idle 而不重新
+    查一遍 self._sessions，就会把刚起的新会话画面覆盖成 idle：服务端 /status 报
+    "进行中"，设备却被钉在 idle，直到相位自然到点才恢复。
     """
     clock = FakeWallClock()
     manager, _ = make_manager(store, wall_clock=clock)
@@ -358,7 +361,7 @@ async def test_new_session_started_while_waiting_for_device_wins_over_stale_idle
     assert fresh.active_device_ids() == []  # 过期会话确实被丢弃了
 
     # 回连前，用户对同一设备重新开始了一个新会话
-    # 注意：不能用 settle() —— 过期任务的 _idle_when_online 还在等设备回连，
+    # 注意：不能用 settle() —— 补帧任务还在等设备回连，
     # push_tasks 要到 registry.plug_in() 之后才会清空
     started = await fresh.start(DEVICE_ID)
     assert started["outcome"] == "started"
@@ -374,6 +377,39 @@ async def test_new_session_started_while_waiting_for_device_wins_over_stale_idle
     assert (await fresh.status(DEVICE_ID))["status"]["active"] is True
 
     await shutdown(fresh)
+
+
+@pytest.mark.asyncio
+async def test_stop_while_waiting_for_the_device_collapses_the_screen_on_reconnect(
+    store, fast_reconnect_poll
+):
+    """恢复的等待窗口内被 stop：设备回连后仍要收一次 idle 收屏。
+
+    restore 给恢复出来的会话挂了个等设备回连的补帧任务。等待期间用户从桌面端
+    stop（设备离线不影响 HTTP 通路），stop 那侧的 idle 因为设备不在线被当场丢弃。
+    补帧任务醒来若只是"会话没了就算了"，两边一让就没人负责收屏：设备停在自己
+    1Hz 自减出来的倒计时上，用户必须在回连后再 stop 一次——正是持久化要消除的代价。
+    """
+    clock = FakeWallClock()
+    manager, _ = make_manager(store, wall_clock=clock)
+    await manager.start(DEVICE_ID)
+    await crash(manager)
+
+    registry = FakeRegistry({})  # 服务端起来时设备还没连上
+    fresh, tools = make_manager(store, registry=registry, wall_clock=clock)
+    await fresh.restore()
+    assert fresh.active_device_ids() == [DEVICE_ID]
+
+    stopped = await fresh.stop(DEVICE_ID)
+    assert stopped["outcome"] == "stopped"
+    await asyncio.sleep(0.05)
+    # 佐证：设备离线时 stop 的 idle 确实发不出去
+    assert tools.shows() == []
+
+    registry.plug_in()
+    await wait_until(
+        lambda: tools.phases() == ["idle"], what="设备回连后补推 idle 收屏"
+    )
 
 
 # ------------------------------------------------------------------ 暂停恢复
@@ -405,6 +441,33 @@ async def test_paused_session_restores_as_paused_with_frozen_remaining(store):
     resumed = await fresh.resume(DEVICE_ID)
     assert resumed["outcome"] == "resumed"
     assert resumed["status"]["remaining_s"] == frozen
+
+    await shutdown(fresh)
+
+
+@pytest.mark.asyncio
+async def test_running_session_restore_clamps_remaining_to_the_phase_length(store):
+    """墙钟被回拨后恢复：剩余时间不许超过相位总长。
+
+    盘上存的是墙钟截止时刻，重启时（开机 NTP 步进最容易发生）系统时间往回拨，
+    (deadline_at - now) 就比整段相位还长：该相位实际多跑这段时间，下发给固件的
+    remaining_s 也越界，进度条 lv_bar_set_value(total_s - remaining) 直接为负。
+    暂停分支本来就双向夹紧了，运行态分支漏了上界这一次。
+    """
+    clock = FakeWallClock()
+    manager, _ = make_manager(store, wall_clock=clock)
+    await manager.start(DEVICE_ID)
+    await crash(manager)
+
+    clock.advance(-20 * 60)  # 开机 NTP 把墙钟往回拨了 20 分钟
+    fresh, _ = make_manager(store, wall_clock=clock)
+    await fresh.restore()
+
+    snapshot = (await fresh.status(DEVICE_ID))["status"]
+    assert snapshot["active"] is True
+    assert snapshot["total_s"] == 25 * 60
+    # 最坏影响限制为"这一相位从头开始"，而不是多跑 20 分钟
+    assert snapshot["remaining_s"] == 25 * 60
 
     await shutdown(fresh)
 
