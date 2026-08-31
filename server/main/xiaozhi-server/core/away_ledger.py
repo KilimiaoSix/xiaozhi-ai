@@ -73,6 +73,14 @@ _BUCKET_AGENT_RESULT = 2
 _BUCKET_VISITOR = 3
 _BUCKET_GENERIC = 4
 
+# 播报分级限长（背景：254 小时积压时把台账全文念一遍，开口就是一大段流水账）。
+# 严重告警、留言绝不能丢内容，所以桶序里越靠前的类别播报密度越高：
+#   严重告警 / 留言：逐条播，没有上限。
+#   等待操作：超过这个条数就只播头条 + 报总数，其余留给桌面端返岗页。
+#   已完成（含失败）、普通：任何数量都只报计数，从不念原文。
+_NEEDS_USER_SPEAK_LIMIT = 3
+FOLD_HANDOFF_SENTENCE = "其余我记在桌面端返岗页了。"
+
 
 @dataclass
 class AwayEvent:
@@ -317,29 +325,28 @@ class AwayLedger:
             ]
 
     def compose_speech(self, at: Optional[datetime] = None) -> Optional[str]:
-        """把待播报事项组装成不超过三句的中文播报；没事项返回 None。
+        """把待播报事项按分级规则组装成中文播报；没事项返回 None。
 
-        三句是给 TTS 的硬上限：返岗汇总一口气念十条，用户只会记住最后一条。
+        目标长度约 200 字（不是硬顶）：严重告警、留言逐条播、绝不截断，
+        其余桶靠自身的条数上限/只报计数把总长压住。真发生折叠（等待操作
+        超过 _NEEDS_USER_SPEAK_LIMIT 条）时结尾补一句导流去桌面端返岗页。
         """
         summary = self.pending_summary(at)
         items = [AwayEvent(**item) for item in summary["items"]]
         if not items:
             return None
 
-        clauses = _build_clauses(items)
+        clauses, folded = _build_clauses(items)
         if not clauses:
             return None
 
         duration = _cn_duration(summary["away_minutes"])
         prefix = f"你离开的{duration}里，" if duration else "你离开这会儿，"
 
-        sentences = [prefix + clauses[0] + "。"]
-        if len(clauses) > 1:
-            sentences.append(clauses[1] + "。")
-        if len(clauses) > 2:
-            # 剩下的全部并进第三句，句数不随事项数增长
-            sentences.append("；".join(clauses[2:]) + "。")
-        return "".join(sentences)
+        speech = prefix + "。".join(clauses) + "。"
+        if folded:
+            speech += FOLD_HANDOFF_SENTENCE
+        return speech
 
     def mark_reported(self) -> None:
         """清空待播报队列。当日日志保留——播报过不等于没发生过。"""
@@ -434,33 +441,48 @@ def _load_events(raw: Any) -> list[AwayEvent]:
 
 # ---------------------------------------------------------------- 播报组句
 
-def _build_clauses(items: list[AwayEvent]) -> list[str]:
-    """按桶生成短句，顺序即播报优先级。"""
+def _build_clauses(items: list[AwayEvent]) -> tuple[list[str], bool]:
+    """按桶生成短句，顺序即播报优先级；第二个返回值标记是否发生了折叠。
+
+    折叠专指「本该逐条播、因超过条数上限而只播头条+报总数」这一种情况
+    （目前只有等待操作桶会触发）。已完成/普通桶从设计上就只报计数、不念
+    内容，那是常态而不是溢出后的折叠，不触发导流尾句。
+    """
     buckets: dict[int, list[AwayEvent]] = {}
     for item in items:
         buckets.setdefault(_bucket_of(item), []).append(item)
 
     clauses: list[str] = []
+    folded = False
 
+    # 严重告警：逐条播，不设上限——这类内容绝不能因为长度而丢
     critical = buckets.get(_BUCKET_CRITICAL, [])
     if critical:
-        # count 是同一条告警的重复次数，条数按不同告警数算
-        latest = _trim_sentence_end(critical[-1].text)
-        if len(critical) == 1:
-            clauses.append(f"有严重告警：{latest}")
+        texts = [_trim_sentence_end(item.text) for item in critical]
+        if len(texts) == 1:
+            clauses.append(f"有严重告警：{texts[0]}")
         else:
-            clauses.append(f"有 {len(critical)} 条严重告警，最新一条：{latest}")
+            clauses.append(f"有 {len(texts)} 条严重告警：" + "；".join(texts))
 
+    # 等待操作：条数在上限内逐条播全；超过上限只播头条（最新一条）+ 报总数并折叠
     needs_user = buckets.get(_BUCKET_NEEDS_USER, [])
     if needs_user:
-        latest = _trim_sentence_end(needs_user[-1].text)
-        if len(needs_user) == 1:
-            clauses.append(f"有个任务在等你确认：{latest}")
+        if len(needs_user) <= _NEEDS_USER_SPEAK_LIMIT:
+            texts = [_trim_sentence_end(item.text) for item in needs_user]
+            if len(texts) == 1:
+                clauses.append(f"有个任务在等你确认：{texts[0]}")
+            else:
+                clauses.append(
+                    f"有 {len(texts)} 个任务在等你确认：" + "；".join(texts)
+                )
         else:
+            latest = _trim_sentence_end(needs_user[-1].text)
             clauses.append(
                 f"有 {len(needs_user)} 个任务在等你确认，比如：{latest}"
             )
+            folded = True
 
+    # 已完成（含失败）：只报计数，不念内容——细节留给桌面端返岗页
     results = buckets.get(_BUCKET_AGENT_RESULT, [])
     completed = [item for item in results if item.kind == KIND_AGENT_COMPLETED]
     failed = [item for item in results if item.kind == KIND_AGENT_FAILED]
@@ -469,31 +491,26 @@ def _build_clauses(items: list[AwayEvent]) -> list[str]:
         who = f"{sources.pop()} " if len(sources) == 1 else ""
         clauses.append(f"{who}完成了 {len(completed)} 个任务")
     if failed:
-        latest = _trim_sentence_end(failed[-1].text)
-        if len(failed) == 1:
-            clauses.append(f"有个任务失败了：{latest}")
-        else:
-            clauses.append(f"有 {len(failed)} 个任务失败了，比如：{latest}")
+        clauses.append(f"有 {len(failed)} 个任务失败了")
 
+    # 留言：逐条播，不设上限——托付给机器人的事不能只报最新一条
     visitors = buckets.get(_BUCKET_VISITOR, [])
     if visitors:
-        latest = _trim_sentence_end(visitors[-1].text)
         if len(visitors) == 1:
-            clauses.append(latest)
+            clauses.append(_trim_sentence_end(visitors[0].text))
         else:
-            clauses.append(
-                f"有 {len(visitors)} 条留言，最近一条是{_strip_visitor_prefix(latest)}"
-            )
+            texts = [
+                _strip_visitor_prefix(_trim_sentence_end(item.text))
+                for item in visitors
+            ]
+            clauses.append(f"有 {len(texts)} 条留言：" + "；".join(texts))
 
+    # 普通：只报计数，不念内容
     generic = buckets.get(_BUCKET_GENERIC, [])
     if generic:
-        latest = _trim_sentence_end(generic[-1].text)
-        if len(generic) == 1:
-            clauses.append(latest)
-        else:
-            clauses.append(f"还有 {len(generic)} 条消息，最近一条是{latest}")
+        clauses.append(f"有 {len(generic)} 条普通消息")
 
-    return [clause for clause in clauses if clause]
+    return [clause for clause in clauses if clause], folded
 
 
 # ---------------------------------------------------------------- 单例

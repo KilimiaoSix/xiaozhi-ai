@@ -69,7 +69,7 @@ class Recorder:
         return [call["text"] for call in self.calls]
 
 
-def build(owner_status=None, *, conn=object(), resolve=True):
+def build(owner_status=None, *, conn=object(), resolve=True, config=None):
     clock = FakeClock()
     push = Recorder()
     ledger = FakeLedger()
@@ -80,6 +80,7 @@ def build(owner_status=None, *, conn=object(), resolve=True):
         return (DEVICE_ID, conn)
 
     flow = VisitorFlow(
+        config,
         owner_status_store=owner_status or FakeOwnerStatus(),
         away_ledger=ledger,
         push_event=push,
@@ -250,12 +251,13 @@ async def test_push_failure_is_swallowed_and_retried():
 
 @pytest.mark.asyncio
 async def test_message_within_window_is_recorded():
+    """确认复述：应答不再是固定的「记下了」，而是带上留言内容。"""
     flow, _clock, _push, ledger, _conn = build()
     await flow.on_visitor_detected(WORKSTATION)
 
     reply = flow.handle_asr_text(DEVICE_ID, "日志方案已发飞书")
 
-    assert reply == "记下了，他回来我就提醒。"
+    assert reply == "记下了：日志方案已发飞书。他回来我就转达"
     assert len(ledger.records) == 1
     record = ledger.records[0]
     assert record["kind"] == "visitor_message"
@@ -297,7 +299,7 @@ async def test_long_sentence_containing_negative_word_is_still_a_message():
         DEVICE_ID, "没有别的事，就是日志方案已经发飞书了让他看一下"
     )
 
-    assert reply == "记下了，他回来我就提醒。"
+    assert reply == "记下了：没有别的事，就是日志方案已经发飞书了让他看一下。他回来我就转达"
     assert len(ledger.records) == 1
 
 
@@ -325,6 +327,82 @@ async def test_blank_text_keeps_window_open():
 
     assert flow.handle_asr_text(DEVICE_ID, "   ") is None
     assert flow.handle_asr_text(DEVICE_ID, "日志方案已发飞书") is not None
+
+
+# ---------------------------------------------------------------- 噪声过滤 + 确认复述
+
+WAKE_WORD_CONFIG = {
+    "wakeup_words": ["你好小智"],
+    "wake_word": {"display": "你好喵伴"},
+}
+
+
+@pytest.mark.asyncio
+async def test_wake_word_like_text_is_not_recorded_and_reasks():
+    """真机实锤：误转写的唤醒词（「你好，苗办」同音归一后即唤醒词「你好喵伴」）
+    不能原样记成留言，而是不入账、再问一次。"""
+    flow, _clock, _push, ledger, _conn = build(config=WAKE_WORD_CONFIG)
+    await flow.on_visitor_detected(WORKSTATION)
+
+    reply = flow.handle_asr_text(DEVICE_ID, "你好，苗办")
+
+    assert reply == "不好意思没听清，你要带的话是？"
+    assert ledger.records == []
+
+
+@pytest.mark.asyncio
+async def test_too_short_text_is_not_recorded_and_reasks():
+    """归一后不足 4 个字，视为噪声：不入账，再问一次。"""
+    flow, _clock, _push, ledger, _conn = build()
+    await flow.on_visitor_detected(WORKSTATION)
+
+    reply = flow.handle_asr_text(DEVICE_ID, "嗯啊")
+
+    assert reply == "不好意思没听清，你要带的话是？"
+    assert ledger.records == []
+
+
+@pytest.mark.asyncio
+async def test_reask_reopens_window_for_second_attempt():
+    """再问一次意味着窗口要重新打开，等来访者的第二句。"""
+    flow, _clock, _push, ledger, _conn = build()
+    await flow.on_visitor_detected(WORKSTATION)
+
+    flow.handle_asr_text(DEVICE_ID, "嗯啊")
+    reply = flow.handle_asr_text(DEVICE_ID, "日志方案已发飞书")
+
+    assert reply == "记下了：日志方案已发飞书。他回来我就转达"
+    assert len(ledger.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_second_noise_closes_politely_without_recording():
+    """连续两次都是噪声：礼貌收场，不再问第三次，也不入账。"""
+    flow, _clock, _push, ledger, _conn = build(config=WAKE_WORD_CONFIG)
+    await flow.on_visitor_detected(WORKSTATION)
+
+    first = flow.handle_asr_text(DEVICE_ID, "你好喵伴")
+    assert first == "不好意思没听清，你要带的话是？"
+
+    second = flow.handle_asr_text(DEVICE_ID, "呃")
+    assert second == "好的，他回来我就说你来过。"
+    assert ledger.records == []
+    # 窗口已经收场关闭，第三句不再被当成留言处理
+    assert flow.handle_asr_text(DEVICE_ID, "日志方案已发飞书") is None
+
+
+@pytest.mark.asyncio
+async def test_long_message_reply_truncated_but_ledger_keeps_full_text():
+    """复述超过约 40 字时播报截断加省略号，台账仍存全文。"""
+    flow, _clock, _push, ledger, _conn = build()
+    await flow.on_visitor_detected(WORKSTATION)
+
+    long_text = "项目进度需要跟进" * 6  # 48 字，超过 40 字阈值
+    reply = flow.handle_asr_text(DEVICE_ID, long_text)
+
+    assert len(ledger.records) == 1
+    assert ledger.records[0]["text"] == f"有同事留言：{long_text}"
+    assert reply == f"记下了：{long_text[:40]}…。他回来我就转达"
 
 
 @pytest.mark.asyncio
@@ -382,7 +460,7 @@ async def test_module_helper_uses_singleton():
         await flow.on_visitor_detected(WORKSTATION)
         assert (
             visitor_flow_handle_asr(DEVICE_ID, "日志方案已发飞书")
-            == "记下了，他回来我就提醒。"
+            == "记下了：日志方案已发飞书。他回来我就转达"
         )
         assert len(ledger.records) == 1
     finally:

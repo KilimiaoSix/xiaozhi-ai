@@ -314,3 +314,112 @@ async def test_clear_on_already_available_is_a_noop_reply(tmp_path, fixed_now):
 
     assert response.response == "好，状态已恢复"
     assert read_status(conn)["state"] == STATUS_AVAILABLE
+
+
+# ---------------------------------------------------------------- 声明离开后自动收会话
+#
+# 真机实锤：用户说"我去开会了"，set_owner_status 落盘+播确认语后会话仍开着——
+# 设备停在聆听态，语音活跃保护把摄像头离席判定最多推迟 2 分钟（会话 120s
+# 超时才断）。目标状态语义是"主人将不在工位"（meeting/away/leave）时，应该
+# 像 handle_exit_intent.py 那样置 conn.close_after_chat = True，确认语播完
+# 自然收场；查询、恢复在岗（available）不该收场。
+
+
+class SlottedConn:
+    """没有 close_after_chat 槽位、也不能动态挂新属性的 conn。
+
+    模拟"conn 上这个属性不存在（且不可创建）"的极端场景，验证语音函数不会
+    因为 setattr 失败而报错、确认语回复照常送达。"""
+
+    __slots__ = ("device_id", "config")
+
+    def __init__(self, persist_path):
+        self.device_id = "dc:da:0c:26:9a:60"
+        self.config = {"owner_status": {"persist_path": str(persist_path)}}
+
+
+@pytest.mark.asyncio
+async def test_set_meeting_marks_close_after_chat(tmp_path, fixed_now):
+    conn = make_conn(tmp_path)
+    assert not hasattr(conn, "close_after_chat")
+
+    response = await set_owner_status(conn, STATUS_MEETING, expected_return="11:30")
+
+    assert response.result == "ok"
+    assert conn.close_after_chat is True
+
+
+@pytest.mark.asyncio
+async def test_set_away_marks_close_after_chat(tmp_path, fixed_now):
+    conn = make_conn(tmp_path)
+
+    response = await set_owner_status(conn, STATUS_AWAY)
+
+    assert response.result == "ok"
+    assert conn.close_after_chat is True
+
+
+@pytest.mark.asyncio
+async def test_set_leave_marks_close_after_chat(tmp_path, fixed_now):
+    conn = make_conn(tmp_path)
+
+    response = await set_owner_status(conn, STATUS_LEAVE, leave_start="today")
+
+    assert response.result == "ok"
+    assert conn.close_after_chat is True
+
+
+@pytest.mark.asyncio
+async def test_set_available_does_not_mark_close_after_chat(tmp_path, fixed_now):
+    conn = make_conn(tmp_path)
+
+    response = await set_owner_status(conn, STATUS_AVAILABLE)
+
+    assert response.result == "ok"
+    assert not hasattr(conn, "close_after_chat")
+
+
+@pytest.mark.asyncio
+async def test_invalid_input_does_not_mark_close_after_chat(tmp_path, fixed_now):
+    conn = make_conn(tmp_path)
+
+    response = await set_owner_status(conn, STATUS_MEETING, expected_return="午饭后")
+
+    assert response.result == "invalid_input"
+    assert not hasattr(conn, "close_after_chat")
+
+
+@pytest.mark.asyncio
+async def test_query_does_not_mark_close_after_chat(tmp_path, fixed_now):
+    conn = make_conn(tmp_path)
+    await set_owner_status(conn, STATUS_MEETING, expected_return="11:30")
+    conn.close_after_chat = False  # 模拟真实 ConnectionHandler：本轮会话还没结束
+
+    await query_owner_status(conn)
+
+    assert conn.close_after_chat is False
+
+
+@pytest.mark.asyncio
+async def test_clear_restoring_available_does_not_mark_close_after_chat(
+    tmp_path, fixed_now
+):
+    conn = make_conn(tmp_path)
+    await set_owner_status(conn, STATUS_MEETING, expected_return="11:30")
+    conn.close_after_chat = False  # 模拟真实 ConnectionHandler：本轮会话还没结束
+
+    await clear_owner_status(conn)
+
+    assert conn.close_after_chat is False
+
+
+@pytest.mark.asyncio
+async def test_set_meeting_tolerates_missing_close_after_chat_attribute(
+    tmp_path, fixed_now
+):
+    conn = SlottedConn(tmp_path / "owner_status.json")
+
+    response = await set_owner_status(conn, STATUS_MEETING, expected_return="11:30")
+
+    assert response.result == "ok"
+    assert response.response == "知道了，我帮你看着工位"
