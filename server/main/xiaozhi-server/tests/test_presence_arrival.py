@@ -10,12 +10,14 @@ from itertools import count
 
 import pytest
 
+from core.away_ledger import AwayLedger
 from core.handle import pushHandle
 from core.presence_arrival import (
     PresenceArrivalOrchestrator,
     create_presence_arrival_orchestrator,
 )
 from core.presence_registry import PresenceReport
+from core.visitor_flow import VisitorFlow
 
 
 NOW = datetime(2026, 8, 18, 1, 10, 30, tzinfo=timezone.utc)
@@ -483,13 +485,21 @@ class FakeAwayLedger:
         self.marked_away = 0
         self.marked_returned = 0
         self.marked_reported = 0
+        self.away_at = None
+        self.records = []
 
     def is_away(self):
         return self.away
 
+    def record(self, kind, text, **kwargs):
+        entry = {"kind": kind, "text": text, **kwargs}
+        self.records.append(entry)
+        return entry
+
     def mark_away(self, at=None):
         self.marked_away += 1
         self.away = True
+        self.away_at = at
 
     def mark_returned(self, at=None):
         self.marked_returned += 1
@@ -506,10 +516,14 @@ class FakeAwayLedger:
 class FakeVisitorFlow:
     def __init__(self) -> None:
         self.calls = []
+        self.cancelled = []
 
     async def on_visitor_detected(self, workstation_id):
         self.calls.append(workstation_id)
         return True
+
+    def cancel_window(self, device_id):
+        self.cancelled.append(device_id)
 
 
 class FakeOwnerStatus:
@@ -773,6 +787,85 @@ async def test_visitor_flow_does_not_mark_arrival_greeted():
     )
 
     assert push_event.texts == ["早上好，今天也一起把事情搞定吧。"]
+
+
+@pytest.mark.asyncio
+async def test_owner_return_invalidates_visitor_message_window():
+    """主人被确认返岗后，访客留言窗口必须当场失效。
+
+    真机时序：主人离席（台账里离席窗口开着）→ 他走回工位，最初几帧因角度被判
+    unknown → 走访客分支，播「他暂时不在工位…」并开 90 秒留言窗口 → identity
+    收敛到 owner，正常迎接并关掉离席窗口。留言窗口若纹丝不动，他开口说的第一句
+    会在对话门之前被 visitor_flow 吃掉：记成「有同事留言」、答一句「记下了」，
+    请求根本没进 LLM。这里挂**真实** VisitorFlow，验的是整条链路而不是桩。
+    """
+    conn = object()
+    ledger = FakeAwayLedger(away=True)
+    visitor_push = Recorder()
+    flow = VisitorFlow(
+        owner_status_store=FakeOwnerStatus("meeting"),
+        away_ledger=ledger,
+        push_event=visitor_push,
+        device_resolver=lambda workstation_id: (DEVICE_ID, conn),
+        clock=lambda: datetime(2026, 8, 18, 9, 30, 0),
+    )
+    orchestrator, _clock, push_event, _push_alert = build(
+        ledger=ledger,
+        visitor_flow=flow,
+        owner_status=FakeOwnerStatus("meeting"),
+        conn=conn,
+    )
+
+    await orchestrator.on_report(make_report(identity_state="unknown"), ACCEPTED)
+    assert visitor_push.texts == ["他正在开会，暂时不在工位。需要帮你留句话吗？"]
+    assert flow.has_open_window(DEVICE_ID) is True
+
+    await orchestrator.on_report(
+        make_report(identity_state="owner", previous_state="present",
+                    reason="identity_changed"),
+        ACCEPTED,
+    )
+
+    assert push_event.texts == ["早上好，今天也一起把事情搞定吧。"]
+    assert flow.has_open_window(DEVICE_ID) is False
+    # 主人的第一句归对话链路管：既不入账，也不被复述掉
+    assert flow.handle_asr_text(DEVICE_ID, "帮我看下今天的日程") is None
+    assert ledger.records == []
+
+
+@pytest.mark.asyncio
+async def test_owner_return_in_cooldown_still_cancels_visitor_window():
+    """迎接冷却期内的静默返岗一个字都不念，留言窗口照样必须失效。
+
+    这正是「主人的请求下次返岗时被当成同事留言念给他自己听」那个窄变体的入口：
+    冷却期 + 无待播报汇总时主路径早退，只走静默收账。
+    """
+    visitor_flow = FakeVisitorFlow()
+    ledger = FakeAwayLedger(away=True)
+    orchestrator, clock, push_event, _push_alert = build(
+        visitor_flow=visitor_flow, ledger=ledger,
+        owner_status=FakeOwnerStatus("meeting"),
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(91)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    await orchestrator.on_report(make_report(identity_state="unknown"), ACCEPTED)
+    assert visitor_flow.calls == [WORKSTATION]
+    before_return = len(visitor_flow.cancelled)
+
+    await orchestrator.on_report(
+        make_report(identity_state="owner", previous_state="present",
+                    reason="identity_changed"),
+        ACCEPTED,
+    )
+
+    # 冷却期内没有第二次问候，但窗口失效必须照做
+    assert push_event.texts == ["早上好，今天也一起把事情搞定吧。"]
+    assert visitor_flow.cancelled[before_return:] == [DEVICE_ID]
 
 
 @pytest.mark.asyncio
@@ -1247,3 +1340,297 @@ async def test_probe_failure_falls_back_to_camera_only():
     )
 
     assert len(push_alert.calls) == 1
+
+
+# ------------------------------------------- 离席窗口不能变成吸收态
+
+
+@pytest.mark.asyncio
+async def test_quiet_return_in_cooldown_closes_away_window(tmp_path):
+    """冷却期内的静默返岗也要收账（走真实台账验证）。
+
+    姿态抖动会让宽限期虚过：主人没动地方，摄像头却报了一轮 absent 打开离席
+    窗口，两秒后又报 present。冷却期内没有待播报事项时不出声——但不出声不等于
+    人没回来。漏掉 mark_returned 的话 is_away() 恒为真：此后主人在工位时发生
+    的每一件事都被记成「离席期间发生」进待播报队列，来访者流程还会对着在场
+    的主人说他不在，离开时长一路累加到几百小时。
+    """
+    ledger = AwayLedger(tmp_path / "away_ledger.json")
+    orchestrator, clock, _push_event, _push_alert = build(ledger=ledger)
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+    assert ledger.is_away() is True
+
+    clock.advance(2)
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+
+    assert ledger.is_away() is False
+    # 主人已经坐回工位，之后发生的事他当场就看见了，不该进返岗队列
+    ledger.record("visitor_message", "同事张三来找过你")
+    assert ledger.pending_summary()["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_away_window_starts_at_first_absent_not_at_grace_expiry():
+    """离席窗口的起点是摄像头第一次报没人，不是宽限期满的那一刻。
+
+    用宽限期满的时刻当起点，返岗汇总里的离开时长永远少算一个宽限期。
+    """
+    ledger = FakeAwayLedger()
+    orchestrator, clock, _push_event, _push_alert = build(ledger=ledger)
+
+    await orchestrator.on_report(make_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        make_report("absent", previous_state="absent", reason="heartbeat"), ACCEPTED
+    )
+
+    assert ledger.marked_away == 1
+    assert ledger.away_at is not None
+    backdated_seconds = (datetime.now() - ledger.away_at).total_seconds()
+    assert 89 <= backdated_seconds <= 120
+
+
+# ------------------------------------------- 播报降级不清账
+
+
+@pytest.mark.asyncio
+async def test_degraded_push_keeps_pending_for_next_time():
+    """设备忙时播报降级为「仅提示」：push_work_event 返回 False 且不抛异常。
+
+    留言一个字都没念出来，台账却被清空的话，同事的留言就永远消失了——
+    桌面端返岗页读的也是同一个待播报队列。
+    """
+    ledger = FakeAwayLedger(speech="你离开的三十五分钟里，有一条留言。", away=True)
+
+    class DegradedRecorder(Recorder):
+        async def __call__(self, conn, text, **kwargs):
+            await super().__call__(conn, text, **kwargs)
+            return False  # ensure_speakable 判忙，降级为仅提示
+
+    push_event = DegradedRecorder()
+    orchestrator, _clock, _pe, _push_alert = build(
+        ledger=ledger, push_event=push_event
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+
+    assert push_event.texts == [
+        "早上好，今天也一起把事情搞定吧。你离开的三十五分钟里，有一条留言。"
+    ]
+    assert ledger.marked_reported == 0  # 没念出来就不清账
+    assert ledger.compose_speech() is not None
+    # 人确实回来了，窗口照关，否则来访者流程会把主人当访客
+    assert ledger.marked_returned == 1
+    assert ledger.is_away() is False
+
+
+# ------------------------------------------- identity 晚于迎接才收敛到 owner
+
+
+async def _greet_generically_before_identity_settles(orchestrator, clock):
+    """底片没录过/一直低头看不到脸：等待超时后按通用问候迎接并置 greeted。"""
+    await orchestrator.on_report(make_report(identity_state="no_face"), ACCEPTED)
+    clock.advance(5)
+    await orchestrator.on_report(
+        make_report(identity_state="no_face", previous_state="present",
+                    reason="heartbeat"),
+        ACCEPTED,
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_owner_convergence_speaks_summary_and_settles():
+    """通用问候先发出去之后 identity 才收敛到 owner，返岗汇总不能被吞掉。"""
+    ledger = FakeAwayLedger(speech="你离开的三十五分钟里，有一条留言。", away=True)
+    orchestrator, clock, push_event, _push_alert = build(ledger=ledger)
+
+    await _greet_generically_before_identity_settles(orchestrator, clock)
+    assert push_event.texts == ["你好，我在这儿。"]
+    assert ledger.marked_reported == 0
+
+    clock.advance(2)
+    await orchestrator.on_report(
+        make_report(identity_state="owner", previous_state="present",
+                    reason="identity_changed"),
+        ACCEPTED,
+    )
+
+    # 不重复问候，只补播汇总
+    assert push_event.texts == [
+        "你好，我在这儿。",
+        "你离开的三十五分钟里，有一条留言。",
+    ]
+    assert ledger.marked_reported == 1
+    assert ledger.marked_returned == 1
+    assert ledger.is_away() is False
+
+
+@pytest.mark.asyncio
+async def test_late_owner_convergence_without_summary_closes_window_silently():
+    """没有待播报事项时只收账，不再出声。"""
+    ledger = FakeAwayLedger(away=True)
+    orchestrator, clock, push_event, _push_alert = build(ledger=ledger)
+
+    await _greet_generically_before_identity_settles(orchestrator, clock)
+    clock.advance(2)
+    await orchestrator.on_report(
+        make_report(identity_state="owner", previous_state="present",
+                    reason="identity_changed"),
+        ACCEPTED,
+    )
+
+    assert push_event.texts == ["你好，我在这儿。"]
+    assert ledger.marked_returned == 1
+    assert ledger.is_away() is False
+
+
+@pytest.mark.asyncio
+async def test_late_owner_convergence_settles_only_once():
+    """收敛后的每条心跳都是 owner，补收只做一次。"""
+    ledger = FakeAwayLedger(speech="你离开的三十五分钟里，有一条留言。", away=True)
+    orchestrator, clock, push_event, _push_alert = build(ledger=ledger)
+
+    await _greet_generically_before_identity_settles(orchestrator, clock)
+    for _ in range(3):
+        clock.advance(15)
+        await orchestrator.on_report(
+            make_report(identity_state="owner", previous_state="present",
+                        reason="heartbeat"),
+            ACCEPTED,
+        )
+
+    assert len(push_event.texts) == 2
+    assert ledger.marked_reported == 1
+    assert ledger.marked_returned == 1
+
+
+# ------------------------------------------- 两个工位映射同一台设备
+
+SIBLING_WORKSTATION = "desk-sibling"
+
+
+def _sibling_report(*args, **kwargs):
+    report = make_report(*args, **kwargs)
+    object.__setattr__(report, "workstation_id", SIBLING_WORKSTATION)
+    return report
+
+
+def _shared_device_env(*, ledger=None):
+    """两个工位映射到同一台设备（真实配置里 desktop-local 与 desk-test 就是）。"""
+    conn = object()
+    clock = FakeClock()
+    push_event = Recorder()
+    push_alert = Recorder()
+    base = BaseStateRecorder()
+    orchestrator = PresenceArrivalOrchestrator(
+        make_config(
+            workstations={WORKSTATION: DEVICE_ID, SIBLING_WORKSTATION: DEVICE_ID}
+        ),
+        FakeRegistry(conn),
+        push_event=push_event,
+        push_alert=push_alert,
+        set_base_state=base,
+        clock=clock,
+        away_ledger=ledger,
+    )
+    return orchestrator, clock, push_event, push_alert, base
+
+
+@pytest.mark.asyncio
+async def test_sibling_workstation_present_blocks_sleep_on_shared_device():
+    """一路看得见人时，另一路的 absent 不能单方面把共享设备写进休眠。
+
+    基态按 device_id 存、离席台账是全局单例，两个工位对同一目标写入没有
+    owner 概念，谁后写谁赢——看不见人的那一路会把在场的主人判成离席。
+    """
+    ledger = FakeAwayLedger()
+    orchestrator, clock, _push_event, push_alert, base = _shared_device_env(
+        ledger=ledger
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    await orchestrator.on_report(_sibling_report("absent"), ACCEPTED)
+    # 两路各按 15 秒心跳继续上报：一路一直看得见人，另一路一直看不见
+    for _ in range(6):
+        clock.advance(15)
+        await orchestrator.on_report(
+            make_report(identity_state="owner", previous_state="present",
+                        reason="heartbeat"),
+            ACCEPTED,
+        )
+        await orchestrator.on_report(
+            _sibling_report("absent", previous_state="absent", reason="heartbeat"),
+            ACCEPTED,
+        )
+
+    assert set(base.statuses) == {"在岗"}  # 基态没被兄弟工位改写成休眠
+    assert push_alert.calls == []  # 没下发休眠画面
+    assert ledger.marked_away == 0  # 离席窗口没被单方面打开
+
+
+@pytest.mark.asyncio
+async def test_stale_sibling_presence_stops_blocking_sleep():
+    """兄弟工位不报了之后，冻住的「在岗」不能永远压住另一路的离席判定。
+
+    桌面端被关掉、presence-agent 挂掉时那一路直接没有上报了，present_since
+    会一直停在最后一次看到人的时刻。仲裁只认新鲜证据：连丢三条心跳就当那一路
+    已经死了——否则设备再也睡不着、离席窗口也永远开不起来，返岗汇总跟着全丢。
+    """
+    ledger = FakeAwayLedger()
+    orchestrator, clock, _push_event, push_alert, base = _shared_device_env(
+        ledger=ledger
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    # desk-test 这一路从此不再上报，只剩兄弟工位的 absent 心跳
+    await orchestrator.on_report(_sibling_report("absent"), ACCEPTED)
+    clock.advance(90)
+    await orchestrator.on_report(
+        _sibling_report("absent", previous_state="absent", reason="heartbeat"),
+        ACCEPTED,
+    )
+
+    assert base.statuses[-1] == "休眠"
+    assert len(push_alert.calls) == 1
+    assert ledger.marked_away == 1
+
+
+@pytest.mark.asyncio
+async def test_greeted_heartbeat_reasserts_on_duty_base_state():
+    """基态被别处改写成休眠后，已迎接工位的下一条心跳要把「在岗」断言回来。
+
+    休眠基态在生产里是可进不可出的：唯一的复位写者就是这里的 present 分支，
+    而它原本排在 greeted 早退之后。人在工位屏幕却常驻「工位没人，我先眯一
+    会儿」，之后每条带 restore_after 的推送播完还会被恢复成休眠。
+    走真实 pushHandle 基态存储验证（autouse fixture 已隔离到 tmp）。
+    """
+    conn = object()
+    orchestrator = PresenceArrivalOrchestrator(
+        make_config(),
+        FakeRegistry(conn),
+        push_event=Recorder(),
+        push_alert=Recorder(),
+        clock=FakeClock(),
+    )
+
+    await orchestrator.on_report(make_report(identity_state="owner"), ACCEPTED)
+    assert pushHandle.get_base_state(DEVICE_ID)["status"] == "在岗"
+
+    # 兄弟工位（同一台设备的另一路）把基态改写成休眠
+    pushHandle.set_base_state(
+        DEVICE_ID, "休眠", "工位没人，我先眯一会儿。", "sleepy"
+    )
+
+    await orchestrator.on_report(
+        make_report(identity_state="owner", previous_state="present",
+                    reason="heartbeat"),
+        ACCEPTED,
+    )
+
+    assert pushHandle.get_base_state(DEVICE_ID)["status"] == "在岗"

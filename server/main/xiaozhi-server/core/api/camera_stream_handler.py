@@ -25,7 +25,12 @@ from core.camera_stream.protocol import (
 )
 from core.camera_stream.observers import FrameObserverHub, frame_observer_hub
 from core.camera_stream.session import CameraStreamSession, Frame
-from core.presence_registry import PresenceRegistry, PresenceReport
+from core.presence_registry import (
+    PresenceOutOfOrderError,
+    PresenceRegistry,
+    PresenceReport,
+    PresenceValidationError,
+)
 
 
 _REGISTRY_METRICS = {
@@ -402,35 +407,49 @@ class CameraStreamHandler:
                 presence["changed"],
                 bool(registry_identity.get("changed")),
             )
-            report = PresenceReport.from_payload(
-                {
-                    "schema_version": "1.0",
-                    "event_id": str(uuid4()),
-                    "agent_instance_id": session_id,
-                    "workstation_id": options.workstation_id,
-                    "source": "camera_pose",
-                    "state": current_presence,
-                    "previous_state": previous_presence,
-                    "changed": presence["changed"],
-                    "reason": reason,
-                    "sequence": registry_sequence,
-                    "observed_at": _isoformat_millis(now),
-                    "metrics": {
-                        key: value
-                        for key, value in result.get("metrics", {}).items()
-                        if key in _REGISTRY_METRICS
+            # registry 拒收一条上报不能拖垮识别流：异常从这里逃出去会打死
+            # CameraStreamSession._run，而外层帧循环照收不误、cancel() 的
+            # gather(return_exceptions=True) 还会把它吃掉——桌面端从此既没有
+            # recognition_result 也没有 error 帧，编排器被永久冻在最后一条上报的
+            # 状态（那条若是 absent，主人坐在工位上机器人也一直睡）。
+            # 跳过 registry 写入即可，识别流与桌面 UI 照常活着；服务端墙钟追平或
+            # 旧记录过期后（见 PresenceRegistry.accept 的 stale 接管）自动恢复。
+            try:
+                report = PresenceReport.from_payload(
+                    {
+                        "schema_version": "1.0",
+                        "event_id": str(uuid4()),
+                        "agent_instance_id": session_id,
+                        "workstation_id": options.workstation_id,
+                        "source": "camera_pose",
+                        "state": current_presence,
+                        "previous_state": previous_presence,
+                        "changed": presence["changed"],
+                        "reason": reason,
+                        "sequence": registry_sequence,
+                        "observed_at": _isoformat_millis(now),
+                        "metrics": {
+                            key: value
+                            for key, value in result.get("metrics", {}).items()
+                            if key in _REGISTRY_METRICS
+                        },
+                        "identity": registry_identity,
                     },
-                    "identity": registry_identity,
-                },
-                now_utc=now,
-            )
-            acceptance = self._registry.accept(report)
-            if self._on_accepted is not None:
-                try:
-                    await self._on_accepted(report, acceptance)
-                except Exception:
-                    # 编排失败不能拖垮识别流：桌面端还等着 recognition_result 刷新 UI
-                    self._logger.exception("presence on_accepted 回调失败，已忽略")
+                    now_utc=now,
+                )
+                acceptance = self._registry.accept(report)
+            except (PresenceValidationError, PresenceOutOfOrderError) as exc:
+                self._logger.warning(
+                    f"工位 {options.workstation_id} 的摄像头上报未被 registry 接受，"
+                    f"本帧只刷新桌面端：{exc}"
+                )
+            else:
+                if self._on_accepted is not None:
+                    try:
+                        await self._on_accepted(report, acceptance)
+                    except Exception:
+                        # 编排失败不能拖垮识别流：桌面端还等着 recognition_result 刷新 UI
+                        self._logger.exception("presence on_accepted 回调失败，已忽略")
             previous_presence = current_presence
             await ws.send_json(event)
 

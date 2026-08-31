@@ -8,10 +8,13 @@
 1. **只说公开信息。** 会议主题、请假原因不出 owner_status，这里也只用
    state / expected_return 拼固定模板，绝不把 owner_status 的其它字段念出去。
 2. **防抖。** presence 上报在人站着不动时也会持续来（心跳 15 秒一条），
-   没有冷却期的话来访者会被同一句话反复轰炸。冷却只在推送成功后才计，
-   设备不在线的那一次根本没发生，不能把冷却用掉。
+   没有冷却期的话来访者会被同一句话反复轰炸。冷却只在**话真出声**之后才计：
+   设备不在线、或设备忙到 push_work_event 降级为仅提示（返回 False，不抛异常）
+   的那一次根本没发生，不能把冷却用掉。
 3. **留言窗口是有界的。** 播报成功后开一个窗口（默认 90 秒），只有窗口内
    这台设备的下一句 ASR 才当留言；否则主人自己回来说的话会被记成留言。
+   除了被消费与自然过期，主人被确认返岗时 presence 编排会调 cancel_window
+   提前失效——返岗首帧常被判 unknown，那一下开出来的窗口正好罩住他的第一句话。
 4. **候选留言要先过噪声过滤，入账要带确认复述。** 真机实锤过：设备在
    Listening 态下唤醒模型是关的，一句被 ASR 误转写的唤醒词（「你好么办」
    之类）会被当场原样记成留言、无任何确认。所以候选文本先归一（复用
@@ -240,7 +243,7 @@ class VisitorFlow:
 
         text = self._compose_announcement()
         try:
-            await self._push_event(
+            spoke = await self._push_event(
                 conn,
                 text=text,
                 emotion=DEFAULT_EMOTION,
@@ -251,6 +254,18 @@ class VisitorFlow:
         except Exception as e:
             # 没说出口就不能记冷却，下一条上报还要再试一次
             self._logger.warning(f"来访应答推送失败，将在下次上报重试: {e}")
+            return False
+
+        if not spoke:
+            # 「没抛异常」不等于「念出来了」：设备忙时 push_work_event 只闪一行
+            # OLED 提示就降级为仅提示并返回 False，问句一个字都没出去。此时既不能
+            # 记冷却（否则访客再站 180 秒也等不到第二次应答），更不能开留言窗口
+            # （否则窗口里下一句路过同事的闲聊、或主人回来说的第一句会被当成留言
+            # 入账）。语义与上面推送失败那条一致：下一条上报重试。
+            self._logger.info(
+                f"工位 {workstation_id} 来访应答降级为静音（设备忙），"
+                f"不记冷却也不开留言窗口，将在下次上报重试"
+            )
             return False
 
         with self._lock:
@@ -362,6 +377,21 @@ class VisitorFlow:
         if len(brief) > BROADCAST_TRUNCATE_CHARS:
             brief = brief[:BROADCAST_TRUNCATE_CHARS] + "…"
         return REPLY_RECORDED_TEMPLATE.format(brief=brief)
+
+    def cancel_window(self, device_id: str) -> None:
+        """让这台设备的留言窗口立刻失效（幂等）。
+
+        窗口原本只有两个出口：被一次 ASR 消费，或自然过期。主人返岗被确认时
+        必须还有第三个出口——返岗首帧因角度被判 unknown 会走访客分支开出一个
+        90 秒窗口，identity 随后收敛到 owner 正常迎接，窗口却纹丝不动；他开口
+        说的第一句在对话门之前就被 handle_asr_text 吃掉，记成「有同事留言」、
+        答一句「记下了」，请求根本没进 LLM。由 presence 编排在确认 owner 时调用。
+        """
+        if not device_id:
+            return
+        with self._lock:
+            self._windows.pop(device_id, None)
+            self._noise_retry_used.discard(device_id)
 
     def has_open_window(self, device_id: str) -> bool:
         with self._lock:

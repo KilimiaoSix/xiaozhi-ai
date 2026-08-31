@@ -368,7 +368,18 @@ class PresenceRegistry:
                         raise PresenceOutOfOrderError(
                             "sequence must increase within an agent instance"
                         )
-                else:
+                    if report.observed_at < current_report.observed_at - MAX_CLOCK_SKEW:
+                        raise PresenceValidationError(
+                            "observed_at is more than 5 minutes older than the current report"
+                        )
+                elif not self._is_stale(current):
+                    # 接管规则只在槽位还活着时成立。记录一旦 stale（超过
+                    # stale_after_seconds 没人上报，get() 对外也早就是 stale），
+                    # 持有者已经不报了，再守着它只会把工位永久锁死：上报端的
+                    # sequence 只增不减、实例 id 进程内固定，一次拒绝之后它再也
+                    # 回不到 sequence 1，此后条条被拒，编排器一条上报都收不到，
+                    # 只能人工重启。stale 之后放行任意 sequence 与任意 observed_at
+                    # （时钟被 NTP/睡眠唤醒拨回去的实例也要能重新接管）。
                     if report.sequence != 1:
                         raise PresenceOutOfOrderError(
                             "a new agent instance must start at sequence 1"
@@ -378,11 +389,6 @@ class PresenceRegistry:
                             "a new agent instance cannot replace a newer observation"
                         )
 
-                if report.observed_at < current_report.observed_at - MAX_CLOCK_SKEW:
-                    raise PresenceValidationError(
-                        "observed_at is more than 5 minutes older than the current report"
-                    )
-
             record = _RegistryRecord(
                 report=report,
                 received_at=self._clock.utcnow().astimezone(timezone.utc),
@@ -390,6 +396,13 @@ class PresenceRegistry:
             )
             self._records[report.workstation_id] = record
             return self._acceptance(record, duplicate=False)
+
+    def _is_stale(self, record: _RegistryRecord) -> bool:
+        """这条记录是否已经过了保鲜期（口径与 get() 的 effective_state 一致）。"""
+        return (
+            self._clock.monotonic() - record.received_monotonic
+            > self._stale_after_seconds
+        )
 
     def _acceptance(
         self, record: _RegistryRecord, duplicate: bool

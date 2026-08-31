@@ -224,6 +224,41 @@ async def test_offline_device_does_not_consume_cooldown():
 
 
 @pytest.mark.asyncio
+async def test_silent_degraded_push_does_not_open_window_or_burn_cooldown():
+    """设备忙时 push_work_event 只闪一行 OLED 提示、返回 False 而不抛异常。
+
+    一个字都没说出口：不能记 180 秒冷却（否则访客再站多久也等不到第二次
+    应答），更不能开 90 秒留言窗口（否则路过同事的闲聊、或主人回来说的
+    第一句会被当成留言入账）。语义与推送抛异常那条路径一致——下一条
+    present 上报（15 秒后）重试。
+    """
+    clock = FakeClock()
+    ledger = FakeLedger()
+    texts = []
+
+    async def busy(conn, text, **kwargs):
+        texts.append(text)
+        return False
+
+    flow = VisitorFlow(
+        owner_status_store=FakeOwnerStatus(),
+        away_ledger=ledger,
+        push_event=busy,
+        device_resolver=lambda w: (DEVICE_ID, object()),
+        clock=clock,
+    )
+
+    assert await flow.on_visitor_detected(WORKSTATION) is False
+    assert flow.has_open_window(DEVICE_ID) is False
+    assert flow.handle_asr_text(DEVICE_ID, "日志方案已发飞书") is None
+    assert ledger.records == []
+
+    clock.advance(seconds=15)
+    await flow.on_visitor_detected(WORKSTATION)
+    assert len(texts) == 2
+
+
+@pytest.mark.asyncio
 async def test_push_failure_is_swallowed_and_retried():
     clock = FakeClock()
     calls = []
@@ -403,6 +438,35 @@ async def test_long_message_reply_truncated_but_ledger_keeps_full_text():
     assert len(ledger.records) == 1
     assert ledger.records[0]["text"] == f"有同事留言：{long_text}"
     assert reply == f"记下了：{long_text[:40]}…。他回来我就转达"
+
+
+@pytest.mark.asyncio
+async def test_cancel_window_closes_message_window():
+    """主人被确认返岗时编排器会调这个失效入口。
+
+    没有它的话，返岗首帧被判 unknown 而开出来的留言窗口会一直活到自然过期，
+    主人开口说的第一句被 ASR 拾到后当场记成「有同事留言」，还被 return 掉，
+    永远进不了 LLM。
+    """
+    flow, _clock, _push, ledger, _conn = build()
+    await flow.on_visitor_detected(WORKSTATION)
+    assert flow.has_open_window(DEVICE_ID) is True
+
+    flow.cancel_window(DEVICE_ID)
+
+    assert flow.has_open_window(DEVICE_ID) is False
+    assert flow.handle_asr_text(DEVICE_ID, "帮我看下今天的日程") is None
+    assert ledger.records == []
+
+
+def test_cancel_window_without_open_window_is_a_noop():
+    """编排器每条 owner 上报都会调一次（15 秒一条心跳），必须幂等。"""
+    flow, _clock, _push, _ledger, _conn = build()
+
+    flow.cancel_window(DEVICE_ID)
+    flow.cancel_window(DEVICE_ID)
+
+    assert flow.has_open_window(DEVICE_ID) is False
 
 
 @pytest.mark.asyncio
