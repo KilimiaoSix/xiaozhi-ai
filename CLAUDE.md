@@ -90,6 +90,19 @@ curl -X POST http://127.0.0.1:8003/xiaozhi/event/push -H "Content-Type: applicat
 
 固件改动**要攒成批次再烧**。每轮编译加烧录几分钟，而且烧录期间没法联调。改完先只编译验证语法，攒够一批再烧。
 
+### TTS 全哑时先查 DNS，别急着换 provider
+
+EdgeTTS 走 speech.platform.bing.com，外网一断机器人就一句话说不出来。2026-09-02
+在 iPhone 热点下踩过一次：热点的 DNS 服务器坏了，所有域名解析失败，表现成 TTS 哑掉
+＋LLM 答不上＋国内站点打不开三个"不同"故障（GitHub 能通是系统 DNS 缓存的假象）。
+先 `dig +short api.deepseek.com` 判断是不是解析问题，再谈别的。
+
+真出不去时有本地兜底：把 `data/.config.yaml` 的 `selected_module.TTS` 改成
+`MacosSayTTS`（provider 见 `core/providers/tts/macos_say.py`），macOS 自带合成、
+不联网。注意音色只有 Tingting/Sinji/Meijia 真正可用，Flo/Eddy 那批新式音色
+系统里登记了但语音数据没下载，`say` 会退出码 0 地产出 0.14 秒近静音——provider
+已有守卫会报错拦下，别当成 provider 坏了。
+
 ### 密钥与大文件
 
 - `server/main/xiaozhi-server/data/.config.yaml` 含 LLM API key，**已 gitignore，永远不要提交**。所有本地配置写这里，不要改 `config.yaml`（它与本文件递归合并，`data/` 优先）。
